@@ -80,6 +80,13 @@ projects:
 # quietly forever.
 scheduler:
   disable_after_failures: 5
+  # What a task may do when it runs with nobody present - i.e. started by the
+  # machine's own scheduler while Leti is closed. Reading, computing and writing
+  # files cover what people actually schedule (research, analysis, reports).
+  # "external" (sending mail, posting, deploying) and "critical" (irreversible)
+  # are left out on purpose: an action nobody can decline shouldn't be taken on
+  # your behalf while you're away. "critical" is refused even if you add it.
+  unattended_allows: ["read", "execute", "modify"]
 #   file_path: "./data/scheduled_tasks.json"
 
 # Business records (see tools/business.py). stage_weights is what each pipeline

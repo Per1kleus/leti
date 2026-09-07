@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -42,6 +44,60 @@ MAX_HISTORY_PER_TASK = 50
 DEFAULT_MAX_RETRIES = 2
 # A task whose instruction runs long shouldn't block the scheduler forever.
 DEFAULT_TASK_TIMEOUT = 900
+
+
+def _lock_path() -> Path:
+    return resolve_path("./data/scheduler.lock")
+
+
+@contextmanager
+def scheduler_lock():
+    """Hold the exclusive right to run due tasks, or yield False immediately.
+
+    Once the OS scheduler is installed there are two things that want to run due
+    tasks: the loop inside a running Leti, and the process cron/launchd/Task
+    Scheduler starts. Without this they would both pick up the same due task and
+    run it twice - sending the same email twice, writing the same report twice.
+
+    An OS file lock rather than a flag in the task file, because a flag outlives
+    the process that set it: if Leti is killed mid-run the kernel releases this
+    automatically, while a stale flag would block every future run until someone
+    noticed and cleared it.
+    """
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def _store_path() -> Path:
@@ -210,10 +266,20 @@ class SchedulerRunner:
             await asyncio.sleep(self.check_interval)
 
     async def run_due_tasks(self, now: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Run everything that's due, if no other process is already doing it.
+
+        A task overdue because the machine was off runs once when it next gets the
+        chance, not once per missed occurrence - next_run only advances after a
+        run, so a week of downtime doesn't produce seven reports.
+        """
         now = now if now is not None else time.time()
-        due = [t for t in load_tasks()
-               if t.get("enabled", True) and t.get("next_run") and t["next_run"] <= now]
-        return [await self.execute(task["id"]) for task in due]
+        with scheduler_lock() as acquired:
+            if not acquired:
+                logger.debug("Another process is running due tasks; skipping this check.")
+                return []
+            due = [t for t in load_tasks()
+                   if t.get("enabled", True) and t.get("next_run") and t["next_run"] <= now]
+            return [await self.execute(task["id"]) for task in due]
 
     async def execute(self, task_id: str, manual: bool = False) -> Dict[str, Any]:
         """Run one task, record the outcome, schedule the next run.
@@ -542,3 +608,60 @@ class RunScheduledTaskNowTool(BaseTool):
             f"Started task {task_id} now. Its result will appear when it finishes; "
             f"list_scheduled_tasks shows the outcome."
         ))
+
+
+class SystemSchedulingTool(BaseTool):
+    name = "system_scheduling"
+    description = (
+        "Control whether scheduled tasks run when Leti is closed. Without this they only "
+        "fire while Leti is open, so a Monday-morning task waits for someone to launch the "
+        "app. Enabling it registers a periodic check with this machine's own scheduler - "
+        "cron on Linux, launchd on macOS, Task Scheduler on Windows - which starts Leti, "
+        "runs anything due, and exits.\n"
+        "Actions: status (what's set up now), enable, disable. Tell the user what unattended "
+        "runs are allowed to do: by default they can read, compute and write files, but not "
+        "send email, post anything, or delete anything - those still need them present."
+    )
+    parameters = [
+        ToolParameter(name="action", type="string", enum=["status", "enable", "disable"],
+                      description="What to do."),
+        ToolParameter(name="interval_minutes", type="number", required=False,
+                      description="How often to check for due tasks when enabling (default 5)."),
+    ]
+
+    async def run(self, action: str = "status", interval_minutes: int = 5, **kwargs) -> ToolResult:
+        from core import system_scheduler
+
+        loop = asyncio.get_running_loop()
+        try:
+            if action == "enable":
+                result = await loop.run_in_executor(
+                    None, system_scheduler.install, int(interval_minutes))
+                if not result.get("ok"):
+                    return ToolResult(success=False, error=result.get("error", "Couldn't install."))
+                allowed = ", ".join(
+                    get_settings().get("scheduler", {}).get("unattended_allows",
+                                                            ["read", "execute", "modify"]))
+                return ToolResult(success=True, output={
+                    **result,
+                    "unattended_allows": allowed,
+                    "note": (
+                        f"Scheduled tasks now run every {result['interval_minutes']} minutes even "
+                        f"when Leti is closed. Unattended runs may perform: {allowed}. Anything "
+                        f"else - sending email, deleting - is refused with a reason recorded in "
+                        f"the task's history, since nobody is there to confirm it."
+                    ),
+                })
+            if action == "disable":
+                result = await loop.run_in_executor(None, system_scheduler.uninstall)
+                if not result.get("ok"):
+                    return ToolResult(success=False, error=result.get("error", "Couldn't remove."))
+                return ToolResult(success=True, output={
+                    **result,
+                    "note": ("Scheduled tasks now only run while Leti is open. Existing tasks and "
+                             "their history are untouched."),
+                })
+            return ToolResult(success=True, output=await loop.run_in_executor(
+                None, system_scheduler.status))
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))

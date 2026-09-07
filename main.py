@@ -148,6 +148,7 @@ from tools.scheduler import (
     UpdateScheduledTaskTool,
     DeleteScheduledTaskTool,
     RunScheduledTaskNowTool,
+    SystemSchedulingTool,
     SchedulerRunner,
     set_runner,
 )
@@ -333,6 +334,7 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(UpdateScheduledTaskTool())
     registry.register(DeleteScheduledTaskTool())
     registry.register(RunScheduledTaskNowTool())
+    registry.register(SystemSchedulingTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.
@@ -490,7 +492,7 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
                 print("(no speech detected)")
 
 
-async def build_app():
+async def build_app(start_scheduler: bool = True):
     """Shared async setup for every mode - constructs and returns everything a mode
     needs. Factored out so GUI mode (see run_gui() below) can run this via
     run_until_complete() on its own dedicated loop, instead of the loop
@@ -533,9 +535,46 @@ async def build_app():
 
     scheduler = SchedulerRunner(orchestrator, notify=notify_failure)
     set_runner(scheduler)
-    scheduler.start()
+    if start_scheduler:
+        scheduler.start()
 
     return llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler
+
+
+async def run_scheduled_once() -> int:
+    """Run whatever scheduled tasks are due, then exit.
+
+    This is what the OS scheduler invokes (see core/system_scheduler.py), which is
+    how a task scheduled for Monday morning happens on Monday morning rather than
+    the next time someone opens Leti.
+
+    Two things differ from a normal session. The in-process loop is not started -
+    this process checks once and leaves. And SafetyGuard runs unattended: there is
+    no terminal and no window here, so a confirmation prompt would hang forever.
+    Unattended runs may do what scheduler.unattended_allows permits and refuse the
+    rest with a reason that lands in the task's history.
+    """
+    llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler = \
+        await build_app(start_scheduler=False)
+    safety_guard.set_unattended(True)
+
+    try:
+        outcomes = await scheduler.run_due_tasks()
+        if not outcomes:
+            logger.info("No scheduled tasks were due.")
+            return 0
+        for outcome in outcomes:
+            if outcome["status"] == "succeeded":
+                logger.info(f"Task '{outcome['name']}' succeeded in {outcome['duration_seconds']}s.")
+            else:
+                logger.error(f"Task '{outcome['name']}' {outcome['status']}: {outcome.get('error')}")
+        # Non-zero if anything failed, so the OS scheduler's own log shows it.
+        return 0 if all(o["status"] == "succeeded" for o in outcomes) else 1
+    finally:
+        await scheduler.stop()
+        await llm_client.close()
+        await browser_session.close()
+        await social_login_manager.close()
 
 
 async def main(args) -> None:
@@ -587,12 +626,18 @@ def run_gui() -> None:
 if __name__ == "__main__":
     cli_parser = argparse.ArgumentParser(description="Leti - local-first AI desktop assistant")
     cli_parser.add_argument(
-        "--mode", choices=["text", "voice", "continuous", "gui"], default="text",
-        help="Interaction mode: text (typed), voice (push-to-talk), continuous (wake word), gui (HUD window)",
+        "--mode", choices=["text", "voice", "continuous", "gui", "run-scheduled"], default="text",
+        help=(
+            "Interaction mode: text (typed), voice (push-to-talk), continuous (wake word), "
+            "gui (HUD window), run-scheduled (run due tasks once and exit - what the OS "
+            "scheduler invokes)"
+        ),
     )
     cli_args = cli_parser.parse_args()
 
     if cli_args.mode == "gui":
         run_gui()
+    elif cli_args.mode == "run-scheduled":
+        sys.exit(asyncio.run(run_scheduled_once()))
     else:
         asyncio.run(main(cli_args))

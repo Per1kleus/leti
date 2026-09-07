@@ -164,6 +164,13 @@ class RiskTier(str, Enum):
 # prompts on the actions that matter worth less.
 DEFAULT_CONFIRMATION_CLASSES = ["modify", "external", "critical"]
 
+# What a scheduled task may do when it runs with nobody present to ask. Reading,
+# computing and writing files cover the work people actually schedule - research,
+# analysis, reports - while `external` (sending mail, posting, deploying) and
+# `critical` (irreversible) are left out: an action nobody can decline is not one
+# to take on the user's behalf while they're away from the machine.
+DEFAULT_UNATTENDED_CLASSES = ["read", "execute", "modify"]
+
 
 class PermissionDenied(Exception):
     """Raised when a tool call is blocked outright (forbidden pattern/path)."""
@@ -224,6 +231,7 @@ class SafetyGuard:
         self._audit_path = resolve_path(get_settings()["safety"]["audit_log_path"])
         self._audit_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
+        self._unattended = False
 
     @property
     def settings(self) -> Dict[str, Any]:
@@ -235,6 +243,27 @@ class SafetyGuard:
 
     def set_confirmation_callback(self, callback: ConfirmationCallback) -> None:
         self._confirmation_callback = callback
+
+    def set_unattended(self, unattended: bool = True) -> None:
+        """Run with nobody present to answer a confirmation prompt.
+
+        Used by `--mode run-scheduled`, where the OS scheduler starts Leti with no
+        terminal and no window. Blocking on a prompt there would hang the run
+        forever, and auto-approving everything would mean the OS scheduler could
+        do things the user never agreed to. Instead the classes listed in
+        scheduler.unattended_allows proceed and everything else is refused with a
+        reason the user can read in the task's history.
+        """
+        self._unattended = unattended
+
+    @property
+    def unattended_classes(self) -> List[str]:
+        configured = self.settings.get("scheduler", {}).get(
+            "unattended_allows", DEFAULT_UNATTENDED_CLASSES
+        )
+        # CRITICAL is never in this set, whatever the setting says - the same
+        # reasoning as require_confirmation_for: irreversible actions need a person.
+        return [str(c).lower() for c in configured if str(c).lower() != "critical"]
 
     # ------------------------------------------------------------------ #
     # Classification
@@ -452,6 +481,26 @@ class SafetyGuard:
                 "Pre-approved: the user's own request already expressed clear approval.",
             )
             return Authorization(execute=True, used_preapproval=True, description=description)
+
+        # Nobody is here to ask (a scheduled run started by the OS scheduler).
+        if self._unattended:
+            allowed = self.unattended_classes
+            if tier.value in allowed:
+                await self._audit(
+                    tool_name, arguments, tier, "auto_approved",
+                    f"Unattended run: '{tier.value}' is permitted by scheduler.unattended_allows.",
+                )
+                return Authorization(execute=True, description=description)
+            await self._audit(
+                tool_name, arguments, tier, "user_denied",
+                f"Unattended run: '{tier.value}' needs a person to confirm it.",
+            )
+            raise ConfirmationDenied(
+                f"'{tool_name}' is a '{tier.value}' action, and this task ran unattended with "
+                f"nobody to confirm it. Unattended runs may do: {', '.join(allowed)}. Either run "
+                f"this task while Leti is open, or add '{tier.value}' to scheduler.unattended_allows "
+                f"in settings.yaml if you want it to happen without you."
+            )
 
         if self._confirmation_callback is None:
             await self._audit(

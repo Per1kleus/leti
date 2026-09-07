@@ -309,6 +309,11 @@ tools:
   delete_scheduled_task:
     action: modify
 
+  # Registers or removes an entry in the machine's own scheduler (cron/launchd/
+  # Task Scheduler), which then starts Leti without the user present.
+  system_scheduling:
+    action: external
+
   # --- Business intelligence ---
   business_dashboard:
     action: read

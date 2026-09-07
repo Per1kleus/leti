@@ -418,6 +418,27 @@ clients and write a report" is one task. Every run is recorded, failures retry
 with backoff, and a task that keeps failing is disabled and reported rather than
 failing quietly forever.
 
+By default tasks only fire while Leti is open. To have them run anyway, ask Leti
+to enable system scheduling (or run `python core/system_scheduler.py install`).
+That registers one periodic check with the machine's own scheduler — cron on
+Linux, launchd on macOS, Task Scheduler on Windows — which starts Leti with
+`--mode run-scheduled`, runs whatever is due, and exits.
+
+Two things follow from nobody being present for those runs:
+
+- **They can't do everything.** `scheduler.unattended_allows` decides what an
+  unattended run may do; the default lets it read, compute and write files —
+  which covers research, analysis and reports — but not send email, post, deploy
+  or delete. Anything else is refused with a reason recorded in the task's
+  history. `critical` is refused even if you add it to the list.
+- **Nothing runs twice.** The in-app loop and the scheduled process both look for
+  due work, so they take an OS file lock first; whichever gets it runs, the other
+  skips. Downtime produces one catch-up run per task, not one per missed
+  occurrence — a week with the machine off doesn't yield seven reports.
+
+Output goes to `logs/scheduled_runs.log`, and the run exits non-zero if a task
+failed, so the OS scheduler's own logs show it.
+
 ## The icon
 
 `gui/icon.svg` is the source of truth. Three variants exist because one drawing
@@ -492,6 +513,7 @@ leti/
 │   ├── intent_signals.py      # Approval/denial phrase detection (voice pre-approval, -y shorthand)
 │   ├── confirmation.py        # CLI + voice confirmation callbacks (shared by CLI and GUI modes)
 │   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
+│   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks
 │   ├── atomic_write.py        # Crash-safe state-file writes
 │   └── settings_editor.py     # The /settings command - schema-driven, no LLM involved
 ├── gui/
