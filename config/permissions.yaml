@@ -290,6 +290,20 @@ tools:
   delete_todo_item:
     action: execute
 
+  # --- Engineering ---
+  # Pure computation - no files touched, nothing outside the process.
+  engineering_calculate:
+    action: execute
+
+  convert_units:
+    action: execute
+
+  check_dimensions:
+    action: execute
+
+  solve_symbolic:
+    action: execute
+
   # --- Data analysis ---
   # Reading and analysing don't change anything; the two that write a new file do.
   # None of them ever modify the source dataset.

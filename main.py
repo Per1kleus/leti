@@ -129,6 +129,12 @@ from tools.data_analysis import (
     VisualizeDatasetTool,
     ExportDatasetTool,
 )
+from tools.engineering import (
+    EngineeringCalculateTool,
+    ConvertUnitsTool,
+    CheckDimensionsTool,
+    SolveSymbolicTool,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 
@@ -285,6 +291,13 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(AnalyzeDatasetTool())
     registry.register(VisualizeDatasetTool())
     registry.register(ExportDatasetTool())
+
+    # Engineering: units and symbolic maths computed by pint and sympy rather than
+    # by the model. Numerical work beyond them runs as real code through run_code.
+    registry.register(EngineeringCalculateTool())
+    registry.register(ConvertUnitsTool())
+    registry.register(CheckDimensionsTool())
+    registry.register(SolveSymbolicTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.

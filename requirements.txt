@@ -40,6 +40,12 @@ openpyxl>=3.1.0
 scipy>=1.13.0
 matplotlib>=3.8.0
 
+# Engineering mode (tools/engineering.py): pint does units and dimensional
+# analysis, sympy does the algebra. Both exist so calculations are computed
+# rather than produced by the language model.
+pint>=0.24
+sympy>=1.13
+
 # Cybersecurity tools (port/process/connection inspection)
 psutil>=6.0.0
 
