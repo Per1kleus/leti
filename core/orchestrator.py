@@ -195,8 +195,10 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Long-term memory recall failed (continuing without it): {e}")
 
+        # The rolling buffer already ends with this turn's user message - handle_user_input
+        # records it before calling this, so that a failed LLM call doesn't lose what the
+        # user said. Appending user_text again here sent every utterance to the model twice.
         messages.extend(self.session_memory.get_recent_messages())
-        messages.append({"role": "user", "content": user_text})
         return messages
 
     # ------------------------------------------------------------------ #

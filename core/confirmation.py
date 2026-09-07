@@ -6,20 +6,25 @@ safely-importable module), and gui/api.py needs these too.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Awaitable, Callable
 
+from core.console_input import read_line
 from core.intent_signals import resolve_yes_no
 
 
 async def cli_confirmation_callback(prompt: str) -> bool:
     """Terminal-based confirmation for text mode. Accepts 'yes'/'y' as well as the
-    '-y' shorthand (and 'no'/'n'/'-n' to explicitly decline)."""
+    '-y' shorthand (and 'no'/'n'/'-n' to explicitly decline).
+
+    Reads through core.console_input rather than input() on an executor: SafetyGuard
+    wraps this in asyncio.wait_for, and a cancelled executor thread would stay blocked
+    on stdin, eating the user's next line. See that module's docstring.
+    """
     print(f"\n[CONFIRM NEEDED] {prompt}")
-    loop = asyncio.get_event_loop()
-    answer = await loop.run_in_executor(
-        None, lambda: input("Type 'yes' (or -y) to proceed, 'no' (or -n) to cancel: ").strip().lower()
-    )
+    answer = await read_line("Type 'yes' (or -y) to proceed, 'no' (or -n) to cancel: ")
+    if answer is None:
+        return False  # end of input - fail closed
+    answer = answer.strip().lower()
     if answer in ("-y", "y", "yes"):
         return True
     if answer in ("-n", "n", "no"):

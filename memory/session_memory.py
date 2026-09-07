@@ -9,6 +9,7 @@ import json
 import sqlite3
 import time
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Deque, Dict, List
 
@@ -24,7 +25,10 @@ class SessionMemory:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        # closing() matters here: sqlite3's own context manager commits or rolls back
+        # the transaction but leaves the connection OPEN. add_turn runs twice per
+        # conversation turn, so without this the process leaks a handle every turn.
+        with closing(sqlite3.connect(self._db_path)) as conn, conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_log (
@@ -41,7 +45,7 @@ class SessionMemory:
     def add_turn(self, role: str, content: str, session_id: str = "default") -> None:
         entry = {"role": role, "content": content, "timestamp": time.time()}
         self._buffer.append(entry)
-        with sqlite3.connect(self._db_path) as conn:
+        with closing(sqlite3.connect(self._db_path)) as conn, conn:
             conn.execute(
                 "INSERT INTO conversation_log (timestamp, role, content, session_id) VALUES (?, ?, ?, ?)",
                 (entry["timestamp"], role, content, session_id),
@@ -53,7 +57,7 @@ class SessionMemory:
         return [{"role": e["role"], "content": e["content"]} for e in self._buffer]
 
     def get_session_history(self, session_id: str = "default", limit: int = 100) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self._db_path) as conn:
+        with closing(sqlite3.connect(self._db_path)) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM conversation_log WHERE session_id = ? ORDER BY id DESC LIMIT ?",

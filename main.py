@@ -224,11 +224,11 @@ async def _run_settings_editor_cli() -> None:
     task, not something that benefits from an LLM call, and secrets shouldn't
     pass through a chat history either."""
     from core import settings_editor as se
+    from core.console_input import read_line
 
-    loop = asyncio.get_event_loop()
-
-    def ask(prompt: str) -> str:
-        return input(prompt).strip()
+    async def ask(prompt: str) -> str:
+        answer = await read_line(prompt)
+        return (answer or "").strip()
 
     sections = se.list_sections()
     print("\n--- Leti settings ---")
@@ -237,7 +237,7 @@ async def _run_settings_editor_cli() -> None:
         print(f"  {i}. {s['label']} ({status})")
     print("  Type a number/name to edit it, 'clear <name>' to reset a section, or 'cancel'.\n")
 
-    choice = (await loop.run_in_executor(None, ask, "> ")).lower()
+    choice = (await ask("> ")).lower()
     if choice in ("cancel", ""):
         print("Cancelled.\n")
         return
@@ -278,7 +278,7 @@ async def _run_settings_editor_cli() -> None:
         else:
             status = "(not set)"
 
-        raw = await loop.run_in_executor(None, ask, f"{field['label']} {status}: ")
+        raw = await ask(f"{field['label']} {status}: ")
         if raw.lower() == "cancel":
             print("Cancelled - nothing saved.\n")
             return
@@ -297,10 +297,15 @@ async def _run_settings_editor_cli() -> None:
 
 
 async def run_text_mode(orchestrator: Orchestrator) -> None:
+    from core.console_input import read_line
+
     print("Leti is ready. Type your message ('/settings' to configure integrations, 'exit' to quit).\n")
     while True:
-        loop = asyncio.get_event_loop()
-        user_text = await loop.run_in_executor(None, lambda: input("You: ").strip())
+        # Shared stdin reader, not input() on an executor - see core/console_input.py.
+        line = await read_line("You: ")
+        if line is None:      # Ctrl-D / end of piped input
+            break
+        user_text = line.strip()
         if user_text.lower() in ("exit", "quit"):
             break
         if not user_text:
@@ -344,16 +349,13 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
         print("Leti is listening for the wake word. Press Ctrl+C to stop.")
         await listener.start()
     else:
-        print("Push-to-talk mode: press Enter to start recording, Enter again to stop.")
-        loop = asyncio.get_event_loop()
+        from core.console_input import read_line
+
+        print("Push-to-talk mode: press Enter to start talking; recording stops on silence.")
         while True:
-            await loop.run_in_executor(None, lambda: input("\nPress Enter to talk (Ctrl+C to quit)..."))
-            print("Recording... press Enter to stop.")
-            recording = True
-
-            async def should_continue():
-                return recording
-
+            if await read_line("\nPress Enter to talk (Ctrl+D to quit)...") is None:
+                break
+            print("Recording... (stops automatically when you stop speaking)")
             # Simplified PTT: record until silence to avoid needing a separate key-release thread.
             audio = await transcriber.record_until_silence()
             text = await transcriber.transcribe(audio)

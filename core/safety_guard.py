@@ -67,8 +67,11 @@ def _humanize_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
         "clear_user_profile": lambda a: "erase everything I remember about you (name and all saved facts)",
         "login_to_social_platform": lambda a: f"open a browser window for you to log in to {_get('platform')} (I won't see your password)",
         "browser_fill_form": lambda a: f"fill out a form on the current page",
-        "close_app": lambda a: f"close {_get('app_name', 'name')}",
-        "launch_app": lambda a: f"launch {_get('app_name', 'name')}",
+        # close_app's parameter is window_title, not app_name - naming the wrong key
+        # here rendered the prompt as "Leti wants to close ." with the target missing,
+        # on a tool that closes windows. Alternatives are kept as fallbacks.
+        "close_app": lambda a: f"close the window {_get('window_title', 'app_name', 'name', default='(unspecified)')}",
+        "launch_app": lambda a: f"launch {_get('app_name', 'name', 'window_title', default='(unspecified)')}",
     }
 
     fn = humanizers.get(tool_name)
@@ -84,6 +87,35 @@ def _humanize_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
         parts = [f"{k.replace('_', ' ')} set to {v}" for k, v in arguments.items()]
         return f"{tool_name.replace('_', ' ')} ({', '.join(parts)})"
     return tool_name.replace("_", " ")
+
+
+# Argument names whose VALUE is a secret or private content rather than a
+# description of the action. The audit log is a permanent, plaintext,
+# never-rotated record, so these are recorded as a redaction marker: knowing
+# that browser_fill_form ran on a given selector is the auditable fact;
+# recording the password typed into it is a liability. Note the confirmation
+# prompt already declines to show these (see browser_fill_form above) - without
+# this, _audit wrote them to disk anyway.
+_REDACTED_ARGUMENT_KEYS = {
+    "value",            # browser_fill_form - often a password or card number
+    "text",             # keyboard_type - whatever is being typed, incl. credentials
+    "content",          # write_file - full file contents
+    "body",             # send_email - full message body
+    "password", "app_password", "api_key", "api_secret", "secret",
+    "client_secret", "token", "access_token", "credentials",
+}
+_REDACTION_MARKER = "<redacted: {n} chars>"
+
+
+def _redact_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy of `arguments` with secret/bulk values replaced by a length marker."""
+    redacted: Dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key.lower() in _REDACTED_ARGUMENT_KEYS and value is not None:
+            redacted[key] = _REDACTION_MARKER.format(n=len(str(value)))
+        else:
+            redacted[key] = value
+    return redacted
 
 
 class RiskTier(str, Enum):
@@ -385,14 +417,23 @@ class SafetyGuard:
         record = AuditRecord(
             timestamp=time.time(),
             tool_name=tool_name,
-            arguments=arguments,
+            arguments=_redact_arguments(arguments),
             tier=tier.value if isinstance(tier, RiskTier) else str(tier),
             decision=decision,
             detail=detail,
         )
+        line = record.to_json() + "\n"
         async with self._lock:
-            with open(self._audit_path, "a", encoding="utf-8") as f:
-                f.write(record.to_json() + "\n")
+            # Writing to a permanent record shouldn't stall every other coroutine
+            # (the GUI's websocket server shares this loop), so the blocking file
+            # I/O goes to a thread. The lock still serializes appends.
+            await asyncio.get_running_loop().run_in_executor(None, self._append_audit_line, line)
+
+    def _append_audit_line(self, line: str) -> None:
+        with open(self._audit_path, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())   # an audit record that a crash can lose isn't one
 
     async def audit_result(self, tool_name: str, arguments: Dict[str, Any], success: bool, detail: str = "") -> None:
         """Call after execution to log the outcome, separate from the authorization decision."""

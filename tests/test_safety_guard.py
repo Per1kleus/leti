@@ -179,3 +179,24 @@ def test_reply_context_still_accepts_short_answers(text, expected):
 
 def test_ambiguous_reply_fails_closed():
     assert resolve_yes_no("not sure") is None
+
+
+# --- Audit log -----------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_audit_log_redacts_secret_values(tmp_path):
+    """logs/audit.log is permanent, plaintext and unrotated. The fact that a form
+    was filled is the auditable event; the password typed into it is not."""
+    guard, _ = _guard()
+    guard._audit_path = tmp_path / "audit.log"
+
+    await guard.authorize(
+        "browser_fill_form",
+        {"selector": "#password", "value": "hunter2-my-real-password"},
+        preapproved=True,
+    )
+
+    written = guard._audit_path.read_text()
+    assert "hunter2" not in written
+    assert "#password" in written          # the action itself stays auditable
+    assert "redacted" in written
