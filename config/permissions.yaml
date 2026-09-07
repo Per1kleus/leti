@@ -78,6 +78,25 @@ tools:
   browser_fill_form:
     action: external
 
+  # --- Coding ---
+  # Running code is `execute`: reversible, and the point of the tool is that Leti
+  # tests what it writes rather than assuming it works. Code can of course do
+  # anything - which is why it runs in a project folder and is logged, and why
+  # anyone who wants to approve each run can add "execute" to
+  # safety.require_confirmation_for.
+  run_code:
+    action: execute
+
+  run_tests:
+    action: execute
+
+  inspect_project:
+    action: read
+
+  # Downloads and runs third-party code.
+  install_dependency:
+    action: external
+
   # --- Cybersecurity: network diagnostics (read-only) ---
   scan_local_ports:
     action: execute

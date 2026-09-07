@@ -63,16 +63,20 @@ class CommandResult:
         return f"{base}: {first}" if first else base
 
 
-async def run_command(cmd: List[str], timeout: float = DEFAULT_TIMEOUT) -> CommandResult:
+async def run_command(
+    cmd: List[str], timeout: float = DEFAULT_TIMEOUT, cwd: Optional[str] = None
+) -> CommandResult:
     """Run `cmd` without blocking the event loop, capturing status and both streams.
 
     Never raises for an ordinary failure - inspect .ok / .failure_reason(). The
     argument list is passed straight to exec (no shell), so nothing here needs
-    quoting and nothing in it is interpreted.
+    quoting and nothing in it is interpreted. `cwd` runs it somewhere specific,
+    which is how code runs inside a project's folder.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

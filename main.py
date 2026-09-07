@@ -42,6 +42,12 @@ from tools.os_control import (
     MouseClickTool,
     OpenUrlTool,
 )
+from tools.coding import (
+    RunCodeTool,
+    RunTestsTool,
+    InstallDependencyTool,
+    InspectProjectTool,
+)
 from tools.shell_runner import ShellRunnerTool
 from tools.vision import ReadScreenTool
 from tools.web_search import ResearchTopicTool, WebSearchTool
@@ -161,6 +167,13 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(KeyboardTypeTool())
     registry.register(KeyboardHotkeyTool())
     registry.register(ShellRunnerTool())
+
+    # Coding: run/test/inspect. Reading and writing source is the file tools;
+    # git, builds and deploys are run_shell_command. Neither is duplicated here.
+    registry.register(RunCodeTool())
+    registry.register(RunTestsTool())
+    registry.register(InstallDependencyTool())
+    registry.register(InspectProjectTool())
     registry.register(BrowserNavigateTool(browser_session))
     registry.register(BrowserReadPageTool(browser_session))
     registry.register(BrowserClickTool(browser_session))
