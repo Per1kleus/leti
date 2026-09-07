@@ -205,30 +205,20 @@ async def test_default_confirmation_matches_the_action_class(tool, expected_ask,
 
 
 @pytest.mark.asyncio
-async def test_user_can_require_confirmation_for_more_classes(monkeypatch, guard_factory):
+async def test_user_can_require_confirmation_for_more_classes(guard_factory):
     """The point of the setting: someone who wants to approve every search can."""
-    from core.config_loader import get_settings
-
-    settings = get_settings()
-    settings["safety"]["require_confirmation_for"] = ["execute", "modify", "external", "critical"]
-    monkeypatch.setattr("core.safety_guard.get_settings", lambda: settings)
-
-    guard, prompts = guard_factory()
+    guard, prompts = guard_factory(
+        confirm_classes=["execute", "modify", "external", "critical"]
+    )
     await guard.authorize("web_search", {"query": "x"})
     assert len(prompts) == 1
 
 
 @pytest.mark.asyncio
-async def test_critical_asks_even_when_removed_from_the_setting(monkeypatch, guard_factory):
+async def test_critical_asks_even_when_removed_from_the_setting(guard_factory):
     """A setting that could switch off the prompt for irreversible actions would
     defeat the point of having one."""
-    from core.config_loader import get_settings
-
-    settings = get_settings()
-    settings["safety"]["require_confirmation_for"] = []
-    monkeypatch.setattr("core.safety_guard.get_settings", lambda: settings)
-
-    guard, prompts = guard_factory(confirm=False)
+    guard, prompts = guard_factory(confirm=False, confirm_classes=[])
     with pytest.raises(ConfirmationDenied):
         await guard.authorize("delete_file", {"path": "/tmp/x"})
     assert len(prompts) == 1
