@@ -10,13 +10,14 @@ device and is out of scope for a personal assistant.
 """
 from __future__ import annotations
 
+import asyncio
 import platform
 import socket
-import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from tools.base import BaseTool, ToolParameter, ToolResult
+from tools.command_runner import run_command
 
 # Ports that are commonly targeted / frequently misconfigured to be open
 # to the world. Presence alone isn't proof of a problem - it's a prompt
@@ -46,13 +47,6 @@ class PortFinding:
     process: str
     note: str = ""
     concern: str = ""
-
-
-def _run(cmd: List[str]) -> str:
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout
-    except Exception:
-        return ""
 
 
 def _listening_ports_psutil() -> List[PortFinding]:
@@ -87,7 +81,11 @@ class ScanLocalPortsTool(BaseTool):
 
     async def run(self, **kwargs) -> ToolResult:
         try:
-            findings = _listening_ports_psutil()
+            # net_connections() walks every socket on the machine; on a busy host
+            # that's long enough to stutter the GUI if run on the event loop.
+            findings = await asyncio.get_running_loop().run_in_executor(
+                None, _listening_ports_psutil
+            )
         except ImportError:
             return ToolResult(
                 success=False,
@@ -121,21 +119,37 @@ class FirewallStatusTool(BaseTool):
         system = platform.system()
         try:
             if system == "Linux":
-                out = _run(["ufw", "status", "verbose"])
-                if not out:
-                    out = _run(["sudo", "-n", "ufw", "status", "verbose"])
-                enabled = "Status: active" in out
-                return ToolResult(success=True, output={"engine": "ufw", "enabled": enabled, "raw": out or "ufw not found or needs sudo"})
+                result = await run_command(["ufw", "status", "verbose"])
+                if not result.ok:
+                    result = await run_command(["sudo", "-n", "ufw", "status", "verbose"])
+                engine, marker = "ufw", "Status: active"
             elif system == "Darwin":
-                out = _run(["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"])
-                enabled = "enabled" in out.lower()
-                return ToolResult(success=True, output={"engine": "pf/ALF", "enabled": enabled, "raw": out})
+                result = await run_command(
+                    ["/usr/libexec/ApplicationFirewall/socketfilterfw", "--getglobalstate"]
+                )
+                engine, marker = "pf/ALF", "enabled"
             elif system == "Windows":
-                out = _run(["netsh", "advfirewall", "show", "allprofiles", "state"])
-                enabled = "ON" in out.upper()
-                return ToolResult(success=True, output={"engine": "Windows Defender Firewall", "enabled": enabled, "raw": out})
+                result = await run_command(["netsh", "advfirewall", "show", "allprofiles", "state"])
+                engine, marker = "Windows Defender Firewall", "ON"
             else:
                 return ToolResult(success=False, error=f"Unsupported platform: {system}")
+
+            if not result.ok:
+                # "The command failed" is not the same fact as "the firewall is off",
+                # and reporting the second when we only know the first is how a user
+                # ends up believing a machine is protected (or not) on no evidence.
+                return ToolResult(
+                    success=False,
+                    error=(f"Couldn't determine firewall status - {result.failure_reason()}. "
+                           f"This usually means the tool isn't installed or the query needs "
+                           f"elevated privileges."),
+                )
+
+            enabled = marker.lower() in result.stdout.lower()
+            return ToolResult(
+                success=True,
+                output={"engine": engine, "enabled": enabled, "raw": result.stdout.strip()},
+            )
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -150,12 +164,18 @@ class LanDeviceListTool(BaseTool):
     parameters: List[ToolParameter] = []
 
     async def run(self, **kwargs) -> ToolResult:
-        system = platform.system()
         try:
-            if system == "Windows":
-                out = _run(["arp", "-a"])
-            else:
-                out = _run(["arp", "-a"]) or _run(["ip", "neigh"])
-            return ToolResult(success=True, output={"raw": out or "No ARP entries found (table may be empty)."})
+            result = await run_command(["arp", "-a"])
+            if not result.ok and platform.system() != "Windows":
+                result = await run_command(["ip", "neigh"])
+            if not result.ok:
+                return ToolResult(
+                    success=False,
+                    error=f"Couldn't read the ARP/neighbor table - {result.failure_reason()}.",
+                )
+            return ToolResult(
+                success=True,
+                output={"raw": result.stdout.strip() or "No ARP entries found (table may be empty)."},
+            )
         except Exception as e:
             return ToolResult(success=False, error=str(e))

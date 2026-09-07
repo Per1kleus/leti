@@ -76,16 +76,30 @@ class SetWatchlistTool(BaseTool):
     ]
 
     async def run(self, symbols: List[str], **kwargs) -> ToolResult:
-        # Note: this only updates the in-memory/cached settings object via config file rewrite
-        # is out of scope here to avoid clobbering the YAML file's comments/formatting; instead
-        # this tool reports what to persist and the orchestrator/user should confirm the edit
-        # via write_file on config/settings.yaml, which already goes through SafetyGuard.
+        # This used to return success while doing nothing but printing YAML for the
+        # user to edit by hand - so the model reported the watchlist as changed when
+        # it wasn't, against the system prompt's "never claim to have done something
+        # you did not actually do". It now writes to config/settings.local.yaml, the
+        # override file the /settings command already owns, which leaves the
+        # commented settings.yaml template untouched and takes effect immediately.
+        from core.config_loader import reload_settings
+        from core.settings_editor import _load_overrides, _save_overrides, _deep_set
+
+        cleaned = [str(s).strip().upper() for s in symbols if str(s).strip()]
+        if not cleaned:
+            return ToolResult(success=False, error="No symbols given.")
+
+        try:
+            overrides = _load_overrides()
+            _deep_set(overrides, ["trading"], {"watchlist": cleaned})
+            _save_overrides(overrides)
+            reload_settings()
+        except OSError as e:
+            return ToolResult(success=False, error=f"Couldn't save the watchlist: {e}")
+
         return ToolResult(
             success=True,
-            output=(
-                f"To persist this watchlist, update the 'trading.watchlist' key in "
-                f"config/settings.yaml to: {symbols}"
-            ),
+            output={"watchlist": cleaned, "saved_to": "config/settings.local.yaml"},
         )
 
 

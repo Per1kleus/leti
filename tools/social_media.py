@@ -312,7 +312,7 @@ def _load_watches() -> List[Dict[str, Any]]:
 
 
 def _save_watches(watches: List[Dict[str, Any]]) -> None:
-    _watches_path().write_text(json.dumps(watches, indent=2))
+    atomic_write_json(_watches_path(), watches)
 
 
 async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]:

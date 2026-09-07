@@ -19,6 +19,7 @@ joinable meeting using your account.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.mime.base import MIMEBase
@@ -198,7 +199,7 @@ def _build_ics(
     return "\r\n".join(lines) + "\r\n"
 
 
-def _save_to_caldav(ics_text: str, calendar_name: str = "") -> None:
+def _save_to_caldav_blocking(ics_text: str, calendar_name: str = "") -> None:
     import caldav  # imported lazily so the whole tool module doesn't hard-fail if unused
 
     cfg = _calendar_settings()
@@ -217,6 +218,15 @@ def _save_to_caldav(ics_text: str, calendar_name: str = "") -> None:
                 break
 
     target.save_event(ical=ics_text)
+
+
+async def _save_to_caldav(ics_text: str, calendar_name: str = "") -> None:
+    """The caldav client is synchronous HTTP - several round trips against a remote
+    server. Run on the event loop it stalls every other coroutine, including the GUI's
+    websocket server."""
+    await asyncio.get_running_loop().run_in_executor(
+        None, _save_to_caldav_blocking, ics_text, calendar_name
+    )
 
 
 class ScheduleMeetingTool(BaseTool):
@@ -262,7 +272,7 @@ class ScheduleMeetingTool(BaseTool):
             uid = f"{uuid.uuid4()}@leti"
             organizer_email = _email_settings().get("username", "") if _has_email_config() else ""
             ics_text = _build_ics(uid, title, start, end, description, location, organizer_email, participant_emails)
-            _save_to_caldav(ics_text)
+            await _save_to_caldav(ics_text)
 
             return ToolResult(success=True, output={
                 "title": title,
@@ -315,10 +325,19 @@ class SendMeetingInviteEmailTool(BaseTool):
     description = (
         "Send a meeting invite email to participants, with the meeting details and join link in "
         "the body plus a proper .ics calendar attachment they can add with one click. Risky: "
-        "requires confirmation before sending."
+        "requires confirmation before sending. If the event was already created with "
+        "schedule_meeting, pass that call's calendar_event_uid so attendees' replies match "
+        "the organizer's copy of the event."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(name="to", type="array", items_type="string", description="Recipient email addresses."),
+        ToolParameter(
+            name="calendar_event_uid", type="string", required=False,
+            description=(
+                "The calendar_event_uid returned by schedule_meeting for this same meeting. "
+                "Omit only when no calendar event was created."
+            ),
+        ),
         ToolParameter(name="title", type="string", description="Meeting title."),
         ToolParameter(name="start_time", type="string", description="ISO 8601 start time."),
         ToolParameter(name="duration_minutes", type="number", description="Duration in minutes."),
@@ -329,7 +348,8 @@ class SendMeetingInviteEmailTool(BaseTool):
 
     async def run(
         self, to: List[str], title: str, start_time: str, duration_minutes: int,
-        join_url: str = "", location: str = "", notes: str = "", **kwargs
+        join_url: str = "", location: str = "", notes: str = "",
+        calendar_event_uid: str = "", **kwargs
     ) -> ToolResult:
         try:
             import smtplib
@@ -352,7 +372,11 @@ class SendMeetingInviteEmailTool(BaseTool):
             body_lines += ["", "A calendar invite (.ics) is attached - open it to add this to your calendar."]
             body = "\n".join(body_lines)
 
-            uid = f"{uuid.uuid4()}@leti"
+            # An iTIP REQUEST is matched to an existing event by UID. Minting a fresh
+            # one here meant the attendee's RSVP carried a UID that matched nothing in
+            # the organizer's calendar, so replies silently failed to attach to the
+            # event schedule_meeting had just created.
+            uid = calendar_event_uid or f"{uuid.uuid4()}@leti"
             ics_text = _build_ics(uid, title, start, end, notes, location, cfg.get("username", ""), to)
 
             msg = MIMEMultipart()
@@ -367,10 +391,19 @@ class SendMeetingInviteEmailTool(BaseTool):
             ics_part.add_header("Content-Disposition", "attachment", filename="invite.ics")
             msg.attach(ics_part)
 
-            with smtplib.SMTP_SSL(cfg["smtp_host"], cfg.get("smtp_port", 465)) as server:
-                server.login(cfg["username"], cfg["app_password"])
-                server.sendmail(cfg["username"], to, msg.as_string())
+            def _send() -> None:
+                with smtplib.SMTP_SSL(cfg["smtp_host"], cfg.get("smtp_port", 465)) as server:
+                    server.login(cfg["username"], cfg["app_password"])
+                    server.sendmail(cfg["username"], to, msg.as_string())
 
-            return ToolResult(success=True, output=f"Invite sent to {', '.join(to)}.")
+            # Blocking SMTP over the network - keep it off the event loop.
+            await asyncio.get_running_loop().run_in_executor(None, _send)
+
+            return ToolResult(success=True, output={
+                "sent_to": to,
+                "calendar_event_uid": uid,
+                "matched_existing_event": bool(calendar_event_uid),
+                "summary": f"Invite sent to {', '.join(to)}.",
+            })
         except Exception as e:
             return ToolResult(success=False, error=str(e))

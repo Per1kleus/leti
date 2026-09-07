@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.atomic_write import atomic_write_json
 from core.config_loader import get_settings, resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
@@ -45,7 +46,7 @@ def _load() -> Dict[str, Any]:
 
 
 def _save(data: Dict[str, Any]) -> None:
-    _path().write_text(json.dumps(data, indent=2))
+    atomic_write_json(_path(), data)
 
 
 def profile_summary(max_facts: int = 12) -> str:

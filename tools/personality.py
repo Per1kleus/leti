@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.atomic_write import atomic_write_json
 from core.config_loader import get_settings, resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
@@ -94,7 +95,7 @@ def _load() -> Dict[str, int]:
 
 
 def _save(values: Dict[str, int]) -> None:
-    _path().write_text(json.dumps(values, indent=2))
+    atomic_write_json(_path(), values)
 
 
 def _clamp(v: Any) -> int:

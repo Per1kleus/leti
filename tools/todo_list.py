@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.atomic_write import atomic_write_json
 from core.config_loader import get_settings, resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
@@ -34,7 +35,7 @@ def load_todos() -> List[Dict[str, Any]]:
 
 
 def save_todos(todos: List[Dict[str, Any]]) -> None:
-    _path().write_text(json.dumps(todos, indent=2))
+    atomic_write_json(_path(), todos)
 
 
 def add_todo(text: str) -> Dict[str, Any]:

@@ -29,6 +29,7 @@ Honest limitations, stated plainly rather than glossed over:
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -239,9 +240,15 @@ async def _scrape_facebook(context, page_name: str, max_results: int) -> List[Di
         await page.wait_for_selector('[role="article"]', timeout=10000)
         articles = await page.locator('[role="article"]').all()
         items = []
-        for i, article in enumerate(articles[:max_results]):
+        for article in articles[:max_results]:
             text = (await article.inner_text())[:200]
-            items.append({"id": f"{page_name}-{i}-{hash(text)}", "text": text})
+            # Content hash, not hash() and not the loop index. Python's hash() of a
+            # str is randomized per process (PYTHONHASHSEED), so every restart
+            # produced different ids for the same posts and check_social_watches
+            # reported the whole page as new, forever. The index had the same
+            # problem whenever the feed reordered.
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            items.append({"id": f"{page_name}-{digest}", "text": text})
         return items
     finally:
         await page.close()

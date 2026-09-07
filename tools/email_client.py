@@ -11,6 +11,7 @@ plus an importance score so the most urgent things surface first.
 """
 from __future__ import annotations
 
+import asyncio
 import email
 import imaplib
 import re
@@ -151,6 +152,17 @@ class ListNewEmailsTool(BaseTool):
     async def run(self, limit: int = 25, category: str = "", **kwargs) -> ToolResult:
         try:
             cfg = _email_settings()
+            # imaplib is synchronous: connect, TLS handshake, login, then a fetch per
+            # message. That's seconds of network I/O, and on the event loop it stalls
+            # every other coroutine - in GUI mode, the websocket server included.
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._fetch_blocking, cfg, limit, category
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    def _fetch_blocking(self, cfg: Dict[str, Any], limit: int, category: str) -> ToolResult:
+        try:
             vip_senders = [s.lower() for s in cfg.get("vip_senders", [])]
 
             summaries: List[EmailSummary] = []
@@ -233,6 +245,15 @@ class SendEmailTool(BaseTool):
     async def run(self, to: str, subject: str, body: str, cc: str = "", **kwargs) -> ToolResult:
         try:
             cfg = _email_settings()
+            # Blocking SMTP over the network - keep it off the event loop.
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._send_blocking, cfg, to, subject, body, cc
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    def _send_blocking(self, cfg: Dict[str, Any], to: str, subject: str, body: str, cc: str) -> ToolResult:
+        try:
             msg = MIMEMultipart()
             msg["From"] = cfg["username"]
             msg["To"] = to

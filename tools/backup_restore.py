@@ -14,16 +14,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List
 
+from core.atomic_write import atomic_write_json
 from core.config_loader import resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
 SNAPSHOT_ROOT = "./data/security_snapshots"
 MANIFEST_NAME = "manifest.json"
+
+_SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _safe_label(label: str) -> str:
+    """Validate a snapshot label before it is used as a directory name.
+
+    The label comes from the model, and it was being joined straight onto the
+    snapshot root - so '../../..' escaped the snapshot directory entirely, at
+    which point create_security_snapshot's shutil.rmtree(data_dir) would run
+    against whatever it landed on. Restricted to a single, ordinary filename.
+    """
+    label = (label or "").strip()
+    if not _SAFE_LABEL.match(label):
+        raise ValueError(
+            f"Invalid snapshot label {label!r}: use only letters, numbers, dots, "
+            f"dashes and underscores (max 64 characters, no path separators)."
+        )
+    return label
 
 
 def _snapshot_dir() -> Path:
@@ -60,6 +81,7 @@ class CreateSecuritySnapshotTool(BaseTool):
 
     async def run(self, path: str, label: str, **kwargs) -> ToolResult:
         try:
+            label = _safe_label(label)
             src = resolve_path(path)
             if not src.exists():
                 return ToolResult(success=False, error=f"Path not found: {src}")
@@ -70,7 +92,16 @@ class CreateSecuritySnapshotTool(BaseTool):
                 shutil.rmtree(data_dir)
             data_dir.mkdir(parents=True, exist_ok=True)
 
-            manifest: Dict[str, Any] = {"source_root": str(src), "created": time.time(), "files": {}}
+            manifest: Dict[str, Any] = {
+                "source_root": str(src),
+                # Whether the source was a directory or a single file decides how
+                # restore rebuilds the paths. Recording it here means restore
+                # doesn't have to infer it from a filesystem that may since have
+                # changed - see RestoreFromSnapshotTool.
+                "source_is_dir": src.is_dir(),
+                "created": time.time(),
+                "files": {},
+            }
             for f in _iter_files(src):
                 rel = f.relative_to(src) if src.is_dir() else Path(f.name)
                 dest = data_dir / rel
@@ -78,7 +109,7 @@ class CreateSecuritySnapshotTool(BaseTool):
                 shutil.copy2(f, dest)
                 manifest["files"][str(rel)] = _hash_file(f)
 
-            (snap_dir / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
+            atomic_write_json(snap_dir / MANIFEST_NAME, manifest)
             return ToolResult(
                 success=True,
                 output=f"Snapshot '{label}' created: {len(manifest['files'])} file(s) baselined from {src}.",
@@ -99,6 +130,7 @@ class CheckIntegrityTool(BaseTool):
 
     async def run(self, label: str, **kwargs) -> ToolResult:
         try:
+            label = _safe_label(label)
             snap_dir = _snapshot_dir() / label
             manifest_path = snap_dir / MANIFEST_NAME
             if not manifest_path.exists():
@@ -154,6 +186,7 @@ class RestoreFromSnapshotTool(BaseTool):
 
     async def run(self, label: str, only_file: str = "", **kwargs) -> ToolResult:
         try:
+            label = _safe_label(label)
             snap_dir = _snapshot_dir() / label
             manifest_path = snap_dir / MANIFEST_NAME
             if not manifest_path.exists():
@@ -163,17 +196,38 @@ class RestoreFromSnapshotTool(BaseTool):
             src_root = Path(manifest["source_root"])
             data_dir = snap_dir / "data"
 
+            # Whether the source was a directory is read from the manifest, not from
+            # the current filesystem. Asking src_root.is_dir() here got it wrong in
+            # exactly the case restore exists for: if the directory had since been
+            # deleted, is_dir() was False and every file in the manifest was copied
+            # over src_root itself in turn, leaving one file where a tree should be.
+            source_is_dir = manifest.get("source_is_dir")
+            if source_is_dir is None:      # snapshot taken before this was recorded
+                source_is_dir = len(manifest["files"]) > 1 or src_root.is_dir()
+
             targets = [only_file] if only_file else list(manifest["files"].keys())
-            restored = []
+            restored, missing = [], []
             for rel in targets:
                 if rel not in manifest["files"]:
+                    missing.append(rel)
                     continue
                 backup_file = data_dir / rel
-                dest = src_root / rel if src_root.is_dir() else src_root
+                if not backup_file.exists():
+                    missing.append(rel)
+                    continue
+                dest = (src_root / rel) if source_is_dir else src_root
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(backup_file, dest)
                 restored.append(rel)
 
-            return ToolResult(success=True, output=f"Restored {len(restored)} file(s) from snapshot '{label}': {restored}")
+            if missing and not restored:
+                return ToolResult(
+                    success=False,
+                    error=f"Nothing restored - not in snapshot '{label}': {missing}",
+                )
+            output = f"Restored {len(restored)} file(s) from snapshot '{label}': {restored}"
+            if missing:
+                output += f" (skipped, not in the snapshot: {missing})"
+            return ToolResult(success=True, output=output)
         except Exception as e:
             return ToolResult(success=False, error=str(e))

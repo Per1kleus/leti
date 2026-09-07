@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.atomic_write import atomic_write_json
 from core.config_loader import get_settings, resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
@@ -72,8 +73,7 @@ def _load() -> List[Dict[str, Any]]:
 
 
 def _save(contacts: List[Dict[str, Any]]) -> None:
-    path = _contacts_path()
-    path.write_text(json.dumps(contacts, indent=2))
+    atomic_write_json(_contacts_path(), contacts)
 
 
 def _matches_name(contact: Dict[str, Any], query: str) -> bool:

@@ -19,13 +19,14 @@ is what satisfies "awaits user agreement" for anything it wants to change.
 """
 from __future__ import annotations
 
+import asyncio
 import platform
-import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
 from core.config_loader import get_settings
 from tools.base import BaseTool, ToolParameter, ToolResult
+from tools.command_runner import CommandResult, run_command
 
 DEFAULT_THRESHOLDS = {
     "cpu_percent": 90,
@@ -64,8 +65,12 @@ def _thresholds() -> Dict[str, float]:
     return {**DEFAULT_THRESHOLDS, **cfg}
 
 
-def _run(cmd: List[str], timeout: int = 20) -> "subprocess.CompletedProcess":
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+async def _run(cmd: List[str], timeout: int = 20) -> CommandResult:
+    """Async so a package manager can't stall the assistant. apply_system_updates
+    allows 30 minutes; run synchronously that froze the event loop - and with it
+    the GUI's websocket server, so chat, voice and every connected phone went dead
+    with no visible cause - for the whole upgrade."""
+    return await run_command(cmd, timeout=timeout)
 
 
 def _bytes_to_gb(n: int) -> float:
@@ -109,7 +114,7 @@ class GetSystemSpecsTool(BaseTool):
 
             gpu_info = "not detected (no vendor-specific GPU query implemented for this platform)"
             try:
-                nvidia = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], timeout=5)
+                nvidia = await _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], timeout=5)
                 if nvidia.returncode == 0 and nvidia.stdout.strip():
                     gpu_info = nvidia.stdout.strip()
             except Exception:
@@ -182,7 +187,11 @@ class RunHealthCheckTool(BaseTool):
             t = _thresholds()
             issues: List[Dict[str, Any]] = []
 
-            cpu_percent = psutil.cpu_percent(interval=1)
+            # interval=1 blocks for a full second by design (it samples). On the
+            # event loop that's a visible stall in the GUI, so it goes to a thread.
+            cpu_percent = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: psutil.cpu_percent(interval=1)
+            )
             if cpu_percent >= t["cpu_percent"]:
                 top = _top_processes(limit=3)
                 worst = top["top_cpu"][0] if top["top_cpu"] else None
@@ -299,22 +308,22 @@ async def _check_updates_impl() -> Dict[str, Any]:
     system = platform.system()
     try:
         if system == "Linux":
-            if _run(["which", "apt"], timeout=5).returncode == 0:
-                out = _run(["apt", "list", "--upgradable"], timeout=30).stdout
+            if (await _run(["which", "apt"], timeout=5)).returncode == 0:
+                out = (await _run(["apt", "list", "--upgradable"], timeout=30)).stdout
                 lines = [l for l in out.splitlines() if l and not l.startswith("Listing...")]
                 return {"platform": "apt", "pending_count": len(lines), "packages": lines[:30]}
-            if _run(["which", "dnf"], timeout=5).returncode == 0:
-                result = _run(["dnf", "check-update", "--quiet"], timeout=45)
+            if (await _run(["which", "dnf"], timeout=5)).returncode == 0:
+                result = await _run(["dnf", "check-update", "--quiet"], timeout=45)
                 lines = [l for l in result.stdout.splitlines() if l.strip()]
                 return {"platform": "dnf", "pending_count": len(lines), "packages": lines[:30]}
-            if _run(["which", "checkupdates"], timeout=5).returncode == 0:
-                result = _run(["checkupdates"], timeout=30)
+            if (await _run(["which", "checkupdates"], timeout=5)).returncode == 0:
+                result = await _run(["checkupdates"], timeout=30)
                 lines = [l for l in result.stdout.splitlines() if l.strip()]
                 return {"platform": "pacman", "pending_count": len(lines), "packages": lines[:30]}
             return {"platform": "unknown", "pending_count": 0, "note": "No supported package manager (apt/dnf/pacman-contrib) found."}
 
         elif system == "Darwin":
-            out = _run(["softwareupdate", "-l"], timeout=60).stdout
+            out = (await _run(["softwareupdate", "-l"], timeout=60)).stdout
             lines = [l.strip() for l in out.splitlines() if l.strip().startswith("*")]
             return {"platform": "softwareupdate", "pending_count": len(lines), "packages": lines}
 
@@ -324,7 +333,7 @@ async def _check_updates_impl() -> Dict[str, Any]:
                 "$r=$s.Search('IsInstalled=0');"
                 "$r.Updates | ForEach-Object { $_.Title }"
             )
-            out = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=90).stdout
+            out = (await _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=90)).stdout
             lines = [l.strip() for l in out.splitlines() if l.strip()]
             return {"platform": "windows_update", "pending_count": len(lines), "packages": lines[:30]}
 
@@ -356,16 +365,16 @@ class ApplySystemUpdatesTool(BaseTool):
         system = platform.system()
         try:
             if system == "Linux":
-                if _run(["which", "apt"], timeout=5).returncode == 0:
-                    result = _run(["sudo", "-n", "bash", "-c", "apt-get update && apt-get -y upgrade"], timeout=1800)
-                elif _run(["which", "dnf"], timeout=5).returncode == 0:
-                    result = _run(["sudo", "-n", "dnf", "-y", "upgrade"], timeout=1800)
-                elif _run(["which", "pacman"], timeout=5).returncode == 0:
-                    result = _run(["sudo", "-n", "pacman", "-Syu", "--noconfirm"], timeout=1800)
+                if (await _run(["which", "apt"], timeout=5)).returncode == 0:
+                    result = await _run(["sudo", "-n", "bash", "-c", "apt-get update && apt-get -y upgrade"], timeout=1800)
+                elif (await _run(["which", "dnf"], timeout=5)).returncode == 0:
+                    result = await _run(["sudo", "-n", "dnf", "-y", "upgrade"], timeout=1800)
+                elif (await _run(["which", "pacman"], timeout=5)).returncode == 0:
+                    result = await _run(["sudo", "-n", "pacman", "-Syu", "--noconfirm"], timeout=1800)
                 else:
                     return ToolResult(success=False, error="No supported package manager (apt/dnf/pacman) found.")
             elif system == "Darwin":
-                result = _run(["sudo", "-n", "softwareupdate", "-i", "-a"], timeout=1800)
+                result = await _run(["sudo", "-n", "softwareupdate", "-i", "-a"], timeout=1800)
             elif system == "Windows":
                 # No update-installation module ships by default; PSWindowsUpdate must be
                 # present ('Install-Module PSWindowsUpdate -Force' as admin, one-time setup).
@@ -377,14 +386,19 @@ class ApplySystemUpdatesTool(BaseTool):
                     " Write-Output 'PSWindowsUpdate module not installed. Run as admin: Install-Module PSWindowsUpdate -Force'"
                     "}"
                 )
-                result = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=1800)
+                result = await _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=1800)
             else:
                 return ToolResult(success=False, error=f"Unsupported platform: {system}")
 
-            if result.returncode != 0:
-                return ToolResult(success=False, error=f"Update command exited with code {result.returncode}: {result.stderr[:500] or result.stdout[:500]}")
+            if not result.ok:
+                hint = ""
+                if "sudo" in result.stderr.lower() or "password" in result.stderr.lower():
+                    hint = (" Leti can't enter a sudo password - run the update yourself "
+                            "in a terminal.")
+                return ToolResult(
+                    success=False,
+                    error=f"Update command failed - {result.failure_reason()}.{hint}",
+                )
             return ToolResult(success=True, output=result.stdout[-3000:] or "Updates applied.")
-        except subprocess.TimeoutExpired:
-            return ToolResult(success=False, error="Update process timed out - it may still be running in the background.")
         except Exception as e:
             return ToolResult(success=False, error=str(e))

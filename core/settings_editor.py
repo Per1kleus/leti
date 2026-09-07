@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from core.atomic_write import atomic_write_text
 from core.config_loader import CONFIG_DIR, get_settings, reload_settings
 
 # Each entry: settings_path locates the section in the merged settings dict
@@ -134,7 +135,10 @@ def _save_overrides(data: Dict[str, Any]) -> None:
         "# plain YAML with no comments explaining each field - see settings.yaml\n"
         "# for that. Anything set here overrides settings.yaml for the same key.\n"
     )
-    path.write_text(header + yaml.safe_dump(data, sort_keys=False))
+    # 0600: this file holds IMAP/SMTP app passwords, Zoom/Teams client secrets
+    # and API keys. Written with the default umask it would commonly land as
+    # world-readable 0644.
+    atomic_write_text(path, header + yaml.safe_dump(data, sort_keys=False), secret=True)
 
 
 def _coerce(value: str, field: Dict[str, Any]) -> Any:

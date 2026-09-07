@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional
 
 from aiohttp import web, WSMsgType
 
+from core.atomic_write import atomic_write_text
 from core.config_loader import get_settings, resolve_path
 
 logger = logging.getLogger("leti.gui.server")
@@ -49,7 +50,8 @@ def _get_or_create_token() -> str:
         if existing:
             return existing
     token = secrets.token_hex(16)
-    path.write_text(token)
+    # Owner-only: this is the shared secret that grants a LAN device a full session.
+    atomic_write_text(path, token, secret=True)
     return token
 
 
