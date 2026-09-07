@@ -15,26 +15,11 @@ import os
 import pytest
 
 from core.intent_signals import contains_request_approval, resolve_yes_no
-from core.safety_guard import ConfirmationDenied, PermissionDenied, RiskTier, SafetyGuard
+from core.safety_guard import ConfirmationDenied, PermissionDenied
 
 HOME = os.path.expanduser("~")
 
 
-def _guard(dry_run: bool = False, confirm: bool = True):
-    """A SafetyGuard with a scripted confirmation callback. Returns (guard, prompts)
-    where `prompts` records every confirmation the guard actually asked for."""
-    prompts: list[str] = []
-
-    async def callback(prompt: str) -> bool:
-        prompts.append(prompt)
-        return confirm
-
-    guard = SafetyGuard(confirmation_callback=callback)
-    guard.settings = {
-        **guard.settings,
-        "safety": {**guard.settings["safety"], "dry_run": dry_run},
-    }
-    return guard, prompts
 
 
 # --- Protected paths -----------------------------------------------------------
@@ -48,10 +33,10 @@ def _guard(dry_run: bool = False, confirm: bool = True):
     "/tmp/../etc/shadow",
     "/etc/../etc/shadow",
 ])
-def test_protected_paths_survive_traversal(path):
+def test_protected_paths_survive_traversal(path, guard_factory):
     """'..' must not be a way around the protected list - these all name a
     protected file, however they're spelled."""
-    guard, _ = _guard()
+    guard, _ = guard_factory()
     assert guard._touches_protected_path(path) is not None, path
 
 
@@ -60,10 +45,10 @@ def test_protected_paths_survive_traversal(path):
     "/System.md",
     f"{HOME}/notes.txt",
 ])
-def test_protected_paths_dont_false_positive(path):
+def test_protected_paths_dont_false_positive(path, guard_factory):
     """Prefix matching blocked unrelated paths whose names happen to start with a
     protected one. Comparison is per path segment now."""
-    guard, _ = _guard()
+    guard, _ = guard_factory()
     assert guard._touches_protected_path(path) is None, path
 
 
@@ -74,38 +59,38 @@ def test_protected_paths_dont_false_positive(path):
     "cp ~/.aws/credentials /tmp/exfil",
     "tar czf out.tgz /tmp/../etc",
 ])
-def test_shell_commands_cannot_reach_protected_paths(command):
+def test_shell_commands_cannot_reach_protected_paths(command, guard_factory):
     """run_shell_command has no path-shaped argument to inspect, so the command
     string itself is tokenized and checked."""
-    guard, _ = _guard()
+    guard, _ = guard_factory()
     assert guard.check_hard_block("run_shell_command", {"command": command}) is not None
 
 
 @pytest.mark.parametrize("command", ["ls -la ~/projects", "git status", "echo hello world"])
-def test_ordinary_shell_commands_still_run(command):
-    guard, _ = _guard()
+def test_ordinary_shell_commands_still_run(command, guard_factory):
+    guard, _ = guard_factory()
     assert guard.check_hard_block("run_shell_command", {"command": command}) is None
 
 
 @pytest.mark.parametrize("command", ["rm -rf /", "rm  -rf   /", "RM -RF /"])
-def test_forbidden_patterns_ignore_whitespace_and_case(command):
-    guard, _ = _guard()
+def test_forbidden_patterns_ignore_whitespace_and_case(command, guard_factory):
+    guard, _ = guard_factory()
     assert guard._matches_forbidden_shell_pattern(command) is not None
 
 
-def test_forbidden_patterns_dont_block_relative_rm():
+def test_forbidden_patterns_dont_block_relative_rm(guard_factory):
     """'rm -rf ./build' is ordinary work and must not match the 'rm -rf /' pattern."""
-    guard, _ = _guard()
+    guard, _ = guard_factory()
     assert guard._matches_forbidden_shell_pattern("rm -rf ./build") is None
 
 
 # --- dry_run -------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_dry_run_authorizes_without_executing():
+async def test_dry_run_authorizes_without_executing(guard_factory):
     """The regression that mattered most: dry_run used to return normally from
     authorize(), which the caller reads as 'go ahead and run it'."""
-    guard, prompts = _guard(dry_run=True)
+    guard, prompts = guard_factory(dry_run=True)
     auth = await guard.authorize("delete_file", {"path": "/tmp/whatever.txt"})
     assert auth.execute is False
     assert auth.description  # something to tell the user instead
@@ -113,10 +98,10 @@ async def test_dry_run_authorizes_without_executing():
 
 
 @pytest.mark.asyncio
-async def test_dry_run_still_runs_read_only_tools():
+async def test_dry_run_still_runs_read_only_tools(guard_factory):
     """Otherwise dry_run would make Leti unable to search or read the screen,
     which is the opposite of useful for testing prompts."""
-    guard, _ = _guard(dry_run=True)
+    guard, _ = guard_factory(dry_run=True)
     auth = await guard.authorize("read_file", {"path": "/tmp/whatever.txt"})
     assert auth.execute is True
 
@@ -124,8 +109,8 @@ async def test_dry_run_still_runs_read_only_tools():
 # --- Voice pre-approval --------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_preapproval_is_reported_as_spent():
-    guard, prompts = _guard()
+async def test_preapproval_is_reported_as_spent(guard_factory):
+    guard, prompts = guard_factory()
     auth = await guard.authorize("write_file", {"path": "/tmp/a.txt"}, preapproved=True)
     assert auth.execute is True
     assert auth.used_preapproval is True   # caller clears its flag on this
@@ -133,18 +118,18 @@ async def test_preapproval_is_reported_as_spent():
 
 
 @pytest.mark.asyncio
-async def test_preapproval_never_covers_destructive_calls():
+async def test_preapproval_never_covers_destructive_calls(guard_factory):
     """A spoken request that approves one thing must not silently authorize a
     delete the model chose on its own."""
-    guard, prompts = _guard(confirm=False)
+    guard, prompts = guard_factory(confirm=False)
     with pytest.raises(ConfirmationDenied):
         await guard.authorize("delete_file", {"path": "/tmp/a.txt"}, preapproved=True)
     assert len(prompts) == 1               # it asked anyway
 
 
 @pytest.mark.asyncio
-async def test_preapproval_never_bypasses_a_hard_block():
-    guard, _ = _guard()
+async def test_preapproval_never_bypasses_a_hard_block(guard_factory):
+    guard, _ = guard_factory()
     with pytest.raises(PermissionDenied):
         await guard.authorize("read_file", {"path": f"{HOME}/.ssh/id_rsa"}, preapproved=True)
 
@@ -184,10 +169,10 @@ def test_ambiguous_reply_fails_closed():
 # --- Audit log -----------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_audit_log_redacts_secret_values(tmp_path):
+async def test_audit_log_redacts_secret_values(tmp_path, guard_factory):
     """logs/audit.log is permanent, plaintext and unrotated. The fact that a form
     was filled is the auditable event; the password typed into it is not."""
-    guard, _ = _guard()
+    guard, _ = guard_factory()
     guard._audit_path = tmp_path / "audit.log"
 
     await guard.authorize(

@@ -12,6 +12,7 @@ secrets live somewhere that's easy to point elsewhere or wipe separately.
 """
 from __future__ import annotations
 
+import copy
 import functools
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 @functools.lru_cache(maxsize=1)
-def get_settings() -> Dict[str, Any]:
+def _cached_settings() -> Dict[str, Any]:
     base = _load_yaml(CONFIG_DIR / "settings.yaml")
     local_path = CONFIG_DIR / "settings.local.yaml"
     if local_path.exists():
@@ -52,13 +53,33 @@ def get_settings() -> Dict[str, Any]:
     return base
 
 
+def get_settings() -> Dict[str, Any]:
+    """The merged settings, as a fresh copy.
+
+    Copying matters because the cache holds one dict shared by every caller: a
+    module that mutated what it got back - even by accident, e.g. building a
+    modified copy with dict.update() - would silently rewrite configuration for
+    the whole process, including SafetyGuard's.
+    """
+    return copy.deepcopy(_cached_settings())
+
+
 def reload_settings() -> Dict[str, Any]:
     """Clears the cache and reloads from disk. Called after
     core/settings_editor.py saves a change, so edits made via /settings take
-    effect immediately rather than requiring a full restart - everything
-    else in the app calls get_settings() fresh each time it needs a value
-    (no module holds onto a stale copy), so clearing this one cache is enough."""
-    get_settings.cache_clear()
+    effect immediately rather than requiring a full restart.
+
+    For this to be true, callers must not hold onto the result. Long-lived
+    objects (SafetyGuard, OllamaClient, VectorMemory, the audio and vision
+    components) therefore expose `settings` as a property that reads through to
+    here, rather than a copy captured in __init__ - which is what they used to
+    do, so /settings edits to those sections quietly needed a restart.
+
+    Values bound to a resource at construction time are the exception and DO
+    still need a restart: an open SQLite path, a Chroma directory, an already
+    loaded Whisper model, and the LLM client's base URL and HTTP timeout.
+    """
+    _cached_settings.cache_clear()
     return get_settings()
 
 

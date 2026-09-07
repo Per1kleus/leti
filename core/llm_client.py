@@ -20,10 +20,17 @@ logger = logging.getLogger("leti.llm_client")
 
 class OllamaClient:
     def __init__(self):
-        self.settings = get_settings()["ollama"]
-        self.host = self.settings["host"].rstrip("/")
-        self.timeout = self.settings["request_timeout_seconds"]
+        cfg = get_settings()["ollama"]
+        # host and timeout are baked into the HTTP client, so unlike the rest of this
+        # section they genuinely do need a restart to change.
+        self.host = cfg["host"].rstrip("/")
+        self.timeout = cfg["request_timeout_seconds"]
         self._client = httpx.AsyncClient(base_url=self.host, timeout=self.timeout)
+
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Live, so a model or temperature change applies without a restart."""
+        return get_settings()["ollama"]
 
     async def close(self):
         await self._client.aclose()

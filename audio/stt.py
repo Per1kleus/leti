@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Callable, Optional
+from typing import Dict, Callable, Optional
 
 import numpy as np
 import pyaudio
@@ -28,8 +28,12 @@ FORMAT = pyaudio.paInt16
 
 
 class WhisperTranscriber:
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart (the Whisper model itself is loaded once at startup)."""
+        return get_settings()["stt"]
+
     def __init__(self):
-        self.settings = get_settings()["stt"]
         model_size = self.settings.get("model_size", "base.en")
         device = self.settings.get("device", "cpu")
         logger.info(f"Loading whisper model '{model_size}' on {device}...")

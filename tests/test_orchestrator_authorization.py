@@ -17,7 +17,6 @@ import pytest
 sys.modules.setdefault("chromadb", types.ModuleType("chromadb"))
 
 from core.orchestrator import Orchestrator  # noqa: E402
-from core.safety_guard import SafetyGuard  # noqa: E402
 from tools.base import BaseTool, ToolParameter, ToolRegistry, ToolResult  # noqa: E402
 
 
@@ -39,20 +38,10 @@ class RecordingWriteTool(BaseTool):
         return ToolResult(success=True, output="written")
 
 
-def _orchestrator(dry_run: bool = False, confirm: bool = False):
+def _orchestrator(guard_factory, dry_run: bool = False, confirm: bool = False):
     """A bare Orchestrator wired to a scripted guard. Built with __new__ to skip
     __init__, which would construct an Ollama client and a vector store."""
-    prompts: list[str] = []
-
-    async def callback(prompt: str) -> bool:
-        prompts.append(prompt)
-        return confirm
-
-    guard = SafetyGuard(confirmation_callback=callback)
-    guard.settings = {
-        **guard.settings,
-        "safety": {**guard.settings["safety"], "dry_run": dry_run},
-    }
+    guard, prompts = guard_factory(dry_run=dry_run, confirm=confirm)
 
     tool = RecordingWriteTool()
     registry = ToolRegistry()
@@ -69,8 +58,8 @@ CALL = {"function": {"name": "write_file", "arguments": {"path": "/tmp/a.txt", "
 
 
 @pytest.mark.asyncio
-async def test_one_spoken_approval_authorizes_exactly_one_action():
-    orch, tool, prompts = _orchestrator(confirm=False)
+async def test_one_spoken_approval_authorizes_exactly_one_action(guard_factory):
+    orch, tool, prompts = _orchestrator(guard_factory, confirm=False)
     orch._preapproved_this_turn = True   # e.g. "go ahead and write that file"
 
     first = await orch._execute_tool_call(CALL)
@@ -86,8 +75,8 @@ async def test_one_spoken_approval_authorizes_exactly_one_action():
 
 
 @pytest.mark.asyncio
-async def test_dry_run_reports_the_action_without_performing_it():
-    orch, tool, prompts = _orchestrator(dry_run=True)
+async def test_dry_run_reports_the_action_without_performing_it(guard_factory):
+    orch, tool, prompts = _orchestrator(guard_factory, dry_run=True)
 
     result = await orch._execute_tool_call(CALL)
 
@@ -99,8 +88,8 @@ async def test_dry_run_reports_the_action_without_performing_it():
 
 
 @pytest.mark.asyncio
-async def test_blocked_call_never_reaches_the_tool():
-    orch, tool, _ = _orchestrator()
+async def test_blocked_call_never_reaches_the_tool(guard_factory):
+    orch, tool, _ = _orchestrator(guard_factory)
     blocked = {"function": {"name": "write_file",
                             "arguments": {"path": "~/.ssh/authorized_keys", "content": "x"}}}
 

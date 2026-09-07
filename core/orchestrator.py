@@ -97,11 +97,23 @@ class Orchestrator:
         self.speak_callback = speak_callback
         self.visual_callback = visual_callback
 
-        self.settings = get_settings()["ollama"]
         self.state = AgentState.IDLE
         self._state_listeners: List[Callable[[AgentState], None]] = []
         self._preapproved_this_turn = False
         self._checked_watches_this_session = False
+        # One turn at a time. The desktop window, a phone, and the voice loop are all
+        # clients of the same orchestrator, and a turn mutates shared state (the memory
+        # buffer, the agent state machine, the one-shot pre-approval flag). Two
+        # concurrent turns interleave their tool calls and their history.
+        self._turn_lock = asyncio.Lock()
+
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live rather than cached at construction: /settings edits call
+        reload_settings(), and a value captured in __init__ would keep serving the
+        old one until restart - which is exactly what config_loader.reload_settings
+        promises doesn't happen."""
+        return get_settings()["ollama"]
 
     def on_state_change(self, callback: Callable[[AgentState], None]) -> None:
         self._state_listeners.append(callback)
@@ -116,6 +128,10 @@ class Orchestrator:
     # Main entry point: handle one user utterance/turn end-to-end
     # ------------------------------------------------------------------ #
     async def handle_user_input(self, user_text: str, session_id: str = "default", voice_mode: bool = False) -> str:
+        async with self._turn_lock:
+            return await self._handle_one_turn(user_text, session_id, voice_mode)
+
+    async def _handle_one_turn(self, user_text: str, session_id: str, voice_mode: bool) -> str:
         self._set_state(AgentState.THINKING)
         self.session_memory.add_turn("user", user_text, session_id)
 

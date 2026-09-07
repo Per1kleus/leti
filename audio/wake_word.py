@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from typing import Dict, Awaitable, Callable
 
 import numpy as np
 import pyaudio
@@ -23,8 +23,12 @@ SAMPLE_RATE = 16000
 
 
 class WakeWordListener:
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart (the wake-word model is loaded once at startup)."""
+        return get_settings()["app"]
+
     def __init__(self, on_wake: Callable[[], Awaitable[None]]):
-        self.settings = get_settings()["app"]
         self.on_wake = on_wake
         self.model = Model(wakeword_models=[self.settings["wake_word"]])
         self._pa = pyaudio.PyAudio()

@@ -9,7 +9,7 @@ import base64
 import io
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import mss
 from PIL import Image
@@ -23,8 +23,12 @@ class ScreenCapture:
     """Handles raw screenshotting + caching so repeated vision calls in a
     short window don't re-capture unnecessarily."""
 
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart."""
+        return get_settings()["vision"]
+
     def __init__(self):
-        self.settings = get_settings()["vision"]
         self._cache_path: Optional[Path] = None
         self._cache_time: float = 0.0
 

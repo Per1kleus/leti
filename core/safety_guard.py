@@ -179,12 +179,19 @@ ConfirmationCallback = Callable[[str], Awaitable[bool]]
 
 class SafetyGuard:
     def __init__(self, confirmation_callback: Optional[ConfirmationCallback] = None):
-        self.settings = get_settings()
         self.permissions = get_permissions()
         self._confirmation_callback = confirmation_callback
-        self._audit_path = resolve_path(self.settings["safety"]["audit_log_path"])
+        self._audit_path = resolve_path(get_settings()["safety"]["audit_log_path"])
         self._audit_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = asyncio.Lock()
+
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live rather than captured in __init__, so toggling safety.dry_run or
+        confirmation_timeout_seconds via /settings takes effect immediately. A guard
+        serving a stale copy of its own safety configuration is the last thing that
+        should need a restart to notice a change."""
+        return get_settings()
 
     def set_confirmation_callback(self, callback: ConfirmationCallback) -> None:
         self._confirmation_callback = callback

@@ -17,8 +17,12 @@ from core.config_loader import get_settings, resolve_path
 
 
 class SessionMemory:
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart (sqlite_path and the buffer size are bound at startup)."""
+        return get_settings()["memory"]
+
     def __init__(self):
-        self.settings = get_settings()["memory"]
         self._buffer: Deque[Dict[str, Any]] = deque(maxlen=self.settings.get("session_buffer_max_turns", 20))
         self._db_path = resolve_path(self.settings["sqlite_path"])
         self._db_path.parent.mkdir(parents=True, exist_ok=True)

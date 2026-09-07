@@ -27,7 +27,7 @@ import logging
 import secrets
 import socket
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from aiohttp import web, WSMsgType
 
@@ -81,12 +81,16 @@ def is_authenticated(peer_ip: str, provided_token: Optional[str], configured_tok
 
 
 class LetiWebServer:
-    def __init__(self, api, host: str = "0.0.0.0", port: Optional[int] = None):
+    def __init__(self, api, host: Optional[str] = None, port: Optional[int] = None):
         settings = get_settings().get("gui", {})
         self.api = api
-        self.host = host
         self.port = port or settings.get("port", 8420)
         self.allow_remote = settings.get("enable_remote_access", True)
+        # enable_remote_access: false used to gate only the websocket handshake while
+        # the server still bound 0.0.0.0 - so the HUD, the manifest and an open port
+        # were on the LAN anyway. "Restrict Leti's GUI to this machine" now means not
+        # listening anywhere else in the first place.
+        self.host = host if host is not None else ("0.0.0.0" if self.allow_remote else "127.0.0.1")
         self.token = _get_or_create_token()
 
         self.app = web.Application()
@@ -96,6 +100,10 @@ class LetiWebServer:
         self.app.router.add_get("/icon.svg", self._handle_icon)
         self.app.router.add_get("/ws", self._handle_ws)
         self.runner: Optional[web.AppRunner] = None
+        # asyncio only holds a weak reference to a running task, so a bare
+        # create_task() can be garbage-collected mid-flight. Keep them alive until
+        # they finish (see _dispatch_call).
+        self._background_tasks: Set[asyncio.Task] = set()
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         html = (GUI_DIR / "hud.html").read_text()
@@ -170,7 +178,12 @@ class LetiWebServer:
         args = data.get("args", [])
         try:
             if method == "send_text_message":
-                asyncio.create_task(self.api.a_send_text_message(*args))
+                # Answering a turn takes as long as it takes; the websocket must stay
+                # responsive meanwhile, so this is deliberately not awaited. The reply
+                # reaches every client through api.push() when it's ready.
+                task = asyncio.create_task(self.api.a_send_text_message(*args))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
                 value: Any = True
             elif method == "get_system_stats":
                 value = await self.api.a_get_system_stats()
@@ -200,6 +213,8 @@ class LetiWebServer:
 
         print(f"\nLeti's interface is running.")
         print(f"  On this computer: http://127.0.0.1:{self.port}/")
+        if not self.allow_remote:
+            print(f"  (Listening on 127.0.0.1 only - nothing else on the network can reach it.)")
         if self.allow_remote:
             print(f"  From your phone (same Wi-Fi): http://{_lan_ip()}:{self.port}/?token={self.token}")
             print(f"  Open that in your phone's browser, then use its menu to 'Add to Home Screen'")

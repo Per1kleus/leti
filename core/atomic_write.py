@@ -24,9 +24,14 @@ from typing import Any
 def atomic_write_text(path: Path, text: str, secret: bool = False) -> None:
     """Replace `path`'s contents with `text` atomically.
 
-    `secret=True` restricts the file to the owner (0600) - use it for anything
-    holding credentials or session tokens, which would otherwise be created with
-    whatever the process umask happens to be (commonly world-readable 0644).
+    Every file written here ends up owner-only (0600): the temp file inherits
+    mkstemp's private mode and keeps it through the rename. That suits the whole
+    set - contacts, the user profile, conversation state - since all of it is
+    personal, and it is a tightening of the previous behavior, where files were
+    created with whatever the umask happened to be (commonly 0644).
+
+    `secret=True` enforces that explicitly rather than relying on mkstemp's
+    default, and marks credential-bearing files at the call site.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 import pyttsx3
 
@@ -22,8 +22,12 @@ logger = logging.getLogger("leti.tts")
 
 
 class Pyttsx3TTS:
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart (rate/volume/voice are applied to the engine at startup; `interruptible` is read live)."""
+        return get_settings()["tts"]
+
     def __init__(self):
-        self.settings = get_settings()["tts"]
         self.engine = pyttsx3.init()
         self.engine.setProperty("rate", self.settings.get("rate", 180))
         self.engine.setProperty("volume", self.settings.get("volume", 1.0))

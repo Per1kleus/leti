@@ -16,8 +16,12 @@ from core.llm_client import OllamaClient
 
 
 class VectorMemory:
+    @property
+    def settings(self) -> Dict[str, Any]:
+        """Read live so /settings edits apply without a restart (persist_dir is bound to the open Chroma client and still needs one)."""
+        return get_settings()["memory"]
+
     def __init__(self, llm_client: OllamaClient):
-        self.settings = get_settings()["memory"]
         self.llm_client = llm_client
         persist_dir = str(resolve_path(self.settings["persist_dir"]))
         self._client = chromadb.PersistentClient(path=persist_dir)
