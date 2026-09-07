@@ -122,6 +122,13 @@ from tools.projects import (
     GetProjectContextTool,
     DeleteProjectTool,
 )
+from tools.data_analysis import (
+    InspectDatasetTool,
+    CleanDatasetTool,
+    AnalyzeDatasetTool,
+    VisualizeDatasetTool,
+    ExportDatasetTool,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 
@@ -270,6 +277,14 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(UpdateProjectTool())
     registry.register(GetProjectContextTool())
     registry.register(DeleteProjectTool())
+
+    # Data analysis: one loader covers CSV/Excel/JSON/TXT/Parquet/MATLAB, so every
+    # tool here is format-blind. Output lands in the active project's folder.
+    registry.register(InspectDatasetTool())
+    registry.register(CleanDatasetTool())
+    registry.register(AnalyzeDatasetTool())
+    registry.register(VisualizeDatasetTool())
+    registry.register(ExportDatasetTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.

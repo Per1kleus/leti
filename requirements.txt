@@ -32,6 +32,14 @@ playwright>=1.45.0
 # Web search
 ddgs>=6.0.0
 
+# Data analysis: one pandas DataFrame is the common representation every format
+# loads into (tools/data_analysis.py). openpyxl is pandas' Excel engine, scipy
+# supplies the statistics and MATLAB .mat reading, matplotlib draws the charts.
+pandas>=2.2.0
+openpyxl>=3.1.0
+scipy>=1.13.0
+matplotlib>=3.8.0
+
 # Cybersecurity tools (port/process/connection inspection)
 psutil>=6.0.0
 

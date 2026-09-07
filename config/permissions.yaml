@@ -290,6 +290,24 @@ tools:
   delete_todo_item:
     action: execute
 
+  # --- Data analysis ---
+  # Reading and analysing don't change anything; the two that write a new file do.
+  # None of them ever modify the source dataset.
+  inspect_dataset:
+    action: read
+
+  analyze_dataset:
+    action: execute
+
+  clean_dataset:
+    action: modify
+
+  visualize_dataset:
+    action: modify
+
+  export_dataset:
+    action: modify
+
   # --- Project workspaces ---
   create_project:
     action: modify
