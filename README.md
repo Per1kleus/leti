@@ -363,6 +363,61 @@ Changes made through `/settings` apply immediately. The exceptions are values
 bound to a resource when Leti starts — the SQLite and Chroma paths, the loaded
 Whisper model, and the Ollama base URL and HTTP timeout — which need a restart.
 
+## What Leti can do
+
+The tools are one set, meant to be combined - a question that needs research,
+the numbers behind it, and a chart is one task, not three modes.
+
+**Research the web.** `web_search` takes several queries at once so a question
+gets approached from more than one angle. `research_topic` goes further: it runs
+those searches, opens the most relevant pages, spreads its reading across
+domains rather than taking six pages from one site, and returns their actual
+content attributed to source. Pages it couldn't read are reported rather than
+dropped, so a failed fetch never passes for a source. Pass `verify` with
+specific claims and it reports how many independent domains carry them - which
+shows consensus, not correctness, and says so. `add_social_watch` with platform
+`webpage` watches any URL for changes.
+
+**Write and run code.** `run_code` executes Python, JavaScript, TypeScript,
+Bash, MATLAB (falling back to Octave) or SQL and returns the real exit code,
+stdout and stderr - a failing run is a failure, never a success with a caveat.
+`run_tests` works out how a project is tested from its files. `inspect_project`
+reads a codebase's shape before you change it. Editing source is the file tools;
+git, builds and deploys are `run_shell_command`.
+
+**Analyse data.** CSV, TSV, TXT, Excel, JSON, JSON Lines, Parquet and MATLAB
+`.mat` all load the same way. `inspect_dataset` names what's wrong before
+anything is decided - missing values, duplicates, outliers, columns stored as
+text that hold numbers. `clean_dataset` does only what it's told and reports what
+each operation changed. `analyze_dataset` covers statistics, correlations, group
+comparisons, trends and regression; `visualize_dataset` draws it.
+
+**Engineering.** `engineering_calculate` evaluates expressions with units
+attached, so unit errors surface as errors instead of plausible wrong numbers.
+`check_dimensions` tests an equation before you trust it and distinguishes "the
+dimensions are wrong" from "the dimensions are right but the arithmetic isn't".
+`solve_symbolic` rearranges, differentiates and integrates. Nothing here is
+arithmetic done by the language model.
+
+**Business.** Record leads, income and expenses; every metric - conversion rate,
+weighted pipeline, margin, revenue by service, performance by channel - is
+computed from those records rather than stored. `business_next_actions` answers
+"who should I contact?", ranking open leads by stage-weighted value with the ones
+that have gone quiet first. People aren't duplicated here: a record links to the
+contact book by id.
+
+**Projects.** A project is a folder plus standing instructions that follow it
+into every conversation about it. They nest (`University/MATLAB`,
+`Business/Clients`), and the active project's instructions and file list go to
+the model each turn, so "continue the MATLAB project" resolves to something
+concrete. Work from the other tools lands in the active project's folder.
+
+**Scheduling.** A scheduled task is an instruction plus a schedule; when it
+fires it runs through the same tools, so "every Monday, research 20 potential
+clients and write a report" is one task. Every run is recorded, failures retry
+with backoff, and a task that keeps failing is disabled and reported rather than
+failing quietly forever.
+
 ## The icon
 
 `gui/icon.svg` is the source of truth. Three variants exist because one drawing
@@ -499,14 +554,20 @@ Every tool call passes through `SafetyGuard.authorize()` before it runs:
    forbidden-pattern list is a speed bump for catastrophic one-liners, not a
    security boundary — a blocklist can't enumerate every spelling of `rm`,
    which is why shell commands also always require confirmation.
-2. **Risk tiers** (`config/permissions.yaml`):
-   - `safe` — executes immediately (e.g. reading the screen, listing files,
-     web search).
-   - `risky` — requires a confirmation prompt (e.g. writing files, launching
-     an application, mouse/keyboard control).
-   - `destructive` — requires confirmation, is described to the user as
-     irreversible, and never accepts voice pre-approval (e.g. deleting files,
-     killing a process, running a shell command).
+2. **Action classes** (`config/permissions.yaml`) — each tool is classified by
+   what it does, and `safety.require_confirmation_for` in `settings.yaml`
+   decides which classes stop and ask you first (default: modify, external,
+   critical):
+   - `read` — reads information and changes nothing.
+   - `execute` — runs something reversible: a search, a calculation, code.
+   - `modify` — changes files, data or projects on this machine.
+   - `external` — affects something outside it: sends mail, posts, deploys.
+   - `critical` — irreversible or potentially damaging.
+
+   Two rules aren't configurable, since a setting that switched them off would
+   defeat the point: `critical` always asks even if you remove it from the list,
+   and `critical` never accepts approval inferred from a spoken request's
+   wording.
 3. **Audit log** — every authorization decision and execution result is
    appended to `logs/audit.log` as a JSON line, regardless of outcome. Argument
    values that are secrets or bulk content (a password typed into a form, a
