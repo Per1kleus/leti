@@ -1,0 +1,928 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#050b14">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+<style>
+  :root{
+    --void:#050b14;
+    --panel:#0a1420;
+    --panel-border:#12293a;
+    --cyan:#4fe3ff;
+    --cyan-dim:#1c6b82;
+    --ice:#d8f4ff;
+    --ice-dim:#5c7d8c;
+    --amber:#ffb454;
+  }
+  *{box-sizing:border-box;}
+  #leti-root{
+    background:radial-gradient(ellipse at 50% 30%, #081826 0%, var(--void) 65%);
+    color:var(--ice);
+    font-family:'Inter',sans-serif;
+    min-height:100%;
+    display:flex;
+    padding:22px;
+    gap:22px;
+    position:relative;
+    overflow:hidden;
+  }
+  #leti-root::before{
+    content:'';
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(79,227,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79,227,255,0.025) 1px, transparent 1px);
+    background-size:34px 34px;
+    pointer-events:none;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{ width:230px; flex-shrink:0; display:flex; flex-direction:column; gap:14px; z-index:1; }
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-radius:6px;
+    padding:13px 14px;
+    position:relative;
+  }
+  .panel::before{
+    content:'';
+    position:absolute; top:-1px; left:-1px;
+    width:10px; height:10px;
+    border-top:2px solid var(--cyan);
+    border-left:2px solid var(--cyan);
+    border-radius:5px 0 0 0;
+    opacity:0.85;
+  }
+  .panel-title{
+    font-family:'Rajdhani', sans-serif;
+    font-weight:600;
+    font-size:11px;
+    letter-spacing:2.5px;
+    color:var(--cyan);
+    text-transform:uppercase;
+    margin:0 0 9px;
+  }
+
+  /* Clock */
+  .clock-time{ font-family:'Share Tech Mono', monospace; font-size:27px; color:var(--ice); letter-spacing:1px; }
+  .clock-date{ font-family:'Share Tech Mono', monospace; font-size:11px; color:var(--ice-dim); margin-top:3px; }
+
+  /* Weather */
+  .weather-row{ display:flex; align-items:center; gap:11px; }
+  .weather-temp{ font-family:'Share Tech Mono', monospace; font-size:24px; color:var(--ice); }
+  .weather-desc{ font-size:12px; color:var(--ice-dim); margin-top:1px; }
+  .placeholder-tag{
+    font-family:'Share Tech Mono', monospace; font-size:9px; color:var(--cyan-dim);
+    letter-spacing:1px; margin-top:8px; opacity:0.8;
+  }
+
+  /* System stats */
+  .stat-row{ margin-bottom:9px; }
+  .stat-row:last-child{ margin-bottom:0; }
+  .stat-label{
+    display:flex; justify-content:space-between;
+    font-family:'Share Tech Mono', monospace; font-size:10.5px; color:var(--ice-dim);
+    margin-bottom:4px;
+  }
+  .stat-label span:last-child{ color:var(--cyan); }
+  .stat-track{ height:5px; background:#0f1f2c; border-radius:3px; overflow:hidden; }
+  .stat-fill{ height:100%; background:linear-gradient(90deg, var(--cyan-dim), var(--cyan)); border-radius:3px; transition:width 0.6s ease; }
+
+  /* Todo */
+  .todo-input-row{ display:flex; gap:6px; margin-bottom:10px; }
+  .todo-input-row input{
+    flex:1; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:12px; padding:6px 8px; outline:none;
+  }
+  .todo-input-row input:focus{ border-color:var(--cyan-dim); }
+  .todo-input-row button{
+    background:var(--cyan-dim); border:none; border-radius:4px; color:var(--void);
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; padding:0 12px; cursor:pointer;
+  }
+  .todo-input-row button:hover{ background:var(--cyan); }
+  .todo-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:150px; overflow-y:auto; }
+  .todo-item{ display:flex; align-items:center; gap:8px; font-size:12.5px; }
+  .todo-item .check{
+    width:14px; height:14px; border:1.5px solid var(--cyan-dim); border-radius:3px; flex-shrink:0;
+    cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  .todo-item.done .check{ background:var(--cyan-dim); }
+  .todo-item.done .check::after{ content:'✓'; font-size:10px; color:var(--void); }
+  .todo-item span.text{ flex:1; cursor:pointer; }
+  .todo-item.done span.text{ color:var(--ice-dim); text-decoration:line-through; }
+  .todo-item .del{ color:var(--ice-dim); cursor:pointer; font-size:14px; opacity:0.5; }
+  .todo-item .del:hover{ opacity:1; color:var(--amber); }
+
+  /* ---------- Main HUD ---------- */
+  .hud-main{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:1; gap:26px; position:relative; }
+  .hud-stage{ position:relative; width:400px; height:400px; }
+  .hud-stage svg{ width:100%; height:100%; overflow:visible; }
+  /* Rotation for .scan-ring/.tick-ring is done via native SVG <animateTransform>
+     (see the markup below), not CSS transform-origin - the latter is ambiguous
+     about whether px values mean SVG user-units or final rendered CSS pixels
+     when a viewBox and its rendered size don't match, and different
+     WebKit/WebView2/GTK engines have historically disagreed. animateTransform
+     always rotates in the SVG's own coordinate space, no ambiguity possible. */
+
+  .hud-label{
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    text-align:center; pointer-events:none;
+  }
+  .hud-label .wordmark{
+    font-family:'Rajdhani', sans-serif; font-weight:700; font-size:30px; letter-spacing:6px;
+    color:var(--ice); text-shadow:0 0 18px rgba(79,227,255,0.55);
+  }
+  .hud-label .state{
+    font-family:'Share Tech Mono', monospace; font-size:11px; letter-spacing:3px;
+    margin-top:6px; text-transform:uppercase; transition:color 0.3s;
+  }
+  .state.idle{ color:var(--cyan-dim); }
+  .state.listening{ color:var(--cyan); }
+  .state.speaking{ color:var(--amber); }
+
+  .hud-controls{ display:flex; gap:10px; align-items:center; }
+  .hud-btn{
+    background:transparent; border:1px solid var(--panel-border); color:var(--ice);
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; letter-spacing:0.5px;
+    padding:9px 18px; border-radius:5px; cursor:pointer; transition:border-color 0.2s, color 0.2s;
+  }
+  .hud-btn:hover{ border-color:var(--cyan); color:var(--cyan); }
+  .hud-btn.active{ border-color:var(--cyan); color:var(--cyan); background:rgba(79,227,255,0.08); }
+  .hud-note{ font-family:'Share Tech Mono', monospace; font-size:10px; color:var(--ice-dim); text-align:center; max-width:340px; }
+
+  /* ---------- Bottom chat bar + session panel ---------- */
+  .bottom-bar{
+    position:absolute; left:0; right:0; bottom:20px;
+    display:flex; gap:8px; padding:0 6px; z-index:2;
+  }
+  .icon-btn{
+    width:42px; height:42px; flex-shrink:0;
+    background:var(--panel); border:1px solid var(--panel-border); border-radius:6px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    color:var(--ice-dim); transition:border-color 0.2s, color 0.2s;
+  }
+  .icon-btn:hover, .icon-btn.active{ border-color:var(--cyan); color:var(--cyan); }
+  .chat-input{
+    flex:1; background:var(--panel); border:1px solid var(--panel-border); border-radius:6px;
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:0 14px; outline:none;
+  }
+  .chat-input:focus{ border-color:var(--cyan-dim); }
+  .send-btn{
+    background:var(--cyan-dim); border:none; border-radius:6px; color:var(--void);
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px; padding:0 20px; cursor:pointer;
+    flex-shrink:0; transition:background 0.2s;
+  }
+  .send-btn:hover{ background:var(--cyan); }
+
+  .session-panel{
+    position:absolute; left:0; right:0; bottom:72px;
+    max-height:0; opacity:0; overflow:hidden;
+    background:rgba(9,18,28,0.94); backdrop-filter:blur(8px);
+    border:1px solid var(--panel-border); border-radius:8px;
+    transition:max-height 0.3s ease, opacity 0.25s ease;
+    z-index:2;
+  }
+  .session-panel.open{ max-height:280px; opacity:1; }
+  .session-panel-inner{ padding:14px; max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:9px; }
+  .session-panel-title{
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:11px; letter-spacing:2.5px;
+    color:var(--cyan); text-transform:uppercase; margin-bottom:2px;
+  }
+  .msg{ font-size:12.5px; line-height:1.5; max-width:82%; padding:7px 12px; border-radius:8px; }
+  .msg.user{ align-self:flex-end; background:rgba(79,227,255,0.12); color:var(--ice); border:1px solid var(--cyan-dim); }
+  .msg.leti{ align-self:flex-start; background:rgba(216,244,255,0.06); color:var(--ice); border:1px solid var(--panel-border); }
+  .msg.system{ align-self:center; color:var(--ice-dim); font-family:'Share Tech Mono',monospace; font-size:10.5px; font-style:italic; text-align:center; }
+  .msg.visual{ align-self:flex-start; background:rgba(216,244,255,0.04); border:1px solid var(--panel-border); max-width:94%; padding:10px; }
+  .visual-title{
+    font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--cyan-dim);
+    text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;
+  }
+  .image-grid{ display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; }
+  .image-grid img{
+    width:100%; height:78px; object-fit:cover; border-radius:4px;
+    border:1px solid var(--panel-border); cursor:zoom-in; transition:border-color 0.15s;
+  }
+  .image-grid img:hover{ border-color:var(--cyan); }
+  .diagram-box{ background:#0a1420; border-radius:6px; padding:12px; overflow-x:auto; }
+  .diagram-box pre{ margin:0; font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--ice-dim); white-space:pre-wrap; }
+
+  .lightbox{
+    position:fixed; inset:0; background:rgba(2,6,12,0.92); z-index:50;
+    display:none; align-items:center; justify-content:center; cursor:zoom-out;
+  }
+  .lightbox.open{ display:flex; }
+  .lightbox img{ max-width:88%; max-height:88%; border-radius:6px; border:1px solid var(--cyan-dim); }
+
+  /* ---------- Settings modal (/settings) ---------- */
+  .settings-overlay{
+    position:fixed; inset:0; background:rgba(2,6,12,0.85); z-index:60;
+    display:none; align-items:center; justify-content:center;
+  }
+  .settings-overlay.open{ display:flex; }
+  .settings-panel{
+    background:var(--panel); border:1px solid var(--panel-border); border-radius:8px;
+    width:420px; max-width:90vw; max-height:80vh; overflow-y:auto;
+    padding:20px; position:relative;
+  }
+  .settings-panel-title{
+    font-family:'Rajdhani',sans-serif; font-weight:700; font-size:16px; letter-spacing:1px;
+    color:var(--ice); margin-bottom:14px; text-transform:uppercase;
+  }
+  .settings-close{
+    position:absolute; top:14px; right:16px; cursor:pointer; color:var(--ice-dim); font-size:20px; line-height:1;
+  }
+  .settings-close:hover{ color:var(--cyan); }
+  .settings-section-row{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:10px 12px; border:1px solid var(--panel-border); border-radius:6px;
+    margin-bottom:8px; cursor:pointer; transition:border-color 0.15s;
+  }
+  .settings-section-row:hover{ border-color:var(--cyan-dim); }
+  .settings-section-row .label{ font-size:13px; color:var(--ice); }
+  .settings-section-row .status{
+    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; text-transform:uppercase;
+  }
+  .settings-section-row .status.configured{ color:var(--cyan); }
+  .settings-section-row .status.unset{ color:var(--ice-dim); }
+  .settings-field{ margin-bottom:12px; }
+  .settings-field label{
+    display:block; font-family:'Share Tech Mono',monospace; font-size:10px;
+    color:var(--ice-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;
+  }
+  .settings-field input{
+    width:100%; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:7px 9px; outline:none;
+    box-sizing:border-box;
+  }
+  .settings-field input:focus{ border-color:var(--cyan-dim); }
+  .settings-actions{ display:flex; gap:8px; margin-top:16px; }
+  .settings-btn{
+    flex:1; font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px;
+    padding:9px; border-radius:5px; cursor:pointer; border:1px solid var(--panel-border);
+    background:transparent; color:var(--ice);
+  }
+  .settings-btn.primary{ background:var(--cyan-dim); color:var(--void); border-color:var(--cyan-dim); }
+  .settings-btn.primary:hover{ background:var(--cyan); }
+  .settings-btn.danger:hover{ border-color:var(--amber); color:var(--amber); }
+  .settings-back{
+    font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--cyan-dim);
+    cursor:pointer; margin-bottom:12px; display:inline-block;
+  }
+  .settings-back:hover{ color:var(--cyan); }
+  .settings-error{ color:var(--amber); font-size:12px; margin-top:8px; }
+</style>
+
+<div id="leti-root">
+  <div class="sidebar">
+    <div class="panel">
+      <div class="panel-title">Time</div>
+      <div class="clock-time" id="clockTime">--:--:--</div>
+      <div class="clock-date" id="clockDate">-</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Weather</div>
+      <div class="weather-row">
+        <div class="weather-temp" id="weatherTemp">--°</div>
+        <div><div class="weather-desc" id="weatherDesc">Loading...</div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">System</div>
+      <div class="stat-row">
+        <div class="stat-label"><span>CPU</span><span id="cpuVal">0%</span></div>
+        <div class="stat-track"><div class="stat-fill" id="cpuFill" style="width:0%"></div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label"><span>MEM</span><span id="memVal">0%</span></div>
+        <div class="stat-track"><div class="stat-fill" id="memFill" style="width:0%"></div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-label"><span>DISK</span><span id="diskVal">0%</span></div>
+        <div class="stat-track"><div class="stat-fill" id="diskFill" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Tasks</div>
+      <div class="todo-input-row">
+        <input type="text" id="todoInput" placeholder="Add a task..." />
+        <button id="todoAddBtn">+</button>
+      </div>
+      <ul class="todo-list" id="todoList"></ul>
+    </div>
+  </div>
+
+  <div class="hud-main">
+    <div class="hud-stage">
+      <svg viewBox="0 0 400 400">
+        <g class="scan-ring">
+          <animateTransform attributeName="transform" type="rotate" from="0 200 200" to="360 200 200" dur="22s" repeatCount="indefinite"/>
+          <circle cx="200" cy="200" r="188" fill="none" stroke="var(--panel-border)" stroke-width="1"/>
+          <path d="M 200 12 A 188 188 0 0 1 320 55" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.85"/>
+          <path d="M 380 200 A 188 188 0 0 1 345 320" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.6"/>
+          <path d="M 200 388 A 188 188 0 0 1 80 345" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
+        </g>
+        <g class="tick-ring" id="tickRing" stroke="var(--cyan-dim)" stroke-width="1.5">
+          <animateTransform attributeName="transform" type="rotate" from="360 200 200" to="0 200 200" dur="40s" repeatCount="indefinite"/>
+        </g>
+        <path id="orbPath" fill="rgba(79,227,255,0.08)" stroke="var(--cyan)" stroke-width="2"/>
+      </svg>
+      <div class="hud-label">
+        <div class="wordmark">LETI</div>
+        <div class="state idle" id="stateLabel">IDLE</div>
+      </div>
+    </div>
+
+    <div class="hud-controls">
+      <button class="hud-btn" id="micBtn">Enable Microphone</button>
+      <button class="hud-btn" id="simBtn">Simulate Speaking</button>
+    </div>
+    <div class="hud-note" id="hudNote">The ring reacts to live mic input if your browser allows it here, or use Simulate Speaking to preview the effect.</div>
+
+    <div class="session-panel" id="sessionPanel">
+      <div class="session-panel-inner" id="sessionPanelInner">
+        <div class="session-panel-title">Current Session</div>
+        <div class="msg system" id="emptyHint">No messages yet this session.</div>
+      </div>
+    </div>
+    <div class="bottom-bar">
+      <div class="icon-btn" id="historyBtn" title="Show current chat session">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      <input type="text" class="chat-input" id="chatInput" placeholder="Type to Leti..." />
+      <button class="send-btn" id="sendBtn">Send</button>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox">
+    <img id="lightboxImg" src="" />
+  </div>
+
+  <div class="settings-overlay" id="settingsOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="settingsClose">&times;</div>
+      <div id="settingsContent"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const root = document.getElementById('leti-root');
+
+  // ---------- WebSocket RPC: works identically for the desktop window and any
+  // phone/browser - both are just clients of the same local server. Reconnects
+  // automatically (phones suspend background tabs constantly), and re-sends the
+  // auth token from the URL (?token=...) on every (re)connect. ----------
+  const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const urlToken = new URLSearchParams(location.search).get('token') || '';
+  let ws = null;
+  let wsAuthed = false;
+  let callCounter = 0;
+  const pendingCalls = {};
+  const readyQueue = []; // calls made before the socket is authenticated wait here,
+                          // instead of guessing a fixed timeout and permanently failing.
+
+  function flushReadyQueue(){
+    const queued = readyQueue.splice(0, readyQueue.length);
+    queued.forEach(fn => fn());
+  }
+
+  function connectWS(){
+    ws = new WebSocket(wsProtocol + '//' + location.host + '/ws');
+    ws.onopen = () => { ws.send(JSON.stringify({type:'auth', token: urlToken})); };
+    ws.onclose = () => { wsAuthed = false; setTimeout(connectWS, 2000); };
+    ws.onerror = () => { try { ws.close(); } catch(e){} };
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch(e) { return; }
+      if(msg.type === 'auth_ok'){
+        wsAuthed = true;
+        flushReadyQueue();
+      } else if(msg.type === 'result' && pendingCalls[msg.id]){
+        pendingCalls[msg.id].resolve(msg.value);
+        delete pendingCalls[msg.id];
+      } else if(msg.type === 'error'){
+        if(msg.id && pendingCalls[msg.id]){
+          pendingCalls[msg.id].reject(new Error(msg.message));
+          delete pendingCalls[msg.id];
+        } else {
+          console.warn('Leti:', msg.message);
+        }
+      } else if(msg.type === 'push'){
+        const fn = window[msg.fn];
+        if(typeof fn === 'function') fn(...(msg.args || []));
+      }
+    };
+  }
+  connectWS();
+
+  function callApi(method, ...args){
+    return new Promise((resolve, reject) => {
+      const id = ++callCounter;
+      pendingCalls[id] = {resolve, reject};
+      const send = () => {
+        try {
+          ws.send(JSON.stringify({type:'call', id, method, args}));
+        } catch(e) {
+          delete pendingCalls[id];
+          reject(e);
+        }
+      };
+      if(ws && ws.readyState === WebSocket.OPEN && wsAuthed) send();
+      else readyQueue.push(send); // sent automatically the moment auth_ok arrives, however long that takes
+    });
+  }
+
+  // ---------- Clock ----------
+  function tickClock(){
+    const now = new Date();
+    document.getElementById('clockTime').textContent = now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    document.getElementById('clockDate').textContent = now.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'});
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  // ---------- System stats (real, via Python bridge) ----------
+  let stats = { cpu: 0, mem: 0, disk: 0 };
+  function renderStats(){
+    document.getElementById('cpuVal').textContent = Math.round(stats.cpu) + '%';
+    document.getElementById('cpuFill').style.width = stats.cpu + '%';
+    document.getElementById('memVal').textContent = Math.round(stats.mem) + '%';
+    document.getElementById('memFill').style.width = stats.mem + '%';
+    document.getElementById('diskVal').textContent = Math.round(stats.disk) + '%';
+    document.getElementById('diskFill').style.width = stats.disk + '%';
+  }
+  function refreshStats(){
+    callApi('get_system_stats').then(data => {
+      if(data.error) return;
+      stats = data;
+      renderStats();
+    }).catch(() => {});
+  }
+  refreshStats();
+  setInterval(refreshStats, 5000);
+
+  // ---------- Weather (real, via Python bridge) ----------
+  function refreshWeather(){
+    callApi('get_weather').then(data => {
+      if(data.error){
+        document.getElementById('weatherDesc').textContent = 'Unavailable';
+        return;
+      }
+      document.getElementById('weatherTemp').textContent = Math.round(data.temperature) + data.unit;
+      document.getElementById('weatherDesc').textContent = data.condition + ' · ' + data.location;
+    }).catch(() => { document.getElementById('weatherDesc').textContent = 'Unavailable'; });
+  }
+  refreshWeather();
+  setInterval(refreshWeather, 10 * 60 * 1000);
+
+  // ---------- Todo list (real, via Python bridge - same storage as conversational requests) ----------
+  let todos = [];
+  const todoListEl = document.getElementById('todoList');
+  function renderTodos(){
+    todoListEl.innerHTML = '';
+    todos.forEach((t) => {
+      const li = document.createElement('li');
+      li.className = 'todo-item' + (t.done ? ' done' : '');
+      const check = document.createElement('div');
+      check.className = 'check';
+      check.onclick = () => {
+        callApi('toggle_todo_item', t.id).then(() => {
+          t.done = !t.done;
+          renderTodos();
+        });
+      };
+      const span = document.createElement('span');
+      span.className = 'text';
+      span.textContent = t.text;
+      span.onclick = check.onclick;
+      const del = document.createElement('span');
+      del.className = 'del';
+      del.textContent = '×';
+      del.onclick = () => {
+        callApi('delete_todo_item', t.id).then(() => {
+          todos = todos.filter(x => x.id !== t.id);
+          renderTodos();
+        });
+      };
+      li.appendChild(check); li.appendChild(span); li.appendChild(del);
+      todoListEl.appendChild(li);
+    });
+  }
+  function loadTodos(){
+    callApi('get_todos').then(data => {
+      todos = data;
+      renderTodos();
+    }).catch(() => {});
+  }
+  loadTodos();
+  function addTodo(){
+    const input = document.getElementById('todoInput');
+    const val = input.value.trim();
+    if(!val) return;
+    input.value = '';
+    callApi('add_todo_item', val).then(item => {
+      todos.push(item);
+      renderTodos();
+    });
+  }
+  document.getElementById('todoAddBtn').onclick = addTodo;
+  document.getElementById('todoInput').addEventListener('keydown', e => { if(e.key === 'Enter') addTodo(); });
+
+  // ---------- Tick ring (decorative, drawn once) ----------
+  const tickRing = document.getElementById('tickRing');
+  const tickSvgNS = 'http://www.w3.org/2000/svg';
+  for(let i=0; i<48; i++){
+    const angle = (i / 48) * Math.PI * 2;
+    const r1 = 158, r2 = (i % 4 === 0) ? 148 : 153;
+    const x1 = 200 + r1*Math.cos(angle), y1 = 200 + r1*Math.sin(angle);
+    const x2 = 200 + r2*Math.cos(angle), y2 = 200 + r2*Math.sin(angle);
+    const line = document.createElementNS(tickSvgNS, 'line');
+    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+    line.setAttribute('opacity', i % 4 === 0 ? '0.9' : '0.35');
+    tickRing.appendChild(line);
+  }
+
+  // ---------- Audio-reactive orb ----------
+  const orbPath = document.getElementById('orbPath');
+  const stateLabel = document.getElementById('stateLabel');
+  const micBtn = document.getElementById('micBtn');
+  const simBtn = document.getElementById('simBtn');
+  const hudNote = document.getElementById('hudNote');
+  const BASE_R = 92, CENTER = 200, BINS = 48;
+
+  let mode = 'idle'; // idle | listening | speaking
+  let analyser = null, dataArray = null, audioCtx = null;
+  let simTimer = null, rafId = null, t = 0;
+
+  function smoothClosedPath(points){
+    let d = `M ${points[0][0]} ${points[0][1]} `;
+    const n = points.length;
+    for(let i=0; i<n; i++){
+      const p0 = points[(i-1+n)%n], p1 = points[i], p2 = points[(i+1)%n], p3 = points[(i+2)%n];
+      const c1x = p1[0] + (p2[0]-p0[0])/6, c1y = p1[1] + (p2[1]-p0[1])/6;
+      const c2x = p2[0] - (p3[0]-p1[0])/6, c2y = p2[1] - (p3[1]-p1[1])/6;
+      d += `C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2[0]} ${p2[1]} `;
+    }
+    return d + 'Z';
+  }
+
+  function drawOrb(amplitudes){
+    const points = amplitudes.map((amp, i) => {
+      const angle = (i / BINS) * Math.PI * 2 - Math.PI/2;
+      const r = BASE_R + amp * 46;
+      return [CENTER + r*Math.cos(angle), CENTER + r*Math.sin(angle)];
+    });
+    orbPath.setAttribute('d', smoothClosedPath(points));
+  }
+
+  function idleFrame(){
+    t += 0.02;
+    const amps = Array.from({length: BINS}, (_, i) => 0.12 + 0.05*Math.sin(t*1.4 + i*0.5));
+    drawOrb(amps);
+    rafId = requestAnimationFrame(idleFrame);
+  }
+
+  function listeningFrame(){
+    analyser.getByteFrequencyData(dataArray);
+    const step = Math.floor(dataArray.length / BINS);
+    const amps = Array.from({length: BINS}, (_, i) => (dataArray[i*step] || 0) / 255);
+    drawOrb(amps);
+    rafId = requestAnimationFrame(listeningFrame);
+  }
+
+  function listeningIdleFrame(){
+    // Used when Python reports 'listening' (the voice pipeline is actively
+    // recording) but the browser's own mic toggle was never enabled, so there's
+    // no real amplitude data to draw from - a distinct, slightly more alert
+    // pulse than idle rather than silently reusing the mic-driven animation.
+    t += 0.05;
+    const amps = Array.from({length: BINS}, (_, i) => 0.2 + 0.12*Math.sin(t*2.2 + i*0.35));
+    drawOrb(amps);
+    rafId = requestAnimationFrame(listeningIdleFrame);
+  }
+
+  function speakingFrame(){
+    t += 0.35;
+    const amps = Array.from({length: BINS}, (_, i) => {
+      const noise = Math.random() * 0.35;
+      const wave = 0.4 + 0.35*Math.sin(t + i*0.9) + 0.25*Math.sin(t*2.3 - i*0.4);
+      return Math.max(0.05, Math.min(1, (wave + noise) * 0.7));
+    });
+    drawOrb(amps);
+    rafId = requestAnimationFrame(speakingFrame);
+  }
+
+  function setMode(newMode){
+    mode = newMode;
+    if(rafId) cancelAnimationFrame(rafId);
+    stateLabel.textContent = newMode.toUpperCase();
+    stateLabel.className = 'state ' + newMode;
+    if(newMode === 'idle') idleFrame();
+    else if(newMode === 'listening') (analyser ? listeningFrame() : listeningIdleFrame());
+    else if(newMode === 'speaking') speakingFrame();
+  }
+
+  micBtn.onclick = async () => {
+    if(mode === 'listening'){
+      setMode('idle');
+      micBtn.classList.remove('active');
+      micBtn.textContent = 'Enable Microphone';
+      return;
+    }
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      source.connect(analyser); // not connected to destination - no feedback/echo
+      setMode('listening');
+      micBtn.classList.add('active');
+      micBtn.textContent = 'Disable Microphone';
+      hudNote.textContent = 'Live microphone input active - the ring is reacting to real audio.';
+    } catch(err){
+      hudNote.textContent = 'Microphone unavailable in this preview (browser blocked access) - try Simulate Speaking instead.';
+    }
+  };
+
+  simBtn.onclick = () => {
+    if(simTimer) clearTimeout(simTimer);
+    setMode('speaking');
+    simBtn.classList.add('active');
+    simTimer = setTimeout(() => {
+      setMode(analyser && audioCtx && audioCtx.state === 'running' ? 'listening' : 'idle');
+      simBtn.classList.remove('active');
+    }, 4000);
+  };
+
+  setMode('idle');
+
+  // ---------- Bottom chat input + session panel ----------
+  const sessionPanel = document.getElementById('sessionPanel');
+  const sessionPanelInner = document.getElementById('sessionPanelInner');
+  const historyBtn = document.getElementById('historyBtn');
+  const chatInput = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('sendBtn');
+
+  let sessionOpen = false;
+  function toggleSession(forceOpen){
+    sessionOpen = forceOpen !== undefined ? forceOpen : !sessionOpen;
+    sessionPanel.classList.toggle('open', sessionOpen);
+    historyBtn.classList.toggle('active', sessionOpen);
+    if(sessionOpen) sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  }
+  historyBtn.onclick = () => toggleSession();
+
+  function appendSessionMessage(role, text){
+    const hint = document.getElementById('emptyHint');
+    if(hint) hint.remove();
+    const div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.textContent = text;
+    sessionPanelInner.appendChild(div);
+    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  }
+
+  function sendChatMessage(){
+    const val = chatInput.value.trim();
+    if(!val) return;
+    if(val.toLowerCase() === '/settings'){
+      chatInput.value = '';
+      openSettingsModal();
+      return;
+    }
+    appendSessionMessage('user', val);
+    chatInput.value = '';
+    toggleSession(true);
+    // Fire-and-forget: the reply arrives asynchronously via appendLetiReply(),
+    // pushed from Python through the same speak_callback path voice-mode
+    // replies use - see gui/api.py's _make_gui_speak_callback.
+    callApi('send_text_message', val);
+  }
+  sendBtn.onclick = sendChatMessage;
+  chatInput.addEventListener('keydown', e => { if(e.key === 'Enter') sendChatMessage(); });
+
+  // ---------- Load current session history on startup (this session only) ----------
+  callApi('get_session_messages').then(messages => {
+    messages.forEach(m => appendSessionMessage(m.role === 'assistant' ? 'leti' : 'user', m.content));
+  }).catch(() => {});
+
+  // ---------- Functions the server pushes calls into (see the WebSocket 'push' handler above) ----------
+  window.appendLetiReply = function(text){ appendSessionMessage('leti', text); };
+  window.appendUserMessage = function(text){ appendSessionMessage('user', text); };
+  window.setHudState = function(state){ setMode(state); };
+  window.focusChatInput = function(){ chatInput.focus(); };
+
+  // ---------- Visual pop-ups (images, diagrams) ----------
+  const lightbox = document.getElementById('lightbox');
+  const lightboxImg = document.getElementById('lightboxImg');
+  lightbox.addEventListener('click', () => lightbox.classList.remove('open'));
+  function openLightbox(url){
+    lightboxImg.src = url;
+    lightbox.classList.add('open');
+  }
+
+  // ---------- Settings modal (/settings) ----------
+  const settingsOverlay = document.getElementById('settingsOverlay');
+  const settingsContent = document.getElementById('settingsContent');
+  document.getElementById('settingsClose').onclick = () => settingsOverlay.classList.remove('open');
+  settingsOverlay.addEventListener('click', (e) => {
+    if(e.target === settingsOverlay) settingsOverlay.classList.remove('open');
+  });
+
+  function openSettingsModal(){
+    settingsOverlay.classList.add('open');
+    renderSettingsList();
+  }
+
+  function renderSettingsList(){
+    settingsContent.innerHTML = '<div class="settings-panel-title">Settings</div>';
+    callApi('list_settings_sections').then(sections => {
+      sections.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'settings-section-row';
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = s.label;
+        const status = document.createElement('span');
+        status.className = 'status ' + (s.configured ? 'configured' : 'unset');
+        status.textContent = s.configured ? 'Configured' : 'Not set';
+        row.appendChild(label);
+        row.appendChild(status);
+        row.onclick = () => renderSettingsForm(s.name);
+        settingsContent.appendChild(row);
+      });
+    }).catch(() => {
+      const err = document.createElement('div');
+      err.className = 'settings-error';
+      err.textContent = 'Could not load settings - not connected yet?';
+      settingsContent.appendChild(err);
+    });
+  }
+
+  function renderSettingsForm(name){
+    callApi('get_settings_section', name).then(section => {
+      if(section.error){
+        settingsContent.innerHTML = `<div class="settings-error">${section.error}</div>`;
+        return;
+      }
+      settingsContent.innerHTML = '';
+
+      const back = document.createElement('div');
+      back.className = 'settings-back';
+      back.textContent = '‹ Back to settings';
+      back.onclick = renderSettingsList;
+      settingsContent.appendChild(back);
+
+      const title = document.createElement('div');
+      title.className = 'settings-panel-title';
+      title.textContent = section.label;
+      settingsContent.appendChild(title);
+
+      const inputs = {};
+      section.fields.forEach(f => {
+        const wrap = document.createElement('div');
+        wrap.className = 'settings-field';
+        const label = document.createElement('label');
+        label.textContent = f.label;
+        wrap.appendChild(label);
+        const input = document.createElement('input');
+        input.type = f.secret ? 'password' : 'text';
+        if(f.secret){
+          input.placeholder = f.is_set ? 'Currently set - leave blank to keep' : 'Not set';
+        } else if(f.is_set){
+          input.value = f.value;
+        } else if(f.example){
+          input.placeholder = 'e.g. ' + f.example;
+        } else if(f.default !== undefined && f.default !== null){
+          input.placeholder = 'Default: ' + f.default;
+        }
+        wrap.appendChild(input);
+        settingsContent.appendChild(wrap);
+        inputs[f.key] = input;
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'settings-actions';
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'settings-btn primary';
+      saveBtn.textContent = 'Save';
+      saveBtn.onclick = () => {
+        const values = {};
+        Object.keys(inputs).forEach(k => {
+          const v = inputs[k].value.trim();
+          if(v) values[k] = v;
+        });
+        callApi('update_settings_section', name, values).then(result => {
+          if(result.error){
+            let err = settingsContent.querySelector('.settings-error');
+            if(!err){
+              err = document.createElement('div');
+              err.className = 'settings-error';
+              settingsContent.appendChild(err);
+            }
+            err.textContent = result.error;
+          } else {
+            settingsOverlay.classList.remove('open');
+          }
+        });
+      };
+
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'settings-btn danger';
+      clearBtn.textContent = 'Clear';
+      clearBtn.onclick = () => {
+        callApi('clear_settings_section', name).then(() => renderSettingsList());
+      };
+
+      actions.appendChild(saveBtn);
+      actions.appendChild(clearBtn);
+      settingsContent.appendChild(actions);
+    });
+  }
+
+  function appendVisualImages(payload){
+    const hint = document.getElementById('emptyHint');
+    if(hint) hint.remove();
+    const div = document.createElement('div');
+    div.className = 'msg visual';
+    const title = document.createElement('div');
+    title.className = 'visual-title';
+    title.textContent = 'IMAGES · ' + (payload.query || '');
+    div.appendChild(title);
+    const grid = document.createElement('div');
+    grid.className = 'image-grid';
+    (payload.items || []).forEach(item => {
+      const img = document.createElement('img');
+      img.src = item.thumbnail || item.url;
+      img.alt = item.title || '';
+      img.title = item.title || '';
+      img.onclick = () => openLightbox(item.url || item.thumbnail);
+      grid.appendChild(img);
+    });
+    div.appendChild(grid);
+    sessionPanelInner.appendChild(div);
+    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  }
+
+  let mermaidReady = false;
+  try {
+    if(window.mermaid){
+      window.mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+      mermaidReady = true;
+    }
+  } catch(e) { mermaidReady = false; }
+
+  function appendVisualDiagram(payload){
+    const hint = document.getElementById('emptyHint');
+    if(hint) hint.remove();
+    const div = document.createElement('div');
+    div.className = 'msg visual';
+    const title = document.createElement('div');
+    title.className = 'visual-title';
+    title.textContent = 'DIAGRAM' + (payload.title ? ' · ' + payload.title : '');
+    div.appendChild(title);
+    const box = document.createElement('div');
+    box.className = 'diagram-box';
+    sessionPanelInner.appendChild(div);
+    div.appendChild(box);
+
+    if(mermaidReady){
+      const id = 'mmd-' + Math.random().toString(36).slice(2);
+      window.mermaid.render(id, payload.mermaid || '').then(({svg}) => {
+        box.innerHTML = svg;
+      }).catch(() => {
+        // Malformed mermaid syntax or a render hiccup - fall back to showing the raw
+        // source rather than a blank/broken box.
+        const pre = document.createElement('pre');
+        pre.textContent = payload.mermaid || '';
+        box.appendChild(pre);
+      });
+    } else {
+      // mermaid.js didn't load (e.g. no internet) - still show something useful.
+      const pre = document.createElement('pre');
+      pre.textContent = payload.mermaid || '';
+      box.appendChild(pre);
+    }
+    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  }
+
+  window.showVisual = function(payload){
+    toggleSession(true);
+    if(payload.type === 'images') appendVisualImages(payload);
+    else if(payload.type === 'diagram') appendVisualDiagram(payload);
+  };
+})();
+</script>

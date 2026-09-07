@@ -1,0 +1,218 @@
+# =============================================================================
+# Leti - Core Settings
+# =============================================================================
+
+app:
+  name: "Leti"
+  wake_word: "hey_leti"          # must match a trained/available openwakeword model name
+  wake_word_threshold: 0.5
+  interrupt_word: "stop leti"
+  default_mode: "push_to_talk"   # "push_to_talk" | "continuous"
+  ptt_hotkey: "<ctrl>+<space>"
+  log_level: "INFO"
+
+ollama:
+  host: "http://localhost:11434"
+  reasoning_model: "qwen2.5:14b"       # tool-calling capable model
+  fallback_reasoning_model: "mistral-nemo"
+  vision_model: "llama3.2-vision"
+  embedding_model: "nomic-embed-text"
+  request_timeout_seconds: 120
+  temperature: 0.3
+  # num_ctx is the model's context window. Ollama defaults to a conservative
+  # value (often 2048-4096) when this isn't set explicitly, regardless of what
+  # the model itself supports - and Leti's full tool list alone runs to roughly
+  # 9,000 tokens (before the system prompt, personality, memory, or conversation
+  # even come in). If num_ctx is too small, Ollama silently truncates the
+  # request rather than erroring, and the model effectively "forgets" whichever
+  # tools didn't make the cut - it looks exactly like the model not knowing a
+  # tool exists, with no error anywhere to point at the real cause. 16384 covers
+  # the current tool count with room for a real conversation; raise it further
+  # if you add many more tools or notice this happening again, and lower it if
+  # you're constrained on RAM/VRAM (a bigger context window costs more memory
+  # for the KV cache regardless of whether a given turn actually uses it).
+  num_ctx: 16384
+  max_tool_iterations: 8          # cap on chained tool calls per user turn
+
+stt:
+  engine: "whisper"                # openai-whisper
+  model_size: "base.en"            # tiny.en/base.en/small.en/medium.en/large-v3
+  device: "cpu"                    # "cpu" | "cuda"
+  fp16: false                      # set true if running on a CUDA GPU
+  silence_timeout_seconds: 1.2
+
+tts:
+  engine: "pyttsx3"
+  voice_id: ""                     # leave blank for system default; see README to list available voice IDs
+  rate: 180                        # words per minute
+  volume: 1.0                      # 0.0 - 1.0
+  interruptible: true
+
+memory:
+  vector_backend: "chromadb"
+  persist_dir: "./data/chroma"
+  sqlite_path: "./data/leti.db"
+  session_buffer_max_turns: 20
+  long_term_top_k: 5
+
+vision:
+  screenshot_dir: "./data/screenshots"
+  max_screenshot_age_seconds: 5    # reuse cached capture within this window
+  downscale_width: 1280            # resize before sending to vision model
+
+safety:
+  require_confirmation_for: ["risky", "destructive"]
+  confirmation_timeout_seconds: 15
+  dry_run: false                   # if true, tools report what they'd do but don't execute
+  audit_log_path: "./logs/audit.log"
+
+paths:
+  data_dir: "./data"
+  logs_dir: "./logs"
+
+# -----------------------------------------------------------------------------
+# Email - IMAP (read) + SMTP (send) over SSL with an app password.
+# Most providers (Gmail, Outlook, iCloud) require an "app password" rather
+# than your normal login password once 2FA is on - generate one in your
+# account security settings and put it here, not your real password.
+# Leave this whole section commented out / absent to disable email tools.
+# -----------------------------------------------------------------------------
+# email:
+#   imap_host: "imap.gmail.com"
+#   imap_port: 993
+#   smtp_host: "smtp.gmail.com"
+#   smtp_port: 465
+#   username: "you@gmail.com"
+#   app_password: "xxxx xxxx xxxx xxxx"
+#   vip_senders:            # substrings matched against the From header - always "crucial"
+#     - "boss@work.com"
+#     - "hr@work.com"
+
+# -----------------------------------------------------------------------------
+# Trading - Alpaca PAPER (simulated) account only. This is enforced in
+# tools/trading_platform.py by hardcoding the paper API endpoints, not by
+# this config - so there is no setting here that can turn this into live
+# trading with real money. Sign up for a free paper account at
+# https://alpaca.markets and use its paper API key/secret (not live keys).
+# -----------------------------------------------------------------------------
+# trading:
+#   api_key: "YOUR_ALPACA_PAPER_KEY"
+#   api_secret: "YOUR_ALPACA_PAPER_SECRET"
+#   watchlist:
+#     - "AAPL"
+#     - "TSLA"
+#     - "BTC/USD"
+
+# -----------------------------------------------------------------------------
+# Contacts - lets Leti resolve a name mentioned in conversation ("email
+# stavros") to the right saved contact, disambiguating between people who
+# share a name using tags/notes ("stavros the mechanic" vs "stavros the
+# plumber"). See tools/contacts.py. Stored at data/contacts.json by default.
+# -----------------------------------------------------------------------------
+# contacts:
+#   file_path: "./data/contacts.json"
+
+# -----------------------------------------------------------------------------
+# Calendar - CalDAV (works with Google Calendar, iCloud, Nextcloud, Fastmail,
+# and most other providers) using an app password, the same shape as the
+# email section above rather than a full OAuth2 browser consent flow.
+#   Google:   caldav_url "https://apidata.googleusercontent.com/caldav/v2/<your-email>/events"
+#   iCloud:   caldav_url "https://caldav.icloud.com" (username = Apple ID, app password required)
+#   Nextcloud/Fastmail: check their CalDAV docs for the exact URL.
+# calendar_name is optional - defaults to the first calendar found.
+# -----------------------------------------------------------------------------
+# calendar:
+#   caldav_url: "https://apidata.googleusercontent.com/caldav/v2/you@gmail.com/events"
+#   username: "you@gmail.com"
+#   app_password: "xxxx xxxx xxxx xxxx"
+#   calendar_name: ""
+
+# -----------------------------------------------------------------------------
+# Zoom - Server-to-Server OAuth app (Zoom App Marketplace -> Develop -> Build
+# App -> Server-to-Server OAuth). No per-user consent needed; the app acts as
+# the account owner. Needs the "Meeting:Write" scope.
+# -----------------------------------------------------------------------------
+# zoom:
+#   account_id: "YOUR_ZOOM_ACCOUNT_ID"
+#   client_id: "YOUR_ZOOM_CLIENT_ID"
+#   client_secret: "YOUR_ZOOM_CLIENT_SECRET"
+
+# -----------------------------------------------------------------------------
+# Microsoft Teams - Azure AD app registration with an application (not
+# delegated) permission of OnlineMeetings.ReadWrite.All, admin-consented.
+# organizer_user_id is the Microsoft 365 user/mailbox whose name the meeting
+# is created under (find it via Graph: GET /users/<email> -> "id").
+# -----------------------------------------------------------------------------
+# teams:
+#   tenant_id: "YOUR_AZURE_TENANT_ID"
+#   client_id: "YOUR_APP_CLIENT_ID"
+#   client_secret: "YOUR_APP_CLIENT_SECRET"
+#   organizer_user_id: "YOUR_M365_USER_OBJECT_ID"
+
+# -----------------------------------------------------------------------------
+# System health - thresholds run_health_check flags as an issue. All optional;
+# defaults are shown below and used for anything not overridden here.
+# -----------------------------------------------------------------------------
+# system_health:
+#   thresholds:
+#     cpu_percent: 90
+#     memory_percent: 85
+#     swap_percent: 60
+#     disk_percent: 90
+#     temperature_celsius: 85
+#     battery_low_percent: 15
+
+# -----------------------------------------------------------------------------
+# Personalization - Leti's personality dials (data/personality.json) and the
+# structured, editable memory of the user (data/user_profile.json). Both are
+# plain JSON files you can hand-edit directly if you'd rather not go through
+# conversation - see tools/personality.py and tools/user_profile.py.
+# -----------------------------------------------------------------------------
+# personality:
+#   file_path: "./data/personality.json"
+# user_profile:
+#   file_path: "./data/user_profile.json"
+
+# -----------------------------------------------------------------------------
+# Social media - YouTube/Reddit need no login (Reddit works out of the box;
+# YouTube needs a free API key). Instagram/TikTok/Facebook use a one-time
+# interactive login instead of a stored password - see login_to_social_platform
+# and tools/social_login.py. This is against those platforms' terms of
+# service even for your own account; realistic risk is a security challenge
+# or temporary lock if their bot-detection notices non-human patterns.
+# -----------------------------------------------------------------------------
+# social_media:
+#   youtube:
+#     api_key: "YOUR_YOUTUBE_DATA_API_V3_KEY"
+#   reddit:
+#     user_agent: "leti-personal-assistant/1.0 (by /u/your-reddit-username)"
+#   watches_file_path: "./data/social_watches.json"
+
+# -----------------------------------------------------------------------------
+# Weather (GUI dashboard) - Open-Meteo needs no API key. Location defaults to
+# free IP-based geolocation; set latitude/longitude here to override it.
+# -----------------------------------------------------------------------------
+# weather:
+#   latitude: 37.7749
+#   longitude: -122.4194
+#   location_label: "San Francisco, CA"
+#   unit: "celsius"   # or "fahrenheit"
+
+# -----------------------------------------------------------------------------
+# To-do list (GUI dashboard) - shared storage between GUI checkbox clicks and
+# conversational requests ("add X to my to-do list").
+# -----------------------------------------------------------------------------
+# todo_list:
+#   file_path: "./data/todo_list.json"
+
+# -----------------------------------------------------------------------------
+# GUI web server (--mode gui) - what makes Leti reachable from your phone or any
+# other device on the same network, not just this machine. Read the security
+# note in gui/server.py before enabling this on a network you don't trust:
+# loopback (this machine) is always trusted; anything else needs the printed
+# token. This is LAN-only - never port-forward it to the internet.
+# -----------------------------------------------------------------------------
+# gui:
+#   port: 8420
+#   enable_remote_access: true   # set false to restrict the GUI to this machine only
+#   token_file_path: "./data/gui_remote_token.txt"

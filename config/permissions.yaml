@@ -1,0 +1,290 @@
+# =============================================================================
+# Leti - Permission & Risk Tiers
+# =============================================================================
+# tiers:
+#   safe        -> executes immediately, always logged
+#   risky       -> requires spoken/typed confirmation before executing
+#   destructive -> requires explicit confirmation + is never allowed in continuous
+#                  listening mode (push-to-talk / typed confirmation only)
+#   forbidden   -> never executed, regardless of confirmation
+
+tools:
+  web_search:
+    tier: safe
+
+  read_screen:
+    tier: safe
+
+  read_file:
+    tier: safe
+
+  list_files:
+    tier: safe
+
+  write_file:
+    tier: risky
+
+  delete_file:
+    tier: destructive
+
+  move_file:
+    tier: risky
+
+  launch_app:
+    tier: safe
+
+  close_app:
+    tier: risky
+
+  focus_window:
+    tier: safe
+
+  mouse_click:
+    tier: risky
+
+  keyboard_type:
+    tier: risky
+
+  keyboard_hotkey:
+    tier: risky
+
+  run_shell_command:
+    tier: risky
+
+  browser_navigate:
+    tier: safe
+
+  browser_click:
+    tier: risky
+
+  browser_fill_form:
+    tier: risky
+
+  # --- Cybersecurity: network diagnostics (read-only) ---
+  scan_local_ports:
+    tier: safe
+
+  check_firewall_status:
+    tier: safe
+
+  list_lan_devices:
+    tier: safe
+
+  list_suspicious_processes:
+    tier: safe
+
+  check_startup_persistence:
+    tier: safe
+
+  detect_brute_force_attempts:
+    tier: safe
+
+  check_integrity:
+    tier: safe
+
+  # --- Cybersecurity: active defense / remediation (changes system state) ---
+  enable_firewall:
+    tier: risky
+
+  kill_process:
+    tier: destructive
+
+  create_security_snapshot:
+    tier: risky
+
+  restore_from_snapshot:
+    tier: destructive
+
+  # --- Email ---
+  list_new_emails:
+    tier: safe
+
+  send_email:
+    tier: risky
+
+  # --- Trading (paper/sandbox only - endpoints are hardcoded, never live) ---
+  get_trading_watchlist:
+    tier: safe
+
+  set_trading_watchlist:
+    tier: safe
+
+  get_market_quote:
+    tier: safe
+
+  evaluate_trading_strategy:
+    tier: safe
+
+  get_paper_positions:
+    tier: safe
+
+  place_paper_order:
+    tier: risky
+
+  # --- Contacts ---
+  add_contact:
+    tier: risky
+
+  list_contacts:
+    tier: safe
+
+  resolve_contact:
+    tier: safe
+
+  update_contact:
+    tier: risky
+
+  delete_contact:
+    tier: destructive
+
+  # --- Venture Scout / Red-Team / COO persona (pure text generation, no side effects) ---
+  scout_find_trends:
+    tier: safe
+
+  scout_stress_test:
+    tier: safe
+
+  # --- Meeting scheduling (creates real calendar events / video meetings) ---
+  schedule_meeting:
+    tier: risky
+
+  create_video_meeting_link:
+    tier: risky
+
+  send_meeting_invite_email:
+    tier: risky
+
+  # --- System health / performance / updates ---
+  get_system_specs:
+    tier: safe
+
+  run_health_check:
+    tier: safe
+
+  check_for_updates:
+    tier: safe
+
+  apply_system_updates:
+    tier: risky
+
+  # --- Personalization: personality dials (tone only, no real-world effect) ---
+  get_personality_settings:
+    tier: safe
+
+  set_personality:
+    tier: safe
+
+  apply_personality_preset:
+    tier: safe
+
+  reset_personality:
+    tier: safe
+
+  # --- Personalization: user profile (low-stakes personal notes) ---
+  remember_about_user:
+    tier: safe
+
+  set_user_name:
+    tier: safe
+
+  view_user_profile:
+    tier: safe
+
+  forget_user_fact:
+    tier: safe
+
+  clear_user_profile:
+    tier: destructive
+
+  # --- Social media: YouTube + Reddit (official, read-only), watches ---
+  get_subreddit_posts:
+    tier: safe
+
+  search_reddit:
+    tier: safe
+
+  get_youtube_channel_latest:
+    tier: safe
+
+  search_youtube_trending:
+    tier: safe
+
+  add_social_watch:
+    tier: safe
+
+  list_social_watches:
+    tier: safe
+
+  remove_social_watch:
+    tier: safe
+
+  check_social_watches:
+    tier: safe
+
+  # --- Social media: session-based login (Instagram/TikTok/Facebook) ---
+  login_to_social_platform:
+    tier: risky
+
+  logout_social_platform:
+    tier: safe
+
+  get_instagram_user_latest:
+    tier: safe
+
+  get_tiktok_user_latest:
+    tier: safe
+
+  get_facebook_page_latest:
+    tier: safe
+
+  # --- Dashboard data sources ---
+  get_weather:
+    tier: safe
+
+  add_todo_item:
+    tier: safe
+
+  list_todo_items:
+    tier: safe
+
+  complete_todo_item:
+    tier: safe
+
+  delete_todo_item:
+    tier: safe
+
+  # --- Visual output (images, diagrams) ---
+  search_images:
+    tier: safe
+
+  create_sketch:
+    tier: safe
+
+# Commands that are never allowed to run, even in "risky" mode, no matter the tool.
+forbidden_shell_patterns:
+  - "rm -rf /"
+  - "rm -rf /*"
+  - "mkfs"
+  - ":(){ :|:& };:"          # fork bomb
+  - "dd if=/dev/zero"
+  - "> /dev/sda"
+  - "shutdown"
+  - "reboot"
+  - "del /f /s /q C:\\"
+  - "format C:"
+  - "chmod -R 777 /"
+  - "curl | sh"
+  - "wget | sh"
+
+# Absolute paths Leti must never touch (read or write)
+protected_paths:
+  - "~/.ssh"
+  - "~/.aws"
+  - "~/.gnupg"
+  - "/etc"
+  - "/System"
+  - "C:\\Windows"
+  - "C:\\Users\\*\\AppData"
+
+# Domains the browser tool is not allowed to navigate to
+blocked_domains: []

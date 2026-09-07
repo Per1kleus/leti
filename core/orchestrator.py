@@ -1,0 +1,273 @@
+"""
+The Orchestrator is Leti's central nervous system. It:
+  1. Runs the state machine: IDLE -> LISTENING -> THINKING -> EXECUTING -> SPEAKING -> IDLE
+  2. Drives the LLM tool-calling loop: send messages+tools, execute any tool
+     calls the model requests (via SafetyGuard authorization), feed results
+     back, repeat until the model produces a final text answer.
+  3. Coordinates memory (session buffer + long-term recall) and speech I/O.
+
+This module is transport-agnostic: main.py decides whether input comes from
+voice (wake word + STT) or text (CLI/typed), and orchestrator just consumes
+"user said X" events and produces "Leti responds Y" events.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+from core.config_loader import get_settings
+from core.intent_signals import contains_explicit_approval, contains_explicit_denial
+from core.llm_client import OllamaClient
+from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
+from memory.session_memory import SessionMemory
+from memory.vector_store import VectorMemory
+from tools.base import ToolRegistry, ToolResult
+from tools.personality import describe_personality
+from tools.user_profile import profile_summary
+
+logger = logging.getLogger("leti.orchestrator")
+
+
+class AgentState(str, Enum):
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    EXECUTING = "executing"
+    SPEAKING = "speaking"
+
+
+SYSTEM_PROMPT = """You are Leti, a helpful, concise local AI assistant running on the user's own
+computer. You can see the user's screen, control their mouse/keyboard, run shell commands, manage
+files, browse the web, and search the web, via the tools provided to you.
+
+Guidelines:
+- Use tools whenever a request requires current information, screen context, or system actions.
+- Prefer the smallest number of tool calls that accomplish the task.
+- Never claim to have done something you did not actually call a tool to do.
+- If a tool call fails or is denied, tell the user plainly what happened and suggest an alternative.
+- Keep spoken responses short and natural; save detailed output (like file contents) for when asked.
+- Before emailing or messaging someone by name (not by a literal email address), ALWAYS call
+  resolve_contact first with the name and the topic/context of the message. If it returns
+  "ambiguous", stop and ask the user which specific person they meant (list the candidates'
+  distinguishing details, e.g. tags/company) - never guess between two people who share a name.
+  If it returns "not_found", tell the user and offer to add the contact. The same applies to
+  meeting participants named by name in schedule_meeting or send_meeting_invite_email.
+- When run_health_check reports issues, present each one plainly with its suggestion. If an
+  issue has a related_tool, ask the user whether to apply that fix before calling it - even
+  though the tool's own risk tier will also require confirmation, describe the fix in plain
+  terms first rather than just invoking it silently.
+- Proactively call remember_about_user when the user shares something durable worth carrying
+  into future sessions (name, preferences, interests, goals, communication style) - don't wait
+  to be asked, and don't announce it every time either; just do it naturally. Use set_user_name
+  the first time they introduce themselves or ask to be called something. If asked what you know
+  about them, use view_user_profile rather than guessing from memory.
+- If the user asks you to change your tone (funnier, more sarcastic, more serious, blunter, more
+  formal/casual, more or less detailed, etc.), call set_personality or apply_personality_preset
+  rather than just trying to act differently in this one response - the change should persist.
+- When the user says something like "notify me when X uploads/posts", that's a request to call
+  add_social_watch, not a one-time check - it should keep working next session too. Any time
+  check_social_watches reports new items, tell the user plainly which watch it was and what's new.
+- Use search_images whenever the user wants to SEE something (a picture/photo of X) rather than
+  read about it - the images appear automatically once the tool runs, so just call it, you don't
+  need to also describe the images in detail afterward. Use create_sketch only for genuinely
+  diagram-shaped explanations (a process, a decision flow, a sequence) - not as a substitute for
+  a normal explanation, and not for every technical answer.
+"""
+
+
+class Orchestrator:
+    def __init__(
+        self,
+        llm_client: OllamaClient,
+        tool_registry: ToolRegistry,
+        safety_guard: SafetyGuard,
+        session_memory: SessionMemory,
+        vector_memory: VectorMemory,
+        speak_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        visual_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+    ):
+        self.llm_client = llm_client
+        self.tool_registry = tool_registry
+        self.safety_guard = safety_guard
+        self.session_memory = session_memory
+        self.vector_memory = vector_memory
+        self.speak_callback = speak_callback
+        self.visual_callback = visual_callback
+
+        self.settings = get_settings()["ollama"]
+        self.state = AgentState.IDLE
+        self._state_listeners: List[Callable[[AgentState], None]] = []
+        self._preapproved_this_turn = False
+        self._checked_watches_this_session = False
+
+    def on_state_change(self, callback: Callable[[AgentState], None]) -> None:
+        self._state_listeners.append(callback)
+
+    def _set_state(self, state: AgentState) -> None:
+        self.state = state
+        logger.debug(f"State -> {state.value}")
+        for cb in self._state_listeners:
+            cb(state)
+
+    # ------------------------------------------------------------------ #
+    # Main entry point: handle one user utterance/turn end-to-end
+    # ------------------------------------------------------------------ #
+    async def handle_user_input(self, user_text: str, session_id: str = "default", voice_mode: bool = False) -> str:
+        self._set_state(AgentState.THINKING)
+        self.session_memory.add_turn("user", user_text, session_id)
+
+        # In voice mode, if what the user said already reads as clear approval/intent to
+        # proceed (and doesn't also contain a denial, e.g. "no wait"), skip the interactive
+        # confirmation prompt for any risky/destructive tool call this turn triggers - there's
+        # no natural way to type '-y' while talking, so the approval has to come from the
+        # request itself. Text mode is unaffected: it still shows the confirmation prompt,
+        # which now also accepts '-y' as a shorthand yes (see main.py).
+        self._preapproved_this_turn = (
+            voice_mode and contains_explicit_approval(user_text) and not contains_explicit_denial(user_text)
+        )
+
+        messages = await self._build_messages(user_text)
+        final_answer = await self._tool_calling_loop(messages)
+
+        self.session_memory.add_turn("assistant", final_answer, session_id)
+        await self._maybe_persist_to_long_term(user_text, final_answer)
+
+        if self.speak_callback:
+            self._set_state(AgentState.SPEAKING)
+            await self.speak_callback(final_answer)
+
+        self._set_state(AgentState.IDLE)
+        return final_answer
+
+    # ------------------------------------------------------------------ #
+    # Message construction: system prompt + recalled memory + recent turns
+    # ------------------------------------------------------------------ #
+    async def _build_messages(self, user_text: str) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        try:
+            messages.append({"role": "system", "content": describe_personality()})
+        except Exception as e:
+            logger.warning(f"Failed to load personality settings (continuing with defaults): {e}")
+
+        try:
+            profile_text = profile_summary()
+            if profile_text:
+                messages.append({"role": "system", "content": f"What you know about the user so far:\n{profile_text}"})
+        except Exception as e:
+            logger.warning(f"Failed to load user profile (continuing without it): {e}")
+
+        if not self._checked_watches_this_session:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "This is the start of a new session. If any social media watches are "
+                    "configured, call check_social_watches now, before anything else, to catch "
+                    "the user up on anything missed since last time - regardless of how long "
+                    "it's been. If it reports nothing new (or no watches exist), just continue "
+                    "with the user's actual request without mentioning the check."
+                ),
+            })
+            self._checked_watches_this_session = True
+
+        try:
+            recalled = await self.vector_memory.search(user_text)
+            if recalled:
+                memory_context = "\n".join(f"- {m['text']}" for m in recalled)
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"Relevant things you remember about the user:\n{memory_context}",
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Long-term memory recall failed (continuing without it): {e}")
+
+        messages.extend(self.session_memory.get_recent_messages())
+        messages.append({"role": "user", "content": user_text})
+        return messages
+
+    # ------------------------------------------------------------------ #
+    # Tool-calling loop
+    # ------------------------------------------------------------------ #
+    async def _tool_calling_loop(self, messages: List[Dict[str, Any]]) -> str:
+        max_iterations = self.settings.get("max_tool_iterations", 8)
+        tool_schemas = self.tool_registry.all_schemas()
+
+        for iteration in range(max_iterations):
+            response = await self.llm_client.chat(messages, tools=tool_schemas)
+            message = response.get("message", {})
+            tool_calls = message.get("tool_calls")
+
+            if not tool_calls:
+                return message.get("content", "").strip() or "I don't have a response for that."
+
+            messages.append(message)
+            self._set_state(AgentState.EXECUTING)
+
+            for call in tool_calls:
+                result = await self._execute_tool_call(call)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": json.dumps(result.to_dict()),
+                    }
+                )
+                # Visual content (image results, diagrams) is pushed directly to whatever
+                # surface can show it (the GUI), independent of what the model ends up
+                # saying in text - a tool result carrying a "visual" key is shown
+                # immediately rather than waiting on/depending on the model to describe it.
+                if result.success and self.visual_callback and isinstance(result.output, dict):
+                    visual = result.output.get("visual")
+                    if visual:
+                        try:
+                            await self.visual_callback(visual)
+                        except Exception:
+                            logger.exception("visual_callback failed")
+
+            self._set_state(AgentState.THINKING)
+
+        logger.warning("Max tool iterations reached without a final answer.")
+        return "I made several attempts but couldn't complete that within my step limit. Want me to keep going?"
+
+    async def _execute_tool_call(self, call: Dict[str, Any]) -> ToolResult:
+        fn = call.get("function", {})
+        tool_name = fn.get("name", "")
+        arguments = fn.get("arguments", {}) or {}
+
+        tool = self.tool_registry.get(tool_name)
+        if tool is None:
+            return ToolResult(success=False, error=f"Unknown tool: '{tool_name}'")
+
+        try:
+            await self.safety_guard.authorize(tool_name, arguments, preapproved=self._preapproved_this_turn)
+        except PermissionDenied as e:
+            return ToolResult(success=False, error=f"Blocked: {e}")
+        except ConfirmationDenied as e:
+            return ToolResult(success=False, error=f"Not confirmed: {e}")
+
+        try:
+            result = await tool.run(**arguments)
+            await self.safety_guard.audit_result(tool_name, arguments, result.success, result.error or "")
+            return result
+        except Exception as e:
+            logger.exception(f"Tool '{tool_name}' raised an exception")
+            await self.safety_guard.audit_result(tool_name, arguments, False, str(e))
+            return ToolResult(success=False, error=str(e))
+
+    # ------------------------------------------------------------------ #
+    # Long-term memory writeback
+    # ------------------------------------------------------------------ #
+    async def _maybe_persist_to_long_term(self, user_text: str, answer: str) -> None:
+        """Naive heuristic: persist statements that look like preferences/facts.
+        A more advanced version could ask the LLM to decide what's worth remembering."""
+        lowered = user_text.lower()
+        memorable_triggers = ("remember that", "i prefer", "i like", "i always", "i never", "my ", "call me")
+        if any(trigger in lowered for trigger in memorable_triggers):
+            try:
+                await self.vector_memory.add_memory(user_text, metadata={"source": "user_statement"})
+            except Exception as e:
+                logger.warning(f"Failed to persist long-term memory: {e}")

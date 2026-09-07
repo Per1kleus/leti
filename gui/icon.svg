@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#050b14"/>
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#12293a" stroke-width="10"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#1c6b82" stroke-width="8"/>
+  <circle cx="256" cy="256" r="96" fill="rgba(79,227,255,0.08)" stroke="#4fe3ff" stroke-width="10"/>
+  <path d="M 256 76 A 180 180 0 0 1 410 150" fill="none" stroke="#4fe3ff" stroke-width="14" stroke-linecap="round" opacity="0.85"/>
+  <path d="M 436 256 A 180 180 0 0 1 390 396" fill="none" stroke="#4fe3ff" stroke-width="14" stroke-linecap="round" opacity="0.6"/>
+  <text x="256" y="272" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="52" letter-spacing="6" fill="#d8f4ff">LETI</text>
+</svg>

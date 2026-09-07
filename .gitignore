@@ -1,0 +1,26 @@
+# --- Secrets and credentials (NEVER commit) ----------------------------------
+# Written by the /settings command: IMAP/SMTP app passwords, Zoom/Teams client
+# secrets, Alpaca API keys.
+config/settings.local.yaml
+# Playwright storage_state for Instagram/TikTok/Facebook - live session cookies.
+data/social_sessions/
+# Shared secret for the GUI's LAN access.
+data/gui_remote_token.txt
+
+# --- Runtime state and personal data -----------------------------------------
+data/
+logs/
+
+# --- Python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- Editors / OS ------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
