@@ -290,6 +290,25 @@ tools:
   delete_todo_item:
     action: execute
 
+  # --- Scheduling ---
+  # A scheduled task runs an instruction through the whole tool set later, without
+  # the user present - so creating one is a `modify` action they confirm, and each
+  # tool the task itself calls is still authorised normally when it fires.
+  create_scheduled_task:
+    action: modify
+
+  update_scheduled_task:
+    action: modify
+
+  run_scheduled_task_now:
+    action: execute
+
+  list_scheduled_tasks:
+    action: read
+
+  delete_scheduled_task:
+    action: modify
+
   # --- Business intelligence ---
   business_dashboard:
     action: read

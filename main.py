@@ -142,6 +142,15 @@ from tools.business import (
     BusinessDashboardTool,
     NextActionsTool,
 )
+from tools.scheduler import (
+    CreateScheduledTaskTool,
+    ListScheduledTasksTool,
+    UpdateScheduledTaskTool,
+    DeleteScheduledTaskTool,
+    RunScheduledTaskNowTool,
+    SchedulerRunner,
+    set_runner,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 
@@ -314,6 +323,16 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ListBusinessDataTool())
     registry.register(BusinessDashboardTool())
     registry.register(NextActionsTool())
+
+    # Scheduling: a task is an instruction plus a schedule, and it runs through the
+    # orchestrator when it fires - so it reaches every capability above without the
+    # scheduler knowing any of them exist. Scheduled meetings are just tasks whose
+    # instruction calls the existing schedule_meeting tools.
+    registry.register(CreateScheduledTaskTool())
+    registry.register(ListScheduledTasksTool())
+    registry.register(UpdateScheduledTaskTool())
+    registry.register(DeleteScheduledTaskTool())
+    registry.register(RunScheduledTaskNowTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.
@@ -503,13 +522,26 @@ async def build_app():
         session_memory=session_memory,
         vector_memory=vector_memory,
     )
-    return llm_client, browser_session, social_login_manager, orchestrator, safety_guard
+
+    # The scheduler runs tasks through this orchestrator, so it can only start once
+    # the orchestrator exists. Failure notifications go wherever replies go, which
+    # in GUI mode is the chat and in voice mode is spoken.
+    async def notify_failure(message: str) -> None:
+        logger.warning(message)
+        if orchestrator.speak_callback:
+            await orchestrator.speak_callback(message)
+
+    scheduler = SchedulerRunner(orchestrator, notify=notify_failure)
+    set_runner(scheduler)
+    scheduler.start()
+
+    return llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler
 
 
 async def main(args) -> None:
     """CLI modes only (text/voice/continuous). GUI mode is handled by run_gui()
     instead, called directly from __main__ - see its docstring for why."""
-    llm_client, browser_session, social_login_manager, orchestrator, safety_guard = await build_app()
+    llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler = await build_app()
 
     try:
         if args.mode == "text":
@@ -521,6 +553,7 @@ async def main(args) -> None:
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
+        await scheduler.stop()
         await llm_client.close()
         await browser_session.close()
         await social_login_manager.close()
@@ -537,7 +570,7 @@ def run_gui() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    llm_client, browser_session, social_login_manager, orchestrator, safety_guard = \
+    llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler = \
         loop.run_until_complete(build_app())
 
     from gui.api import run_gui_mode
@@ -545,8 +578,8 @@ def run_gui() -> None:
         run_gui_mode(orchestrator, safety_guard, loop, continuous_voice=True)
     finally:
         loop.run_until_complete(asyncio.gather(
-            llm_client.close(), browser_session.close(), social_login_manager.close(),
-            return_exceptions=True,
+            scheduler.stop(), llm_client.close(), browser_session.close(),
+            social_login_manager.close(), return_exceptions=True,
         ))
         loop.close()
 

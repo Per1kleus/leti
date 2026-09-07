@@ -75,6 +75,13 @@ safety:
 projects:
   root: "./data/projects"
 
+# Scheduled tasks (see tools/scheduler.py). A task that fails this many times in
+# a row is disabled automatically and the failure reported, rather than failing
+# quietly forever.
+scheduler:
+  disable_after_failures: 5
+#   file_path: "./data/scheduled_tasks.json"
+
 # Business records (see tools/business.py). stage_weights is what each pipeline
 # stage is worth when weighting the pipeline - the defaults are conventional
 # sales-funnel probabilities; set your own if your business converts differently.
