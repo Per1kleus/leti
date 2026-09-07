@@ -26,6 +26,7 @@ from memory.session_memory import SessionMemory
 from memory.vector_store import VectorMemory
 from tools.base import ToolRegistry, ToolResult
 from tools.personality import describe_personality
+from tools.projects import get_active_project, project_context
 from tools.user_profile import profile_summary
 
 logger = logging.getLogger("leti.orchestrator")
@@ -80,6 +81,11 @@ Guidelines:
   what it actually says rather than a snippet, and open_url hands a page to the user to
   look at themselves. When a search result doesn't clearly answer the question, read the
   page instead of guessing from the snippet.
+- Work inside the user's projects. If a project is active its instructions and files are
+  in your context above - follow those instructions, put new files in that project's
+  folder, and read what's already there before adding to it. When the user refers to a
+  project by name ("continue the MATLAB project"), call open_project first. Only create
+  a project when the user asks for one or is clearly starting durable new work.
 - Use search_images whenever the user wants to SEE something (a picture/photo of X) rather than
   read about it - the images appear automatically once the tool runs, so just call it, you don't
   need to also describe the images in detail afterward. Use create_sketch only for genuinely
@@ -187,6 +193,16 @@ class Orchestrator:
             messages.append({"role": "system", "content": describe_personality()})
         except Exception as e:
             logger.warning(f"Failed to load personality settings (continuing with defaults): {e}")
+
+        # The active project's instructions and file list, so "continue the MATLAB
+        # project" resolves to something concrete rather than a name the model has
+        # to guess the contents of.
+        try:
+            active = get_active_project()
+            if active:
+                messages.append({"role": "system", "content": project_context(active)})
+        except Exception as e:
+            logger.warning(f"Failed to load project context (continuing without it): {e}")
 
         try:
             profile_text = profile_summary()

@@ -70,6 +70,11 @@ safety:
   dry_run: false
   audit_log_path: "./logs/audit.log"
 
+# Project workspaces (see tools/projects.py). Each project is a real folder here,
+# so you can open it in a file manager; nesting is a real directory hierarchy.
+projects:
+  root: "./data/projects"
+
 paths:
   data_dir: "./data"
   logs_dir: "./logs"

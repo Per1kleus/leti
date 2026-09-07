@@ -106,6 +106,15 @@ from tools.social_login import (
 )
 from tools.weather import GetWeatherTool
 from tools.todo_list import AddTodoItemTool, ListTodoItemsTool, CompleteTodoItemTool, DeleteTodoItemTool
+from tools.projects import (
+    CreateProjectTool,
+    ListProjectsTool,
+    OpenProjectTool,
+    CloseProjectTool,
+    UpdateProjectTool,
+    GetProjectContextTool,
+    DeleteProjectTool,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 
@@ -232,6 +241,17 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ListTodoItemsTool())
     registry.register(CompleteTodoItemTool())
     registry.register(DeleteTodoItemTool())
+
+    # Project workspaces: a persistent folder + standing instructions per project.
+    # Everything a project "contains" is files in its folder, so the file, coding
+    # and data tools operate on projects without needing to know about them.
+    registry.register(CreateProjectTool())
+    registry.register(ListProjectsTool())
+    registry.register(OpenProjectTool())
+    registry.register(CloseProjectTool())
+    registry.register(UpdateProjectTool())
+    registry.register(GetProjectContextTool())
+    registry.register(DeleteProjectTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.

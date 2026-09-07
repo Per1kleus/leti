@@ -267,6 +267,29 @@ tools:
   delete_todo_item:
     action: execute
 
+  # --- Project workspaces ---
+  create_project:
+    action: modify
+
+  list_projects:
+    action: read
+
+  get_project_context:
+    action: read
+
+  open_project:
+    action: execute
+
+  close_project:
+    action: execute
+
+  update_project:
+    action: modify
+
+  # Removes a folder and everything in it, with no recycle bin.
+  delete_project:
+    action: critical
+
   # --- Visual output (images, diagrams) ---
   search_images:
     action: execute
