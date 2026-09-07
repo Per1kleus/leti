@@ -98,6 +98,12 @@ class LetiWebServer:
         self.app.router.add_get("/manifest.json", self._handle_manifest)
         self.app.router.add_get("/sw.js", self._handle_service_worker)
         self.app.router.add_get("/icon.svg", self._handle_icon)
+        # Raster icons for the PWA install prompt and the browser tab. Android
+        # Chrome wants a real PNG for the home-screen icon; an SVG alone is
+        # accepted inconsistently across versions.
+        icons_dir = GUI_DIR / "icons"
+        if icons_dir.is_dir():
+            self.app.router.add_static("/icons/", path=str(icons_dir), name="icons")
         # Optional local copies of third-party assets, so the HUD can be made to
         # work with no internet at all - see the mermaid comment in hud.html.
         # Only created if the user actually vendors something.
@@ -119,7 +125,15 @@ class LetiWebServer:
         manifest = {
             "name": "Leti", "short_name": "Leti", "start_url": "/", "display": "standalone",
             "background_color": "#050b14", "theme_color": "#050b14",
-            "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}],
+            "icons": [
+                {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+                {"src": "/icons/leti-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/leti-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                # Maskable: Android crops the icon to the launcher's shape, so this
+                # entry promises the mark stays inside the safe zone when it does.
+                {"src": "/icons/leti-maskable-512.png", "sizes": "512x512", "type": "image/png",
+                 "purpose": "maskable"},
+            ],
         }
         return web.json_response(manifest)
 

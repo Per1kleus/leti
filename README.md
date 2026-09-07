@@ -363,6 +363,39 @@ Changes made through `/settings` apply immediately. The exceptions are values
 bound to a resource when Leti starts — the SQLite and Chroma paths, the loaded
 Whisper model, and the Ollama base URL and HTTP timeout — which need a restart.
 
+## The icon
+
+`gui/icon.svg` is the source of truth. Three variants exist because one drawing
+can't serve every size: the full mark has a HUD ring that turns to a smudge at
+taskbar size, so `gui/icon-small.svg` drops the ring and enlarges the "L" for
+the 16-32px entries, and `gui/icon-maskable.svg` is full-bleed with the mark
+pulled into Android's safe zone, since launchers crop home-screen icons to the
+device's own shape.
+
+Edit an SVG, then regenerate the PNG/`.ico`/`.icns` files in `gui/icons/`:
+
+```
+python scripts/build_icons.py
+```
+
+They're committed so that double-clicking a launcher never needs a build step.
+
+Where the icon actually gets used:
+
+| Surface | Wiring |
+| --- | --- |
+| App window (GTK/Qt) | automatic — `gui/api.py` passes it to pywebview |
+| Browser tab / phone home screen | automatic — served by `gui/server.py` |
+| Linux desktop + app menu | `./scripts/install_linux_launcher.sh` |
+| Windows desktop + Start Menu | `powershell -ExecutionPolicy Bypass -File scripts\install_windows_launcher.ps1` |
+| macOS `.command` file in Finder | `./scripts/install_macos_icon.sh` |
+
+The three install scripts are one-time setup. Windows needs one because a `.bat`
+file can't carry an icon at all — Windows always draws the generic script icon —
+so the icon has to live on a shortcut pointing at it. macOS needs one because a
+custom file icon is an extended attribute applied on the machine, not something
+that can ship in a repo.
+
 ## Tests
 
 ```
@@ -408,9 +441,12 @@ leti/
 │   └── settings_editor.py     # The /settings command - schema-driven, no LLM involved
 ├── gui/
 │   ├── hud.html                # The HUD interface (audio-reactive ring, dashboard, chat)
+│   ├── icon.svg                # Icon source: full mark (48px and up)
+│   ├── icon-small.svg          # Icon source: simplified, for 16-32px
+│   ├── icon-maskable.svg       # Icon source: full-bleed, for Android launchers
+│   ├── icons/                  # Generated PNG/.ico/.icns - see scripts/build_icons.py
 │   ├── server.py               # HTTP+WebSocket server (aiohttp) - what phones/browsers connect to
-│   ├── api.py                  # Orchestrator-facing backend, voice loop, TTS wiring
-│   └── icon.svg                # PWA home-screen icon
+│   └── api.py                  # Orchestrator-facing backend, voice loop, TTS wiring
 ├── audio/
 │   ├── wake_word.py           # OpenWakeWord engine
 │   ├── stt.py                 # openai-whisper stream/PTT handler

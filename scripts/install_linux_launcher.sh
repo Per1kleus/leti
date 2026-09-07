@@ -13,13 +13,15 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_SCRIPT="$PROJECT_DIR/scripts/_run_gui_mode.sh"
 chmod +x "$RUN_SCRIPT"
 
+# A PNG rather than the SVG: every desktop environment renders a PNG in a
+# .desktop entry, while SVG support varies by icon-theme implementation.
 DESKTOP_FILE_CONTENT="[Desktop Entry]
 Type=Application
 Name=Leti
 Comment=Launch Leti's interface
 Exec=$RUN_SCRIPT
 Path=$PROJECT_DIR
-Icon=$PROJECT_DIR/gui/icon.svg
+Icon=$PROJECT_DIR/gui/icons/leti-256.png
 Terminal=true
 Categories=Utility;
 "

@@ -24,6 +24,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any, Set
 
 from core.orchestrator import Orchestrator
@@ -295,7 +296,17 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
             "Leti", f"http://127.0.0.1:{server.port}/", width=1180, height=760,
             background_color="#050b14",
         )
-        webview.start()  # blocks until the window is closed
+        # Window/taskbar icon. pywebview takes this on its GTK and Qt backends;
+        # older versions don't accept the argument at all, and on Windows/macOS
+        # the window icon comes from the launcher shortcut or app bundle instead
+        # (see scripts/install_windows_launcher.ps1 and install_macos_icon.sh).
+        # Falling back to a plain start() keeps a missing icon from being the
+        # reason the app won't open.
+        icon_path = Path(__file__).parent / "icons" / "leti-512.png"
+        try:
+            webview.start(icon=str(icon_path))
+        except TypeError:
+            webview.start()  # blocks until the window is closed
     else:
         print("(pywebview not installed - no desktop window will open, but the web")
         print(" interface above is fully usable from any browser, including this")
