@@ -9,6 +9,10 @@ tools:
   read_screen:
     action: execute
 
+  # Searches and reads public pages. Reversible, reaches nothing private.
+  research_topic:
+    action: execute
+
   read_file:
     action: read
 

@@ -30,6 +30,7 @@ from tools.browser import (
     BrowserNavigateTool,
     BrowserReadPageTool,
     BrowserSession,
+    set_shared_session,
 )
 from tools.file_manager import DeleteFileTool, ListFilesTool, MoveFileTool, ReadFileTool, WriteFileTool
 from tools.os_control import (
@@ -43,7 +44,7 @@ from tools.os_control import (
 )
 from tools.shell_runner import ShellRunnerTool
 from tools.vision import ReadScreenTool
-from tools.web_search import WebSearchTool
+from tools.web_search import ResearchTopicTool, WebSearchTool
 from tools.network_security import ScanLocalPortsTool, FirewallStatusTool, LanDeviceListTool
 from tools.system_defense import (
     EnableFirewallTool,
@@ -141,8 +142,12 @@ def _apply_log_level() -> None:
 
 def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSession, social_login_manager: SocialLoginManager) -> ToolRegistry:
     registry = ToolRegistry()
+    # Modules that need page text (webpage watches) reach this same browser.
+    set_shared_session(browser_session)
+
     registry.register(ReadScreenTool(llm_client))
     registry.register(WebSearchTool())
+    registry.register(ResearchTopicTool(browser_session))
     registry.register(ReadFileTool())
     registry.register(WriteFileTool())
     registry.register(ListFilesTool())

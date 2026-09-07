@@ -17,6 +17,7 @@ only checks after that report anything.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -29,7 +30,13 @@ from core.config_loader import get_settings, resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 
 DEFAULT_REDDIT_USER_AGENT = "leti-personal-assistant/1.0 (by /u/leti-user)"
-WATCHABLE_PLATFORMS = ["youtube", "reddit_user", "reddit_subreddit", "instagram", "tiktok", "facebook"]
+# "webpage" extends the watch mechanism to any URL rather than adding a second
+# monitoring system: add/list/remove/check, the last_seen_id diffing and the
+# stored state are all the same machinery, and a page is just another source
+# whose "latest item" is its current content.
+WATCHABLE_PLATFORMS = [
+    "youtube", "reddit_user", "reddit_subreddit", "instagram", "tiktok", "facebook", "webpage",
+]
 
 
 # --- Reddit (public JSON, no login required) ------------------------------------
@@ -315,6 +322,32 @@ def _save_watches(watches: List[Dict[str, Any]]) -> None:
     atomic_write_json(_watches_path(), watches)
 
 
+async def _fetch_webpage_state(url: str) -> List[Dict[str, Any]]:
+    """One "item" representing the page as it is now, identified by a hash of its
+    text. When the page changes the id changes, which the watch loop already reads
+    as new content - no separate change-detection path needed.
+
+    Read through the shared BrowserSession so a watched page sees the same
+    rendering as everything else Leti reads, including JavaScript-built pages.
+    """
+    from tools.browser import get_shared_session
+
+    page = await get_shared_session().read_text(url, max_characters=20000)
+    if not page.get("ok"):
+        raise RuntimeError(f"Couldn't read {url}: {page.get('error', 'no content')}")
+
+    text = page.get("text", "")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    excerpt = text[:400]
+    return [{
+        "id": digest,
+        "url": page.get("url", url),
+        "title": page.get("title", ""),
+        "excerpt": excerpt,
+        "characters": len(text),
+    }]
+
+
 async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Returns the platform's current latest items for a watch, most-recent-first,
     each with at least an 'id' field usable for last_seen_id diffing."""
@@ -326,6 +359,8 @@ async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]
         return await get_reddit_user_posts(identifier, limit=15)
     if platform == "reddit_subreddit":
         return await get_subreddit_posts(identifier, sort="new", limit=15)
+    if platform == "webpage":
+        return await _fetch_webpage_state(identifier)
     if platform in ("instagram", "tiktok", "facebook"):
         # Lazy import: keeps this module usable without Playwright installed if the
         # user only cares about YouTube/Reddit watches.
@@ -338,13 +373,15 @@ async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]
 class AddSocialWatchTool(BaseTool):
     name = "add_social_watch"
     description = (
-        "Watch an account/subreddit for new content and get told about it whenever you next "
-        "check - regardless of how much time has passed, not just 'recently'. Covers YouTube "
-        "channels, Reddit users/subreddits, and (if logged in) Instagram/TikTok/Facebook."
+        "Watch something for changes and get told whenever you next check - regardless of how "
+        "much time has passed, not just 'recently'. Covers YouTube channels, Reddit "
+        "users/subreddits, (if logged in) Instagram/TikTok/Facebook, and with platform "
+        "'webpage' any URL at all, which reports when the page's content changes. Use this "
+        "for 'tell me when this page/pricing/job board changes'."
     )
     parameters: List[ToolParameter] = [
-        ToolParameter(name="platform", type="string", enum=WATCHABLE_PLATFORMS, description="Which platform."),
-        ToolParameter(name="identifier", type="string", description="Channel handle, username, or subreddit name."),
+        ToolParameter(name="platform", type="string", enum=WATCHABLE_PLATFORMS, description="Which platform, or 'webpage' for any URL."),
+        ToolParameter(name="identifier", type="string", description="Channel handle, username, subreddit name, or - for 'webpage' - the full URL."),
         ToolParameter(name="label", type="string", required=False, description="Friendly name for this watch."),
     ]
 
