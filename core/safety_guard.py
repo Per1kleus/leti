@@ -2,9 +2,11 @@
 SafetyGuard is the single choke point every tool call must pass through.
 
 Responsibilities:
-  1. Classify a requested tool call into a risk tier (safe/risky/destructive/forbidden).
+  1. Classify a requested tool call by what it does: read / execute / modify /
+     external / critical (see RiskTier), or forbidden.
   2. Block anything matching a forbidden pattern or protected path, unconditionally.
-  3. Route risky/destructive calls through a confirmation callback (voice or CLI).
+  3. Route whichever classes the user asked to confirm through a confirmation
+     callback (voice or CLI) - safety.require_confirmation_for in settings.yaml.
   4. Append an immutable JSON-lines audit record for every tool invocation attempt,
      regardless of outcome (approved, denied, executed, failed).
 
@@ -126,10 +128,41 @@ def _redact_arguments(arguments: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class RiskTier(str, Enum):
-    SAFE = "safe"
-    RISKY = "risky"
-    DESTRUCTIVE = "destructive"
-    FORBIDDEN = "forbidden"
+    """What kind of action a tool performs, in increasing order of consequence.
+
+    These replaced the original safe/risky/destructive tiers rather than sitting
+    alongside them - two parallel classification systems for the same question
+    would be exactly the duplication the tool layer is meant to avoid. The old
+    names still resolve (see from_config) so an existing permissions.yaml keeps
+    working, but config/permissions.yaml itself is written in these terms now.
+
+    Which of these actually require confirmation is the user's choice, via
+    safety.require_confirmation_for in settings.yaml. The default asks for
+    anything that changes something or reaches outside the machine.
+    """
+
+    READ = "read"                       # reads information, changes nothing
+    EXECUTE = "execute"                 # runs something reversible: a search, a calculation, code
+    MODIFY = "modify"                   # changes files, data, or projects on this machine
+    EXTERNAL = "external"               # affects an outside service: sends mail, posts, deploys
+    CRITICAL = "critical"               # irreversible or potentially damaging
+    FORBIDDEN = "forbidden"             # never runs, whatever the confirmation
+
+    @classmethod
+    def from_config(cls, value: str) -> "RiskTier":
+        """Accepts the current names and the tier names they replaced."""
+        legacy = {"safe": cls.READ, "risky": cls.MODIFY, "destructive": cls.CRITICAL}
+        text = str(value).lower()
+        if text in legacy:
+            return legacy[text]
+        return cls(text)
+
+
+# Confirmation is asked for these unless settings say otherwise. READ and EXECUTE
+# are excluded deliberately: an assistant that asks before every search or
+# calculation is one the user stops reading the prompts of, which makes the
+# prompts on the actions that matter worth less.
+DEFAULT_CONFIRMATION_CLASSES = ["modify", "external", "critical"]
 
 
 class PermissionDenied(Exception):
@@ -207,11 +240,38 @@ class SafetyGuard:
     # Classification
     # ------------------------------------------------------------------ #
     def get_tier(self, tool_name: str) -> RiskTier:
+        """The action class configured for a tool.
+
+        An unregistered tool is treated as CRITICAL: a tool nobody classified is
+        one nobody thought about, and the safe reading of that is the cautious one.
+        """
         tool_cfg = self.permissions.get("tools", {}).get(tool_name)
         if not tool_cfg:
-            # Unknown tools default to the most cautious tier.
-            return RiskTier.DESTRUCTIVE
-        return RiskTier(tool_cfg.get("tier", "destructive"))
+            return RiskTier.CRITICAL
+        raw = tool_cfg.get("action", tool_cfg.get("tier", "critical"))
+        try:
+            return RiskTier.from_config(raw)
+        except ValueError:
+            return RiskTier.CRITICAL
+
+    def requires_confirmation(self, tier: RiskTier) -> bool:
+        """Whether this action class needs the user to say yes first.
+
+        Reads safety.require_confirmation_for, which the user controls. Note that
+        the setting can only be consulted for classes below CRITICAL - see
+        authorize() for why removing critical from the list doesn't disarm it.
+        """
+        configured = self.settings.get("safety", {}).get(
+            "require_confirmation_for", DEFAULT_CONFIRMATION_CLASSES
+        )
+        names = {str(c).lower() for c in configured}
+        # Accept the old tier names here too, so an existing setting keeps meaning
+        # what it meant: risky -> modify, destructive -> critical.
+        if "risky" in names:
+            names |= {"modify", "external"}
+        if "destructive" in names:
+            names.add("critical")
+        return tier.value in names
 
     def _matches_forbidden_shell_pattern(self, command: str) -> Optional[str]:
         """Substring match against the configured pattern list, on a
@@ -362,11 +422,13 @@ class SafetyGuard:
 
         description = _humanize_tool_call(tool_name, arguments)
 
-        if tier == RiskTier.SAFE:
+        # CRITICAL always confirms, whatever the setting says. Letting the user
+        # switch off confirmation for irreversible actions would turn one config
+        # edit into "delete anything, silently" - the setting is there to let
+        # people relax the prompts they find noisy, not to remove the last check.
+        if tier != RiskTier.CRITICAL and not self.requires_confirmation(tier):
             await self._audit(tool_name, arguments, tier, "auto_approved")
             return Authorization(execute=True, description=description)
-
-        # RISKY or DESTRUCTIVE from here on.
 
         # dry_run: authorize, but report back that the tool must NOT actually run.
         # Checked before the confirmation prompt because there is nothing to confirm -
@@ -377,11 +439,11 @@ class SafetyGuard:
             await self._audit(tool_name, arguments, tier, "dry_run", "dry_run mode - not executed")
             return Authorization(execute=False, description=description)
 
-        # A destructive action is never allowed to ride on approval inferred from the
+        # A critical action is never allowed to ride on approval inferred from the
         # phrasing of the original request - the wording that pre-approves "move this
         # file" shouldn't silently cover an unrelated delete the model chose on its own.
         # Those always get their own explicit yes/no.
-        if preapproved and tier == RiskTier.DESTRUCTIVE:
+        if preapproved and tier == RiskTier.CRITICAL:
             preapproved = False
 
         if preapproved:
@@ -418,8 +480,11 @@ class SafetyGuard:
         self, tool_name: str, arguments: Dict[str, Any], tier: RiskTier
     ) -> str:
         action_desc = _humanize_tool_call(tool_name, arguments)
-        severity = "This can't be undone." if tier == RiskTier.DESTRUCTIVE else \
-                   "This will make a change on your system."
+        severity = {
+            RiskTier.CRITICAL: "This can't be undone.",
+            RiskTier.EXTERNAL: "This reaches outside your computer.",
+            RiskTier.MODIFY: "This will make a change on your system.",
+        }.get(tier, "This will run on your computer.")
         return f"Leti wants to {action_desc}. {severity} Should I go ahead?"
 
     # ------------------------------------------------------------------ #

@@ -1,62 +1,56 @@
 # =============================================================================
 # Leti - Permission & Risk Tiers
 # =============================================================================
-# tiers:
-#   safe        -> executes immediately, always logged
-#   risky       -> requires spoken/typed confirmation before executing
-#   destructive -> always requires an explicit, interactive confirmation. Unlike
-#                  risky, it can never be satisfied by the approval inferred from
-#                  a spoken request's wording (see core/intent_signals.py).
-#   forbidden   -> never executed, regardless of confirmation
 
 tools:
   web_search:
-    tier: safe
+    action: execute
 
   read_screen:
-    tier: safe
+    action: execute
 
   read_file:
-    tier: safe
+    action: read
 
   list_files:
-    tier: safe
+    action: read
 
   write_file:
-    tier: risky
+    action: modify
 
   delete_file:
-    tier: destructive
+    action: critical
 
   move_file:
-    tier: risky
+    action: modify
 
-  # Executes an arbitrary program - on Linux, whatever path the model names.
-  # "Open my browser" is harmless; "launch /tmp/x" is not, and nothing here can
-  # tell them apart, so it asks. The confirmation is what makes it safe to let
-  # this tool be broadly capable (apps, files, URLs, arguments).
+  # `modify` rather than `execute` on purpose: this starts an arbitrary program,
+  # which can then do arbitrary things. "Open my browser" is harmless, "launch
+  # /tmp/x" is not, and nothing here can tell them apart - so it asks, and the
+  # confirmation is what makes it safe for the tool to be broadly capable (apps,
+  # files, URLs, arguments).
   launch_app:
-    tier: risky
+    action: modify
 
   # Hands an http(s) URL to the user's own default browser. Other schemes are
   # rejected by the tool, and blocked_domains below still applies.
   open_url:
-    tier: safe
+    action: execute
 
   close_app:
-    tier: risky
+    action: modify
 
   focus_window:
-    tier: safe
+    action: execute
 
   mouse_click:
-    tier: risky
+    action: modify
 
   keyboard_type:
-    tier: risky
+    action: modify
 
   keyboard_hotkey:
-    tier: risky
+    action: modify
 
   # A shell command can do anything the user can, and the forbidden-pattern list
   # is a blocklist, which can't be complete. Tiering it destructive doesn't add a
@@ -64,221 +58,221 @@ tools:
   # what the prompt says, from "this will make a change" to "this can't be
   # undone", which is the honest description of an arbitrary command.
   run_shell_command:
-    tier: destructive
+    action: critical
 
   browser_navigate:
-    tier: safe
+    action: execute
 
   # Read-only: returns the visible text of a page so Leti can answer from what it
   # says rather than from a search snippet.
   browser_read_page:
-    tier: safe
+    action: execute
 
   browser_click:
-    tier: risky
+    action: external
 
   browser_fill_form:
-    tier: risky
+    action: external
 
   # --- Cybersecurity: network diagnostics (read-only) ---
   scan_local_ports:
-    tier: safe
+    action: execute
 
   check_firewall_status:
-    tier: safe
+    action: execute
 
   list_lan_devices:
-    tier: safe
+    action: execute
 
   list_suspicious_processes:
-    tier: safe
+    action: execute
 
   check_startup_persistence:
-    tier: safe
+    action: execute
 
   detect_brute_force_attempts:
-    tier: safe
+    action: execute
 
   check_integrity:
-    tier: safe
+    action: execute
 
   # --- Cybersecurity: active defense / remediation (changes system state) ---
   enable_firewall:
-    tier: risky
+    action: modify
 
   kill_process:
-    tier: destructive
+    action: critical
 
   create_security_snapshot:
-    tier: risky
+    action: modify
 
   restore_from_snapshot:
-    tier: destructive
+    action: critical
 
   # --- Email ---
   list_new_emails:
-    tier: safe
+    action: execute
 
   send_email:
-    tier: risky
+    action: external
 
   # --- Trading (paper/sandbox only - endpoints are hardcoded, never live) ---
   get_trading_watchlist:
-    tier: safe
+    action: read
 
   set_trading_watchlist:
-    tier: safe
+    action: execute
 
   get_market_quote:
-    tier: safe
+    action: execute
 
   evaluate_trading_strategy:
-    tier: safe
+    action: execute
 
   get_paper_positions:
-    tier: safe
+    action: execute
 
   place_paper_order:
-    tier: risky
+    action: external
 
   # --- Contacts ---
   add_contact:
-    tier: risky
+    action: modify
 
   list_contacts:
-    tier: safe
+    action: read
 
   resolve_contact:
-    tier: safe
+    action: read
 
   update_contact:
-    tier: risky
+    action: modify
 
   delete_contact:
-    tier: destructive
+    action: critical
 
   # --- Venture Scout / Red-Team / COO persona (pure text generation, no side effects) ---
   scout_find_trends:
-    tier: safe
+    action: execute
 
   scout_stress_test:
-    tier: safe
+    action: execute
 
   # --- Meeting scheduling (creates real calendar events / video meetings) ---
   schedule_meeting:
-    tier: risky
+    action: external
 
   create_video_meeting_link:
-    tier: risky
+    action: external
 
   send_meeting_invite_email:
-    tier: risky
+    action: external
 
   # --- System health / performance / updates ---
   get_system_specs:
-    tier: safe
+    action: execute
 
   run_health_check:
-    tier: safe
+    action: execute
 
   check_for_updates:
-    tier: safe
+    action: execute
 
   apply_system_updates:
-    tier: risky
+    action: modify
 
   # --- Personalization: personality dials (tone only, no real-world effect) ---
   get_personality_settings:
-    tier: safe
+    action: read
 
   set_personality:
-    tier: safe
+    action: execute
 
   apply_personality_preset:
-    tier: safe
+    action: execute
 
   reset_personality:
-    tier: safe
+    action: execute
 
   # --- Personalization: user profile (low-stakes personal notes) ---
   remember_about_user:
-    tier: safe
+    action: execute
 
   set_user_name:
-    tier: safe
+    action: execute
 
   view_user_profile:
-    tier: safe
+    action: read
 
   forget_user_fact:
-    tier: safe
+    action: execute
 
   clear_user_profile:
-    tier: destructive
+    action: critical
 
   # --- Social media: YouTube + Reddit (official, read-only), watches ---
   get_subreddit_posts:
-    tier: safe
+    action: execute
 
   search_reddit:
-    tier: safe
+    action: execute
 
   get_youtube_channel_latest:
-    tier: safe
+    action: execute
 
   search_youtube_trending:
-    tier: safe
+    action: execute
 
   add_social_watch:
-    tier: safe
+    action: execute
 
   list_social_watches:
-    tier: safe
+    action: read
 
   remove_social_watch:
-    tier: safe
+    action: execute
 
   check_social_watches:
-    tier: safe
+    action: execute
 
   # --- Social media: session-based login (Instagram/TikTok/Facebook) ---
   login_to_social_platform:
-    tier: risky
+    action: external
 
   logout_social_platform:
-    tier: safe
+    action: execute
 
   get_instagram_user_latest:
-    tier: safe
+    action: execute
 
   get_tiktok_user_latest:
-    tier: safe
+    action: execute
 
   get_facebook_page_latest:
-    tier: safe
+    action: execute
 
   # --- Dashboard data sources ---
   get_weather:
-    tier: safe
+    action: execute
 
   add_todo_item:
-    tier: safe
+    action: execute
 
   list_todo_items:
-    tier: safe
+    action: read
 
   complete_todo_item:
-    tier: safe
+    action: execute
 
   delete_todo_item:
-    tier: safe
+    action: execute
 
   # --- Visual output (images, diagrams) ---
   search_images:
-    tier: safe
+    action: execute
 
   create_sketch:
-    tier: safe
+    action: execute
 
 # Commands that are never allowed to run, even in "risky" mode, no matter the tool.
 forbidden_shell_patterns:

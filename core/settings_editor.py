@@ -91,6 +91,17 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "settings_path": ["social_media", "reddit"],
         "fields": [{"key": "user_agent", "label": "User agent string", "example": "leti-assistant/1.0 (by /u/you)"}],
     },
+    "safety": {
+        "label": "Safety (which actions ask before running)",
+        "fields": [
+            {"key": "require_confirmation_for", "required": False,
+             "label": ("Classes that need confirmation, comma-separated "
+                       "(read, execute, modify, external - critical always asks)"),
+             "type": "list", "example": "modify,external,critical"},
+            {"key": "confirmation_timeout_seconds", "label": "Seconds to wait for an answer",
+             "type": "number", "default": 15, "required": False},
+        ],
+    },
     "gui": {
         "label": "GUI web server",
         "fields": [
@@ -150,6 +161,8 @@ def _coerce(value: str, field: Dict[str, Any]) -> Any:
             return float(value) if "." in value else int(value)
         except ValueError:
             raise ValueError(f"'{value}' isn't a valid number.")
+    if field_type == "list":
+        return [item.strip() for item in value.split(",") if item.strip()]
     if field_type == "bool":
         low = value.strip().lower()
         if low in ("true", "yes", "y", "1"):

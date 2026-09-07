@@ -114,17 +114,16 @@ def test_close_app_confirmation_names_the_window():
 
 # --- Tiering: capability under confirmation, not capability withheld -----------
 
-def test_tiers_match_the_intended_posture():
+def test_action_classes_match_the_intended_posture():
     from core.config_loader import get_permissions
+    from core.safety_guard import DEFAULT_CONFIRMATION_CLASSES
 
     tools = get_permissions()["tools"]
-    # Opening an app runs an arbitrary program -> the user confirms.
-    assert tools["launch_app"]["tier"] == "risky"
-    # Browsing is meant to be free.
-    assert tools["web_search"]["tier"] == "safe"
-    assert tools["open_url"]["tier"] == "safe"
-    assert tools["browser_navigate"]["tier"] == "safe"
-    assert tools["browser_read_page"]["tier"] == "safe"
+    # Opening an app starts an arbitrary program -> in a class that confirms.
+    assert tools["launch_app"]["action"] in DEFAULT_CONFIRMATION_CLASSES
+    # Browsing is meant to be free: none of these are in a confirming class.
+    for tool in ("web_search", "open_url", "browser_navigate", "browser_read_page"):
+        assert tools[tool]["action"] not in DEFAULT_CONFIRMATION_CLASSES, tool
 
 
 def test_appdata_block_does_not_cover_installed_applications():

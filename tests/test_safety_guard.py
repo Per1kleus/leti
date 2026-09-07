@@ -185,3 +185,68 @@ async def test_audit_log_redacts_secret_values(tmp_path, guard_factory):
     assert "hunter2" not in written
     assert "#password" in written          # the action itself stays auditable
     assert "redacted" in written
+
+
+# --- Action classes ------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool,expected_ask", [
+    ("read_file", False),          # read
+    ("web_search", False),         # execute
+    ("add_todo_item", False),      # execute - Leti's own state, reversible
+    ("write_file", True),          # modify
+    ("send_email", True),          # external
+    ("delete_file", True),         # critical
+])
+async def test_default_confirmation_matches_the_action_class(tool, expected_ask, guard_factory):
+    guard, prompts = guard_factory()
+    await guard.authorize(tool, {"path": "/tmp/x", "to": "a@b.c"})
+    assert bool(prompts) is expected_ask
+
+
+@pytest.mark.asyncio
+async def test_user_can_require_confirmation_for_more_classes(monkeypatch, guard_factory):
+    """The point of the setting: someone who wants to approve every search can."""
+    from core.config_loader import get_settings
+
+    settings = get_settings()
+    settings["safety"]["require_confirmation_for"] = ["execute", "modify", "external", "critical"]
+    monkeypatch.setattr("core.safety_guard.get_settings", lambda: settings)
+
+    guard, prompts = guard_factory()
+    await guard.authorize("web_search", {"query": "x"})
+    assert len(prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_critical_asks_even_when_removed_from_the_setting(monkeypatch, guard_factory):
+    """A setting that could switch off the prompt for irreversible actions would
+    defeat the point of having one."""
+    from core.config_loader import get_settings
+
+    settings = get_settings()
+    settings["safety"]["require_confirmation_for"] = []
+    monkeypatch.setattr("core.safety_guard.get_settings", lambda: settings)
+
+    guard, prompts = guard_factory(confirm=False)
+    with pytest.raises(ConfirmationDenied):
+        await guard.authorize("delete_file", {"path": "/tmp/x"})
+    assert len(prompts) == 1
+
+
+def test_legacy_tier_names_still_resolve():
+    """An existing permissions.yaml written in the old vocabulary keeps working."""
+    from core.safety_guard import RiskTier
+
+    assert RiskTier.from_config("safe") is RiskTier.READ
+    assert RiskTier.from_config("risky") is RiskTier.MODIFY
+    assert RiskTier.from_config("destructive") is RiskTier.CRITICAL
+    assert RiskTier.from_config("modify") is RiskTier.MODIFY
+
+
+def test_unclassified_tool_is_treated_as_critical(guard_factory):
+    """A tool nobody classified is one nobody thought about."""
+    from core.safety_guard import RiskTier
+
+    guard, _ = guard_factory()
+    assert guard.get_tier("some_tool_that_does_not_exist") is RiskTier.CRITICAL

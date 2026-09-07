@@ -56,6 +56,13 @@ vision:
   keep_screenshots: 20             # older captures are deleted after each new one
 
 safety:
+  # Which classes of action stop and ask you first. Tools are classified by what
+  # they do in config/permissions.yaml: read, execute, modify, external, critical.
+  #   - Add "execute" if you want to approve every search, calculation and code run.
+  #   - Remove "modify" if you trust Leti with files on this machine unprompted.
+  # "critical" always asks whether or not it's listed - a setting that could turn
+  # off the prompt for irreversible actions would defeat the point of having one.
+  require_confirmation_for: ["modify", "external", "critical"]
   confirmation_timeout_seconds: 15
   # If true, every risky/destructive tool call is reported instead of performed:
   # Leti describes what it would have done and nothing changes on the system.
