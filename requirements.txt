@@ -48,3 +48,8 @@ caldav>=1.3.9
 # browser tab you open yourself instead of an automatic window.
 aiohttp>=3.9
 pywebview>=5.0
+
+# --- Development ---
+# Test suite (pytest tests/). Not needed to run Leti itself.
+pytest>=8.0
+pytest-asyncio>=0.23

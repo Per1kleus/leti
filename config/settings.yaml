@@ -63,7 +63,10 @@ vision:
 safety:
   require_confirmation_for: ["risky", "destructive"]
   confirmation_timeout_seconds: 15
-  dry_run: false                   # if true, tools report what they'd do but don't execute
+  # If true, every risky/destructive tool call is reported instead of performed:
+  # Leti describes what it would have done and nothing changes on the system.
+  # Read-only "safe" tools still run, so research/planning behaves normally.
+  dry_run: false
   audit_log_path: "./logs/audit.log"
 
 paths:

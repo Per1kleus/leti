@@ -328,8 +328,8 @@ Leti says in text.
 ## Configuration
 
 - `config/settings.yaml` — model names, voice pipeline settings, memory
-  paths, and safety toggles (including a `dry_run` mode that logs what a
-  tool *would* do without executing it — useful while testing new prompts).
+  paths, and safety toggles (including a `dry_run` mode that reports what a
+  state-changing tool *would* do instead of executing it — see Safety below).
   This file is the documented reference/template — most of its integration
   sections (email, calendar, weather, etc.) ship commented out with examples.
 - `config/permissions.yaml` — per-tool risk tiers, forbidden shell patterns,
@@ -416,7 +416,12 @@ Every tool call passes through `SafetyGuard.authorize()` before it runs:
 
 1. **Hard blocks** — forbidden shell patterns (e.g. `rm -rf /`), protected
    paths (e.g. `~/.ssh`), and blocked domains are rejected unconditionally,
-   regardless of tier or confirmation.
+   regardless of tier or confirmation. Protected paths are enforced on
+   canonical paths (`..` normalized, symlinks followed) and against the paths
+   named inside a shell command, not just path-shaped tool arguments. The
+   forbidden-pattern list is a speed bump for catastrophic one-liners, not a
+   security boundary — a blocklist can't enumerate every spelling of `rm`,
+   which is why shell commands also always require confirmation.
 2. **Risk tiers** (`config/permissions.yaml`):
    - `safe` — executes immediately (e.g. reading the screen, listing files,
      web search).
@@ -427,9 +432,18 @@ Every tool call passes through `SafetyGuard.authorize()` before it runs:
 3. **Audit log** — every authorization decision and execution result is
    appended to `logs/audit.log` as a JSON line, regardless of outcome.
 
-You can flip `safety.dry_run: true` in `settings.yaml` to have tools report
-what they *would* do without actually executing — useful when testing new
-prompts or tool wiring.
+You can flip `safety.dry_run: true` in `settings.yaml` to have every
+risky/destructive tool report what it *would* do instead of doing it — useful
+when testing new prompts or tool wiring. Read-only `safe` tools still run, so
+Leti can still search, read the screen and plan normally; nothing that changes
+your system executes.
+
+**On voice pre-approval.** In voice mode there's no way to type `-y`, so a
+request that already states approval ("go ahead and move that file") can stand
+in for the confirmation prompt. That approval covers exactly **one** risky
+action and is then spent — every further tool call in the same turn prompts
+normally, because the model, not the user, chose those. `destructive` tools
+never accept it at all and always ask.
 
 ---
 

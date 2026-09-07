@@ -20,6 +20,19 @@ APPROVAL_PHRASES = [
     "sounds good", "that's fine", "that works", "approved", "correct", "please do",
 ]
 
+# The subset usable to read approval out of an ORIGINAL REQUEST ("go ahead and move
+# that file") rather than a reply to a yes/no question. Deliberately narrower than
+# APPROVAL_PHRASES: a bare "y", or "correct" / "that's fine" / "that works", are
+# answer-shaped words that appear in ordinary sentences all the time ("is that
+# correct?", "whatever works"). Reading them as standing permission to act would
+# manufacture consent the user never gave. Answering a direct question is a
+# different context, so resolve_yes_no() below still accepts the full list.
+REQUEST_APPROVAL_PHRASES = [
+    "yes", "yeah", "yep", "yup", "sure", "confirm", "confirmed", "i confirm",
+    "go ahead", "go for it", "do it", "please proceed", "proceed", "affirmative",
+    "approved", "please do",
+]
+
 DENIAL_PHRASES = [
     "n", "no", "nope", "don't", "do not", "cancel", "stop", "never mind", "nevermind",
     "hold off", "wait", "not yet", "deny", "denied", "negative",
@@ -39,6 +52,15 @@ def contains_explicit_approval(text: Optional[str]) -> bool:
         return False
     norm = f" {_normalize(text)} "
     return any(f" {phrase} " in norm for phrase in APPROVAL_PHRASES)
+
+
+def contains_request_approval(text: Optional[str]) -> bool:
+    """Whether an original request already carries the user's approval to act
+    (see REQUEST_APPROVAL_PHRASES for why this is stricter than the reply case)."""
+    if not text:
+        return False
+    norm = f" {_normalize(text)} "
+    return any(f" {phrase} " in norm for phrase in REQUEST_APPROVAL_PHRASES)
 
 
 def contains_explicit_denial(text: Optional[str]) -> bool:

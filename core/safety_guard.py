@@ -7,18 +7,24 @@ Responsibilities:
   3. Route risky/destructive calls through a confirmation callback (voice or CLI).
   4. Append an immutable JSON-lines audit record for every tool invocation attempt,
      regardless of outcome (approved, denied, executed, failed).
+
+authorize() returns an Authorization rather than None: "may this run" and "should
+this actually execute" are different questions once dry_run exists, and the caller
+also needs to know whether a turn's one-shot voice pre-approval was spent.
 """
 from __future__ import annotations
 
 import asyncio
 import fnmatch
 import json
+import os
 import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_permissions, get_settings, resolve_path
 
@@ -96,6 +102,23 @@ class ConfirmationDenied(Exception):
 
 
 @dataclass
+class Authorization:
+    """The outcome of an allowed tool call. Denials are raised, not returned."""
+
+    execute: bool
+    """False means authorized-but-do-not-run: dry_run mode. The caller must report
+    the intended action instead of performing it."""
+
+    used_preapproval: bool = False
+    """True if this call consumed the turn's voice pre-approval. The caller clears
+    it so the next risky call in the same turn prompts normally."""
+
+    description: str = ""
+    """Plain-English description of the action, for telling the user what was (or
+    would have been) done without exposing raw argument dicts."""
+
+
+@dataclass
 class AuditRecord:
     timestamp: float
     tool_name: str
@@ -145,19 +168,95 @@ class SafetyGuard:
         return RiskTier(tool_cfg.get("tier", "destructive"))
 
     def _matches_forbidden_shell_pattern(self, command: str) -> Optional[str]:
+        """Substring match against the configured pattern list, on a
+        whitespace-normalized copy so 'rm  -rf  /' still matches 'rm -rf /'.
+
+        This is a speed bump, NOT a security boundary: a blocklist can't
+        enumerate every spelling of a destructive shell command ('rm -fr /',
+        'rm -r -f /', 'find / -delete', a base64'd payload piped to sh). What
+        actually protects the user is the confirmation prompt every shell call
+        goes through plus _command_touches_protected_path below. Patterns here
+        just stop the few catastrophic one-liners that shouldn't even reach a
+        prompt, where a mistyped 'yes' would be unrecoverable.
+        """
+        normalized = re.sub(r"\s+", " ", command.lower()).strip()
         for pattern in self.permissions.get("forbidden_shell_patterns", []):
-            if pattern.lower() in command.lower():
+            if re.sub(r"\s+", " ", str(pattern).lower()).strip() in normalized:
                 return pattern
         return None
 
     def _touches_protected_path(self, path_str: str) -> Optional[str]:
-        expanded = str(resolve_path(path_str))
+        """Returns the matching protected_paths entry if `path_str` names a
+        protected location or anything beneath it, else None.
+
+        Compares canonical paths (resolve_path normalizes '..' and follows
+        symlinks) segment-by-segment rather than by string prefix. A prefix
+        match is wrong in both directions: it misses '/tmp/../etc/shadow' and
+        it falsely blocks '/etcetera/notes.txt' because that string happens to
+        start with '/etc'.
+        """
+        try:
+            candidate = resolve_path(path_str)
+        except (OSError, ValueError):
+            return None
+
         for protected in self.permissions.get("protected_paths", []):
-            protected_expanded = str(Path(protected).expanduser())
-            if fnmatch.fnmatch(expanded, protected_expanded + "*") or expanded.startswith(
-                protected_expanded
-            ):
+            expanded = os.path.expanduser(os.path.expandvars(str(protected)))
+            # Entries like 'C:\Users\*\AppData' are glob patterns, not literal
+            # paths, so they can't be resolved or compared segment-wise.
+            if any(ch in expanded for ch in "*?["):
+                if fnmatch.fnmatch(str(candidate), expanded) or fnmatch.fnmatch(
+                    str(candidate), os.path.join(expanded, "*")
+                ):
+                    return protected
+                continue
+
+            try:
+                protected_path = Path(expanded).resolve()
+            except OSError:
+                protected_path = Path(os.path.normpath(expanded))
+
+            if candidate == protected_path or protected_path in candidate.parents:
                 return protected
+        return None
+
+    def _command_touches_protected_path(self, command: str) -> Optional[str]:
+        """Returns the protected location a shell command references, if any.
+
+        permissions.yaml documents protected_paths as places Leti must never
+        touch, but checking only the path-shaped ARGUMENT KEYS below leaves the
+        one tool that can touch anything unchecked: 'cat ~/.ssh/id_rsa' has no
+        'path' argument at all, just a command string. So the command is
+        tokenized and every path-shaped token is checked the same way.
+
+        Heuristic by nature - a shell word can be built at runtime from a
+        variable or a substitution this never sees. It raises the floor for the
+        obvious cases; it does not make run_shell_command safe on its own, which
+        is why that tool still requires confirmation on every call.
+        """
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            # Unbalanced quotes - fall back to whitespace splitting rather than
+            # skipping the check entirely.
+            tokens = command.split()
+
+        for raw in tokens:
+            # Strip redirection/pipe/separator punctuation that shlex leaves
+            # attached to an adjacent word (e.g. '>/etc/hosts' -> '/etc/hosts').
+            token = raw.lstrip("<>|&;()").strip("'\"")
+            if not token:
+                continue
+            looks_like_path = (
+                token.startswith(("/", "~", "./", "../"))
+                or os.sep in token
+                or (os.altsep and os.altsep in token)
+            )
+            if not looks_like_path:
+                continue
+            matched = self._touches_protected_path(token)
+            if matched:
+                return matched
         return None
 
     def check_hard_block(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
@@ -167,6 +266,9 @@ class SafetyGuard:
             matched = self._matches_forbidden_shell_pattern(str(command))
             if matched:
                 return f"Command matches forbidden pattern: '{matched}'"
+            matched = self._command_touches_protected_path(str(command))
+            if matched:
+                return f"Command references protected location '{matched}'"
 
         for key in ("path", "file_path", "target_path", "source_path", "destination_path"):
             if key in arguments and arguments[key]:
@@ -185,16 +287,21 @@ class SafetyGuard:
     # ------------------------------------------------------------------ #
     # Main entry point used by the orchestrator / tool executor
     # ------------------------------------------------------------------ #
-    async def authorize(self, tool_name: str, arguments: Dict[str, Any], preapproved: bool = False) -> None:
+    async def authorize(
+        self, tool_name: str, arguments: Dict[str, Any], preapproved: bool = False
+    ) -> "Authorization":
         """
         Raises PermissionDenied or ConfirmationDenied if the call should not proceed.
-        Returns normally (None) if the call is authorized to execute.
+        Returns an Authorization if it may - check `.execute` before running the tool,
+        since a dry-run authorization deliberately permits the call without executing it.
 
         `preapproved`: set when the user's own request already expressed clear approval
         for this action (e.g. a voice command whose wording already confirms intent - see
         core/intent_signals.py) so the interactive confirmation step can be skipped. This
-        NEVER bypasses hard blocks or the FORBIDDEN tier - only the confirmation prompt for
-        an otherwise-permitted risky/destructive call.
+        NEVER bypasses hard blocks, the FORBIDDEN tier, or the DESTRUCTIVE tier - only the
+        confirmation prompt for an otherwise-permitted RISKY call. The caller is told via
+        `.used_preapproval` when it was spent, so a single spoken "go ahead" authorizes a
+        single action rather than every action for the rest of the turn.
         """
         tier = self.get_tier(tool_name)
 
@@ -207,21 +314,36 @@ class SafetyGuard:
             await self._audit(tool_name, arguments, tier, "blocked", "Tool is globally forbidden")
             raise PermissionDenied(f"Tool '{tool_name}' is forbidden by configuration.")
 
+        description = _humanize_tool_call(tool_name, arguments)
+
         if tier == RiskTier.SAFE:
             await self._audit(tool_name, arguments, tier, "auto_approved")
-            return
+            return Authorization(execute=True, description=description)
 
-        # RISKY or DESTRUCTIVE -> require confirmation, unless already given.
+        # RISKY or DESTRUCTIVE from here on.
+
+        # dry_run: authorize, but report back that the tool must NOT actually run.
+        # Checked before the confirmation prompt because there is nothing to confirm -
+        # nothing is going to happen. Read-only SAFE tools above still execute, so the
+        # model can research and plan normally while every state-changing call is
+        # reported instead of performed.
         if self.settings["safety"].get("dry_run"):
-            await self._audit(tool_name, arguments, tier, "auto_approved", "dry_run mode")
-            return
+            await self._audit(tool_name, arguments, tier, "dry_run", "dry_run mode - not executed")
+            return Authorization(execute=False, description=description)
+
+        # A destructive action is never allowed to ride on approval inferred from the
+        # phrasing of the original request - the wording that pre-approves "move this
+        # file" shouldn't silently cover an unrelated delete the model chose on its own.
+        # Those always get their own explicit yes/no.
+        if preapproved and tier == RiskTier.DESTRUCTIVE:
+            preapproved = False
 
         if preapproved:
             await self._audit(
                 tool_name, arguments, tier, "user_approved",
                 "Pre-approved: the user's own request already expressed clear approval.",
             )
-            return
+            return Authorization(execute=True, used_preapproval=True, description=description)
 
         if self._confirmation_callback is None:
             await self._audit(
@@ -244,6 +366,7 @@ class SafetyGuard:
             raise ConfirmationDenied("User declined the action.")
 
         await self._audit(tool_name, arguments, tier, "user_approved")
+        return Authorization(execute=True, description=description)
 
     def _build_confirmation_prompt(
         self, tool_name: str, arguments: Dict[str, Any], tier: RiskTier

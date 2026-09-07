@@ -68,13 +68,33 @@ def get_permissions() -> Dict[str, Any]:
 
 
 def resolve_path(relative_or_absolute: str) -> Path:
-    """Resolve a configured path relative to the project root, expanding ~ and env vars."""
+    """Resolve a path to a single canonical form: expand ~ and env vars, anchor
+    relative paths to the project root, then normalize away '..'/'.' segments and
+    follow symlinks.
+
+    Normalizing ABSOLUTE paths too is what makes core/safety_guard.py's
+    protected-path check sound. Comparing an unnormalized path against the
+    protected list lets '/tmp/../etc/shadow' and '~/../<user>/.ssh/id_rsa' slip
+    past a guard that blocks '/etc/shadow' and '~/.ssh/id_rsa' - they name the
+    same files. Symlinks are followed for the same reason: a link into a
+    protected directory must not read as a path outside it.
+
+    resolve(strict=False) is deliberate - paths that don't exist yet (a file
+    about to be written, a snapshot directory about to be created) still
+    normalize, with the non-existent tail appended to the resolved prefix.
+    """
     expanded = os.path.expanduser(os.path.expandvars(relative_or_absolute))
     p = Path(expanded)
     if not p.is_absolute():
         project_root = Path(__file__).resolve().parent.parent
-        p = (project_root / p).resolve()
-    return p
+        p = project_root / p
+    try:
+        return p.resolve()
+    except OSError:
+        # Unreadable parent, a symlink loop, or a path too long to resolve. Fall
+        # back to purely lexical normalization rather than returning the raw
+        # input - callers (the safety guard above all) must never see '..'.
+        return Path(os.path.normpath(str(p)))
 
 
 def ensure_data_dirs() -> None:

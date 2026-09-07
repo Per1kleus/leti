@@ -4,8 +4,9 @@
 # tiers:
 #   safe        -> executes immediately, always logged
 #   risky       -> requires spoken/typed confirmation before executing
-#   destructive -> requires explicit confirmation + is never allowed in continuous
-#                  listening mode (push-to-talk / typed confirmation only)
+#   destructive -> always requires an explicit, interactive confirmation. Unlike
+#                  risky, it can never be satisfied by the approval inferred from
+#                  a spoken request's wording (see core/intent_signals.py).
 #   forbidden   -> never executed, regardless of confirmation
 
 tools:

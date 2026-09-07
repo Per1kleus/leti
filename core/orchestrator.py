@@ -19,7 +19,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
-from core.intent_signals import contains_explicit_approval, contains_explicit_denial
+from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from memory.session_memory import SessionMemory
@@ -120,13 +120,22 @@ class Orchestrator:
         self.session_memory.add_turn("user", user_text, session_id)
 
         # In voice mode, if what the user said already reads as clear approval/intent to
-        # proceed (and doesn't also contain a denial, e.g. "no wait"), skip the interactive
-        # confirmation prompt for any risky/destructive tool call this turn triggers - there's
-        # no natural way to type '-y' while talking, so the approval has to come from the
-        # request itself. Text mode is unaffected: it still shows the confirmation prompt,
-        # which now also accepts '-y' as a shorthand yes (see main.py).
+        # proceed (and doesn't also contain a denial, e.g. "no wait"), the interactive
+        # confirmation prompt can be skipped for ONE risky tool call - there's no natural
+        # way to type '-y' while talking, so the approval has to come from the request
+        # itself. Text mode is unaffected: it still shows the confirmation prompt, which
+        # now also accepts '-y' as a shorthand yes (see main.py).
+        #
+        # Scope matters here. A turn can trigger up to max_tool_iterations rounds of tool
+        # calls, and the model chooses them - so treating one "sure, go ahead" as blanket
+        # permission for the whole turn hands out approval for actions the user never
+        # described. Instead this is a single-use budget: SafetyGuard reports when it's
+        # spent (see _execute_tool_call), and everything after it prompts normally.
+        # SafetyGuard additionally refuses to apply it to DESTRUCTIVE calls at all.
         self._preapproved_this_turn = (
-            voice_mode and contains_explicit_approval(user_text) and not contains_explicit_denial(user_text)
+            voice_mode
+            and contains_request_approval(user_text)
+            and not contains_explicit_denial(user_text)
         )
 
         messages = await self._build_messages(user_text)
@@ -243,11 +252,34 @@ class Orchestrator:
             return ToolResult(success=False, error=f"Unknown tool: '{tool_name}'")
 
         try:
-            await self.safety_guard.authorize(tool_name, arguments, preapproved=self._preapproved_this_turn)
+            auth = await self.safety_guard.authorize(
+                tool_name, arguments, preapproved=self._preapproved_this_turn
+            )
         except PermissionDenied as e:
             return ToolResult(success=False, error=f"Blocked: {e}")
         except ConfirmationDenied as e:
             return ToolResult(success=False, error=f"Not confirmed: {e}")
+
+        # A spoken pre-approval covers ONE action, not the whole turn. Spending it
+        # here means any further risky call this turn prompts normally - the user
+        # said yes to something specific, not to everything that follows from it.
+        if auth.used_preapproval:
+            self._preapproved_this_turn = False
+
+        if not auth.execute:
+            # dry_run mode: report the intended action rather than performing it.
+            return ToolResult(
+                success=True,
+                output={
+                    "dry_run": True,
+                    "would_have_done": auth.description,
+                    "note": (
+                        "DRY RUN - nothing was actually done. safety.dry_run is enabled in "
+                        "config/settings.yaml. Tell the user plainly what this tool would "
+                        "have done; do not claim it happened."
+                    ),
+                },
+            )
 
         try:
             result = await tool.run(**arguments)
