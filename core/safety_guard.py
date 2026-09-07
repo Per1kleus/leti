@@ -71,7 +71,14 @@ def _humanize_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
         # here rendered the prompt as "Leti wants to close ." with the target missing,
         # on a tool that closes windows. Alternatives are kept as fallbacks.
         "close_app": lambda a: f"close the window {_get('window_title', 'app_name', 'name', default='(unspecified)')}",
-        "launch_app": lambda a: f"launch {_get('app_name', 'name', 'window_title', default='(unspecified)')}",
+        # Include the arguments: launch_app can open something IN an app, and
+        # "launch firefox" alone doesn't tell the user they're approving opening a
+        # particular page. What they confirm should be what happens.
+        "launch_app": lambda a: (
+            f"open {_get('app_name', 'name', 'window_title', default='(unspecified)')}"
+            + (f" with {' '.join(str(x) for x in a['arguments'])}" if a.get("arguments") else "")
+        ),
+        "open_url": lambda a: f"open {_get('url')} in your default browser",
     }
 
     fn = humanizers.get(tool_name)

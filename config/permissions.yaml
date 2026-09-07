@@ -33,9 +33,15 @@ tools:
 
   # Executes an arbitrary program - on Linux, whatever path the model names.
   # "Open my browser" is harmless; "launch /tmp/x" is not, and nothing here can
-  # tell them apart, so it asks.
+  # tell them apart, so it asks. The confirmation is what makes it safe to let
+  # this tool be broadly capable (apps, files, URLs, arguments).
   launch_app:
     tier: risky
+
+  # Hands an http(s) URL to the user's own default browser. Other schemes are
+  # rejected by the tool, and blocked_domains below still applies.
+  open_url:
+    tier: safe
 
   close_app:
     tier: risky
@@ -61,6 +67,11 @@ tools:
     tier: destructive
 
   browser_navigate:
+    tier: safe
+
+  # Read-only: returns the visible text of a page so Leti can answer from what it
+  # says rather than from a search snippet.
+  browser_read_page:
     tier: safe
 
   browser_click:
@@ -302,7 +313,15 @@ protected_paths:
   - "/etc"
   - "/System"
   - "C:\\Windows"
-  - "C:\\Users\\*\\AppData"
+  # Narrowed from all of C:\Users\*\AppData, which covers most of what a Windows
+  # user has installed - VS Code, Discord, Spotify and Slack all live under
+  # LocalAppData, so blocking the lot stopped Leti working with ordinary apps.
+  # These are the parts that actually hold credentials.
+  - "C:\\Users\\*\\AppData\\Local\\Google\\Chrome\\User Data"
+  - "C:\\Users\\*\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles"
+  - "C:\\Users\\*\\AppData\\Local\\Microsoft\\Edge\\User Data"
+  - "C:\\Users\\*\\AppData\\Local\\Microsoft\\Credentials"
+  - "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Credentials"
 
 # Domains the browser tool is not allowed to navigate to
 blocked_domains: []

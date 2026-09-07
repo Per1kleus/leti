@@ -67,6 +67,58 @@ class BrowserNavigateTool(BaseTool):
             return ToolResult(success=False, error=str(e))
 
 
+class BrowserReadPageTool(BaseTool):
+    name = "browser_read_page"
+    description = (
+        "Read the visible text of a web page so you can answer from what it actually says. "
+        "Pass a url to open it first, or omit url to read the page already open. Use this "
+        "after web_search when a result's snippet isn't enough - search gives you links and "
+        "summaries, this gives you the page itself."
+    )
+    parameters = [
+        ToolParameter(
+            name="url", type="string", required=False,
+            description="Page to open and read. Omit to read the currently open page.",
+        ),
+        ToolParameter(
+            name="max_characters", type="number", required=False,
+            description="Truncate the text at this many characters (default 8000).",
+        ),
+    ]
+
+    def __init__(self, session: BrowserSession):
+        self.session = session
+
+    async def run(self, url: str = "", max_characters: int = 8000, **kwargs) -> ToolResult:
+        try:
+            page = await self.session.get_page()
+            if url:
+                if not url.startswith(("http://", "https://")):
+                    url = "https://" + url
+                await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+
+            title = await page.title()
+            # inner_text() of <body>, not content(): the rendered text a person would
+            # read, without the markup, scripts and styling that would otherwise eat
+            # the model's context for no benefit.
+            text = await page.locator("body").inner_text(timeout=10000)
+            text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+
+            max_characters = int(max_characters) if max_characters else 8000
+            truncated = len(text) > max_characters
+            if truncated:
+                text = text[:max_characters]
+
+            return ToolResult(success=True, output={
+                "title": title,
+                "url": page.url,
+                "text": text,
+                "truncated": truncated,
+            })
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+
 class BrowserClickTool(BaseTool):
     name = "browser_click"
     description = "Click an element on the current page identified by visible text or a CSS selector."

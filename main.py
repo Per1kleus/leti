@@ -24,7 +24,13 @@ from core.safety_guard import SafetyGuard
 from memory.session_memory import SessionMemory
 from memory.vector_store import VectorMemory
 from tools.base import ToolRegistry
-from tools.browser import BrowserClickTool, BrowserFillFormTool, BrowserNavigateTool, BrowserSession
+from tools.browser import (
+    BrowserClickTool,
+    BrowserFillFormTool,
+    BrowserNavigateTool,
+    BrowserReadPageTool,
+    BrowserSession,
+)
 from tools.file_manager import DeleteFileTool, ListFilesTool, MoveFileTool, ReadFileTool, WriteFileTool
 from tools.os_control import (
     CloseAppTool,
@@ -33,6 +39,7 @@ from tools.os_control import (
     KeyboardTypeTool,
     LaunchAppTool,
     MouseClickTool,
+    OpenUrlTool,
 )
 from tools.shell_runner import ShellRunnerTool
 from tools.vision import ReadScreenTool
@@ -133,6 +140,7 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(DeleteFileTool())
     registry.register(MoveFileTool())
     registry.register(LaunchAppTool())
+    registry.register(OpenUrlTool())
     registry.register(CloseAppTool())
     registry.register(FocusWindowTool())
     registry.register(MouseClickTool())
@@ -140,6 +148,7 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(KeyboardHotkeyTool())
     registry.register(ShellRunnerTool())
     registry.register(BrowserNavigateTool(browser_session))
+    registry.register(BrowserReadPageTool(browser_session))
     registry.register(BrowserClickTool(browser_session))
     registry.register(BrowserFillFormTool(browser_session))
 

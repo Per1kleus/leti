@@ -332,6 +332,27 @@ Leti says in text.
   state-changing tool *would* do instead of executing it — see Safety below).
   This file is the documented reference/template — most of its integration
   sections (email, calendar, weather, etc.) ship commented out with examples.
+### Controlling the computer
+
+Leti opens things the way you'd ask a person to: `launch_app` takes an app name
+(`firefox`), a path to a program or document, or a URL, plus `arguments` to open
+something *in* an app — "open YouTube in Firefox" is `firefox` with
+`['https://youtube.com']`. It resolves apps by PATH lookup, then the platform's
+own launcher (`open -a` on macOS, `start` on Windows, `gtk-launch` on Linux), and
+reports honestly when nothing started rather than claiming success. It's `risky`,
+so you confirm each launch — and the prompt names the arguments, so what you
+approve is what happens.
+
+`open_url` hands a page to your own default browser (http/https only). For
+browsing Leti does itself: `web_search` finds pages, `browser_read_page` reads
+one so it can answer from what the page says rather than a search snippet, and
+`browser_navigate`/`browser_click`/`browser_fill_form` drive a dedicated
+Playwright browser.
+
+Window control (`close_app`, `focus_window`) works on Windows and macOS;
+pygetwindow doesn't implement it on Linux, where the tools now say so plainly
+instead of surfacing a bare exception.
+
 - `config/permissions.yaml` — per-tool risk tiers, forbidden shell patterns,
   and protected filesystem paths. Review and tighten this before giving
   Leti broad system access. `protected_paths` is worth extending: `read_file`

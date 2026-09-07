@@ -2,13 +2,24 @@
 Desktop automation: launching applications, managing windows, and driving the
 mouse/keyboard. Wrapped in individual BaseTool subclasses so each action gets
 its own risk tier and audit trail entry (see config/permissions.yaml).
+
+Launching is deliberately capable: the user asks for something ("open Firefox on
+YouTube", "open my invoice"), Leti confirms the action, and it happens. That
+means resolving an app the way a person names it rather than demanding an exact
+binary, passing arguments through, and reporting honestly when nothing started.
+The confirmation prompt is the control here (launch_app is `risky` in
+permissions.yaml), not a narrow tool.
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import platform
+import re
+import shutil
 import subprocess
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 import pyautogui
 import pygetwindow as gw
@@ -17,26 +28,201 @@ from tools.base import BaseTool, ToolParameter, ToolResult
 
 pyautogui.FAILSAFE = True  # moving mouse to a screen corner aborts pyautogui actions
 
+_WINDOW_CONTROL_UNSUPPORTED = (
+    "Window control isn't available on this system. pygetwindow implements it on "
+    "Windows and macOS; on Linux it raises NotImplementedError. Leti can still launch "
+    "apps, open URLs, type and click - just not enumerate or move windows. "
+    "(Workaround on Linux: `run_shell_command` with wmctrl or xdotool, if installed.)"
+)
+
+
+def _matching_windows(window_title: str):
+    """Windows whose title contains `window_title`, or a legible error instead.
+
+    pygetwindow raises NotImplementedError on Linux rather than returning nothing,
+    which surfaced to the user as a bare exception string with no hint that the
+    platform simply doesn't support this.
+    """
+    try:
+        return [w for w in gw.getAllWindows() if window_title.lower() in w.title.lower()], None
+    except NotImplementedError:
+        return [], _WINDOW_CONTROL_UNSUPPORTED
+    except Exception as e:
+        return [], f"Couldn't list windows: {e}"
+
+# How long to wait before deciding a launch "worked". A program that is going to
+# fail outright (missing binary, bad arguments) exits within a few hundred ms;
+# anything still alive after this is a real running application.
+_LAUNCH_SETTLE_SECONDS = 0.6
+
+
+def _looks_like_url(value: str) -> bool:
+    return value.startswith(("http://", "https://", "mailto:", "file://"))
+
+
+def _platform_opener() -> Optional[List[str]]:
+    """The OS command that opens a file or URL with its registered handler."""
+    system = platform.system()
+    if system == "Darwin":
+        return ["open"]
+    if system == "Windows":
+        return ["cmd", "/c", "start", ""]
+    opener = shutil.which("xdg-open") or shutil.which("gio")
+    if opener:
+        return [opener, "open"] if opener.endswith("gio") else [opener]
+    return None
+
+
+def _resolve_launch(app_name: str, arguments: List[str]) -> tuple[Optional[List[str]], str]:
+    """Work out how to start `app_name`, returning (argv, how) or (None, why-not).
+
+    Tried in order, most specific first:
+      1. A URL or an existing file/path -> hand to the OS's registered handler,
+         which is what makes "open my invoice" and "open youtube.com" work.
+      2. An executable on PATH (or an absolute path to one) -> run it directly.
+      3. The platform's own by-name app launcher - `open -a` on macOS, `start` on
+         Windows, gtk-launch on Linux desktops - which knows about applications
+         that aren't plain binaries on PATH.
+    """
+    opener = _platform_opener()
+
+    if _looks_like_url(app_name) or Path(app_name).expanduser().exists():
+        target = str(Path(app_name).expanduser()) if not _looks_like_url(app_name) else app_name
+        if opener:
+            return opener + [target] + arguments, f"opened '{target}' with the system handler"
+        return None, "No system 'open' handler found (install xdg-utils on Linux)."
+
+    direct = shutil.which(app_name)
+    if direct:
+        return [direct] + arguments, f"ran '{direct}'"
+
+    system = platform.system()
+    if system == "Darwin":
+        argv = ["open", "-a", app_name]
+        if arguments:
+            argv += ["--args"] + arguments
+        return argv, f"asked macOS to open the app named '{app_name}'"
+    if system == "Windows":
+        # No shell=True: app_name comes from the model, and letting cmd.exe parse
+        # it as a command line makes '&' and friends into command separators.
+        return ["cmd", "/c", "start", "", app_name] + arguments, f"asked Windows to start '{app_name}'"
+
+    gtk_launch = shutil.which("gtk-launch")
+    if gtk_launch:
+        desktop_id = app_name if app_name.endswith(".desktop") else f"{app_name}.desktop"
+        return [gtk_launch, desktop_id] + arguments, f"launched the '{desktop_id}' application entry"
+
+    return None, (
+        f"Couldn't find an application called '{app_name}': it isn't a program on PATH, "
+        f"an existing file, or a URL. Try the exact command name (e.g. 'firefox', "
+        f"'google-chrome') or the full path to the program."
+    )
+
 
 class LaunchAppTool(BaseTool):
     name = "launch_app"
-    description = "Launch a desktop application by name (e.g. 'notepad', 'chrome', 'spotify')."
+    description = (
+        "Open an application, file, or URL on the user's computer. Accepts a program name "
+        "('firefox', 'spotify', 'code'), a full path to a program or document, or a URL. "
+        "Pass `arguments` to open something IN that app - e.g. app_name 'firefox' with "
+        "arguments ['https://youtube.com'], or 'code' with ['~/projects']. Requires the "
+        "user's confirmation before anything starts."
+    )
     parameters = [
-        ToolParameter(name="app_name", type="string", description="Name or path of the application to launch."),
+        ToolParameter(
+            name="app_name", type="string",
+            description="Program name (e.g. 'firefox'), a path to a program or file, or a URL.",
+        ),
+        ToolParameter(
+            name="arguments", type="array", items_type="string", required=False,
+            description="Arguments to pass, e.g. ['https://youtube.com'] to open a page in a browser.",
+        ),
     ]
 
-    async def run(self, app_name: str, **kwargs) -> ToolResult:
-        system = platform.system()
+    async def run(self, app_name: str, arguments: Optional[List[str]] = None, **kwargs) -> ToolResult:
+        arguments = [str(a) for a in (arguments or [])]
+        argv, how = _resolve_launch(app_name, arguments)
+        if argv is None:
+            return ToolResult(success=False, error=how)
+
         try:
-            if system == "Windows":
-                subprocess.Popen(["start", "", app_name], shell=True)
-            elif system == "Darwin":
-                subprocess.Popen(["open", "-a", app_name])
-            else:  # Linux
-                subprocess.Popen([app_name])
-            return ToolResult(success=True, output=f"Launched '{app_name}'.")
+            # Detached and silenced: a launched app must outlive the tool call, and
+            # its stdout shouldn't spill into Leti's own terminal.
+            popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+            if os.name == "posix":
+                popen_kwargs["start_new_session"] = True
+            proc = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: subprocess.Popen(argv, **popen_kwargs)
+            )
+        except FileNotFoundError:
+            return ToolResult(success=False, error=f"Couldn't run '{argv[0]}' - it isn't installed or isn't on PATH.")
+        except OSError as e:
+            return ToolResult(success=False, error=f"Couldn't start '{app_name}': {e}")
+
+        # Popen returning is not evidence anything opened - it succeeds for a program
+        # that exits immediately. Give it a moment, then check it's actually alive,
+        # so "Launched X" is never reported for something that died on startup.
+        await asyncio.sleep(_LAUNCH_SETTLE_SECONDS)
+        if proc.poll() is not None and proc.returncode != 0:
+            stderr = b""
+            try:
+                stderr = proc.stderr.read() if proc.stderr else b""
+            except Exception:
+                pass
+            detail = stderr.decode(errors="replace").strip().splitlines()
+            return ToolResult(
+                success=False,
+                error=(f"'{app_name}' exited immediately with code {proc.returncode}"
+                       + (f": {detail[0]}" if detail else ".")),
+            )
+
+        opened = f" with {' '.join(arguments)}" if arguments else ""
+        return ToolResult(success=True, output=f"Opened '{app_name}'{opened} ({how}).")
+
+
+class OpenUrlTool(BaseTool):
+    name = "open_url"
+    description = (
+        "Open a web page in the user's own default browser - the one with their logins, "
+        "bookmarks and extensions. Use this when the user wants to LOOK at a page themselves "
+        "('open YouTube', 'pull up the docs'). Use web_search to find information and "
+        "browser_navigate/browser_read_page when Leti needs to read a page itself."
+    )
+    parameters = [
+        ToolParameter(name="url", type="string", description="Full http(s) URL to open."),
+    ]
+
+    async def run(self, url: str, **kwargs) -> ToolResult:
+        import webbrowser
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            # Match any scheme, not just '://' ones: 'javascript:alert(1)' and
+            # 'file:/etc/passwd' have no slashes, so a '://' test lets them through
+            # to be prefixed with https:// and handed to the browser anyway.
+            scheme = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):", url)
+            if scheme:
+                return ToolResult(
+                    success=False,
+                    error=(f"Only http:// and https:// URLs can be opened, not "
+                           f"'{scheme.group(1)}:'. file: exposes the local filesystem and "
+                           f"javascript: runs code in whatever page is open."),
+                )
+            url = "https://" + url
+
+        try:
+            opened = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: webbrowser.open(url)
+            )
         except Exception as e:
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(success=False, error=f"Couldn't open the browser: {e}")
+
+        if not opened:
+            return ToolResult(
+                success=False,
+                error="No default browser could be started. On Linux this usually means xdg-utils isn't installed.",
+            )
+        return ToolResult(success=True, output=f"Opened {url} in your default browser.")
 
 
 class CloseAppTool(BaseTool):
@@ -47,10 +233,12 @@ class CloseAppTool(BaseTool):
     ]
 
     async def run(self, window_title: str, **kwargs) -> ToolResult:
+        matches, error = _matching_windows(window_title)
+        if error:
+            return ToolResult(success=False, error=error)
+        if not matches:
+            return ToolResult(success=False, error=f"No window matching '{window_title}' found.")
         try:
-            matches = [w for w in gw.getAllWindows() if window_title.lower() in w.title.lower()]
-            if not matches:
-                return ToolResult(success=False, error=f"No window matching '{window_title}' found.")
             for w in matches:
                 w.close()
             return ToolResult(success=True, output=f"Closed {len(matches)} window(s) matching '{window_title}'.")
@@ -66,10 +254,12 @@ class FocusWindowTool(BaseTool):
     ]
 
     async def run(self, window_title: str, **kwargs) -> ToolResult:
+        matches, error = _matching_windows(window_title)
+        if error:
+            return ToolResult(success=False, error=error)
+        if not matches:
+            return ToolResult(success=False, error=f"No window matching '{window_title}' found.")
         try:
-            matches = [w for w in gw.getAllWindows() if window_title.lower() in w.title.lower()]
-            if not matches:
-                return ToolResult(success=False, error=f"No window matching '{window_title}' found.")
             win = matches[0]
             win.activate()
             return ToolResult(success=True, output=f"Focused window '{win.title}'.")
