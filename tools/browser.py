@@ -5,6 +5,7 @@ fill) share state, and closes cleanly on shutdown.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from playwright.async_api import async_playwright, Browser, Page, Playwright
@@ -19,13 +20,20 @@ class BrowserSession:
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._page: Optional[Page] = None
+        self._lock = asyncio.Lock()
 
     async def get_page(self) -> Page:
-        if self._page is None:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=False)
-            self._page = await self._browser.new_page()
-        return self._page
+        # Launching is several awaits long. Without the lock, two tool calls that
+        # both find _page is None start two Chromium instances, and the first is
+        # orphaned - never closed, still on screen.
+        if self._page is not None:
+            return self._page
+        async with self._lock:
+            if self._page is None:
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(headless=False)
+                self._page = await self._browser.new_page()
+            return self._page
 
     async def close(self):
         if self._browser:

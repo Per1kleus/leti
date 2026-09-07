@@ -4,12 +4,13 @@ Executes shell commands with strict guardrails:
     but we re-check here as defense-in-depth in case this tool is invoked directly.
   - Commands run with a timeout, captured stdout/stderr, and no shell chaining
     of destructive redirects beyond what the forbidden-pattern list catches.
-  - Runs in a restricted working directory by default (not system roots).
+  - Runs in the user's home directory unless a working_dir is given.
 """
 from __future__ import annotations
 
 import asyncio
 import shlex
+from pathlib import Path
 from typing import Optional
 
 from core.config_loader import get_permissions, resolve_path
@@ -55,7 +56,11 @@ class ShellRunnerTool(BaseTool):
         if matched:
             return ToolResult(success=False, error=f"Blocked: command matches forbidden pattern '{matched}'.")
 
-        cwd = str(resolve_path(working_dir)) if working_dir else None
+        # Default to the user's home directory, as this tool's parameter description
+        # and module docstring both say. cwd=None inherited Leti's own working
+        # directory - the project checkout - so an unqualified 'ls' or a relative
+        # write landed inside the app's own source tree.
+        cwd = str(resolve_path(working_dir)) if working_dir else str(Path.home())
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -68,6 +73,7 @@ class ShellRunnerTool(BaseTool):
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 proc.kill()
+                await proc.wait()   # reap it, or the child lingers as a zombie
                 return ToolResult(success=False, error=f"Command timed out after {timeout_seconds}s.")
 
             output = stdout.decode(errors="replace").strip()

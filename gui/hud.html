@@ -3,7 +3,17 @@
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#050b14">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<!-- Mermaid renders create_sketch diagrams. Worth knowing in a local-first app:
+     this is the one runtime dependency on the public internet, it executes in a
+     page that holds a full RPC session to the assistant, and diagrams don't
+     render offline (the code below falls back to showing the raw source).
+     Pinned to an exact version rather than a floating major so the script can't
+     change under the page. To drop the dependency entirely, download this file
+     to gui/vendor/mermaid.min.js and point src at /vendor/mermaid.min.js - the
+     server serves that directory whenever it exists. Adding an SRI integrity hash is worthwhile too;
+     take it from jsdelivr for the exact version you pin. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <style>
   :root{
@@ -381,6 +391,11 @@
   // phone/browser - both are just clients of the same local server. Reconnects
   // automatically (phones suspend background tabs constantly), and re-sends the
   // auth token from the URL (?token=...) on every (re)connect. ----------
+  // Functions the backend is allowed to invoke via a 'push' message.
+  const PUSH_HANDLERS = new Set([
+    'appendLetiReply', 'appendUserMessage', 'setHudState', 'focusChatInput', 'showVisual',
+  ]);
+
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const urlToken = new URLSearchParams(location.search).get('token') || '';
   let ws = null;
@@ -417,7 +432,11 @@
           console.warn('Leti:', msg.message);
         }
       } else if(msg.type === 'push'){
-        const fn = window[msg.fn];
+        // Allowlist rather than an open window[...] lookup: the server is local and
+        // trusted, but a name-addressed dispatch into every global is a wider door
+        // than this needs, and an unknown name should be a visible no-op.
+        const fn = PUSH_HANDLERS.has(msg.fn) ? window[msg.fn] : undefined;
+        if(!fn) { console.warn('Leti: ignoring unknown push', msg.fn); return; }
         if(typeof fn === 'function') fn(...(msg.args || []));
       }
     };
@@ -774,7 +793,13 @@
   function renderSettingsForm(name){
     callApi('get_settings_section', name).then(section => {
       if(section.error){
-        settingsContent.innerHTML = `<div class="settings-error">${section.error}</div>`;
+        // textContent, not innerHTML - the rest of this file builds nodes and sets
+        // text, and this was the one place a value was interpolated into markup.
+        settingsContent.replaceChildren();
+        const errEl = document.createElement('div');
+        errEl.className = 'settings-error';
+        errEl.textContent = section.error;
+        settingsContent.appendChild(errEl);
         return;
       }
       settingsContent.innerHTML = '';

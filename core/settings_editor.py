@@ -77,6 +77,8 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
             {"key": "longitude", "label": "Longitude", "type": "number", "required": False},
             {"key": "location_label", "label": "Location label (optional)", "required": False},
             {"key": "unit", "label": "Unit (celsius/fahrenheit)", "default": "celsius", "required": False},
+            {"key": "allow_ip_geolocation", "type": "bool", "required": False, "default": False,
+             "label": "Look up location from my IP if no coordinates are set (sends your IP to ipapi.co)"},
         ],
     },
     "youtube": {

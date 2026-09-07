@@ -334,7 +334,24 @@ Leti says in text.
   sections (email, calendar, weather, etc.) ship commented out with examples.
 - `config/permissions.yaml` — per-tool risk tiers, forbidden shell patterns,
   and protected filesystem paths. Review and tighten this before giving
-  Leti broad system access.
+  Leti broad system access. `protected_paths` is worth extending: `read_file`
+  runs without confirmation and `send_email` needs only one, so anything
+  readable is one approval away from leaving the machine.
+
+Changes made through `/settings` apply immediately. The exceptions are values
+bound to a resource when Leti starts — the SQLite and Chroma paths, the loaded
+Whisper model, and the Ollama base URL and HTTP timeout — which need a restart.
+
+## Tests
+
+```
+pip install pytest pytest-asyncio
+pytest
+```
+
+The suite covers the authorization layer specifically: protected-path
+canonicalization, shell-command path checks, `dry_run`, voice pre-approval
+scoping, audit redaction, atomic state writes, and the subprocess runner.
 - **The `/settings` command** — the easier way to actually configure something
   like email or calendar, instead of hand-editing `settings.yaml` and hunting
   for the right line. Type `/settings` in text mode or the GUI's chat box (not
@@ -359,12 +376,14 @@ leti/
 │   ├── settings.yaml          # Model names, thresholds, paths, modes
 │   └── permissions.yaml       # Safe vs risky commands/tools
 ├── core/
-│   ├── config_loader.py       # Shared YAML config loader
+│   ├── config_loader.py       # Shared YAML config loader + canonical path resolution
 │   ├── orchestrator.py        # Async event loop, state machine, tool-calling loop
 │   ├── llm_client.py          # Ollama client with native function calling
 │   ├── safety_guard.py        # Permissions, confirmation barrier, audit logger
 │   ├── intent_signals.py      # Approval/denial phrase detection (voice pre-approval, -y shorthand)
 │   ├── confirmation.py        # CLI + voice confirmation callbacks (shared by CLI and GUI modes)
+│   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
+│   ├── atomic_write.py        # Crash-safe state-file writes
 │   └── settings_editor.py     # The /settings command - schema-driven, no LLM involved
 ├── gui/
 │   ├── hud.html                # The HUD interface (audio-reactive ring, dashboard, chat)
@@ -380,6 +399,7 @@ leti/
 │   └── session_memory.py      # Working memory & conversation buffer (+ SQLite log)
 ├── tools/
 │   ├── base.py                # BaseTool abstract class & JSON schema generator
+│   ├── command_runner.py      # Async subprocess helper that keeps exit status/stderr
 │   ├── os_control.py          # App launcher, window manager, mouse/keyboard
 │   ├── shell_runner.py        # Sandboxed terminal executor
 │   ├── file_manager.py        # Safe file read, write, search, organize
@@ -425,12 +445,16 @@ Every tool call passes through `SafetyGuard.authorize()` before it runs:
 2. **Risk tiers** (`config/permissions.yaml`):
    - `safe` — executes immediately (e.g. reading the screen, listing files,
      web search).
-   - `risky` — requires a confirmation prompt (e.g. writing files, shell
-     commands, mouse/keyboard control).
-   - `destructive` — requires confirmation and is logged with extra emphasis
-     (e.g. deleting files).
+   - `risky` — requires a confirmation prompt (e.g. writing files, launching
+     an application, mouse/keyboard control).
+   - `destructive` — requires confirmation, is described to the user as
+     irreversible, and never accepts voice pre-approval (e.g. deleting files,
+     killing a process, running a shell command).
 3. **Audit log** — every authorization decision and execution result is
-   appended to `logs/audit.log` as a JSON line, regardless of outcome.
+   appended to `logs/audit.log` as a JSON line, regardless of outcome. Argument
+   values that are secrets or bulk content (a password typed into a form, a
+   file's contents, an email body) are recorded as a length marker rather than
+   verbatim — the log is permanent and unrotated, so what it keeps matters.
 
 You can flip `safety.dry_run: true` in `settings.yaml` to have every
 risky/destructive tool report what it *would* do instead of doing it — useful

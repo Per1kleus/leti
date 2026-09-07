@@ -98,6 +98,12 @@ class LetiWebServer:
         self.app.router.add_get("/manifest.json", self._handle_manifest)
         self.app.router.add_get("/sw.js", self._handle_service_worker)
         self.app.router.add_get("/icon.svg", self._handle_icon)
+        # Optional local copies of third-party assets, so the HUD can be made to
+        # work with no internet at all - see the mermaid comment in hud.html.
+        # Only created if the user actually vendors something.
+        vendor_dir = GUI_DIR / "vendor"
+        if vendor_dir.is_dir():
+            self.app.router.add_static("/vendor/", path=str(vendor_dir), name="vendor")
         self.app.router.add_get("/ws", self._handle_ws)
         self.runner: Optional[web.AppRunner] = None
         # asyncio only holds a weak reference to a running task, so a bare

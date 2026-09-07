@@ -31,8 +31,11 @@ tools:
   move_file:
     tier: risky
 
+  # Executes an arbitrary program - on Linux, whatever path the model names.
+  # "Open my browser" is harmless; "launch /tmp/x" is not, and nothing here can
+  # tell them apart, so it asks.
   launch_app:
-    tier: safe
+    tier: risky
 
   close_app:
     tier: risky
@@ -49,8 +52,13 @@ tools:
   keyboard_hotkey:
     tier: risky
 
+  # A shell command can do anything the user can, and the forbidden-pattern list
+  # is a blocklist, which can't be complete. Tiering it destructive doesn't add a
+  # gate - risky and destructive both require confirmation - but it does change
+  # what the prompt says, from "this will make a change" to "this can't be
+  # undone", which is the honest description of an arbitrary command.
   run_shell_command:
-    tier: risky
+    tier: destructive
 
   browser_navigate:
     tier: safe
@@ -277,7 +285,16 @@ forbidden_shell_patterns:
   - "curl | sh"
   - "wget | sh"
 
-# Absolute paths Leti must never touch (read or write)
+# Absolute paths Leti must never touch (read or write).
+#
+# Enforced on canonical paths ('..' normalized, symlinks followed) and against
+# paths named inside a shell command, not just path-shaped tool arguments.
+#
+# Worth extending: read_file is `safe` (no confirmation) and send_email is
+# `risky` (one confirmation), so anything readable is one approval away from
+# leaving the machine. The entries below cover the usual credential stores; add
+# whatever else on this machine you'd never want read aloud or attached to an
+# email - .env files, password manager exports, tax documents.
 protected_paths:
   - "~/.ssh"
   - "~/.aws"

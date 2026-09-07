@@ -63,7 +63,26 @@ class ScreenCapture:
             self._cache_path = out_path
             self._cache_time = now
 
+        self._prune_old_screenshots(out_dir, keep=self.settings.get("keep_screenshots", 20))
         return out_path
+
+    @staticmethod
+    def _prune_old_screenshots(out_dir: Path, keep: int) -> None:
+        """Keep only the most recent `keep` captures.
+
+        Every read_screen call wrote a new timestamped PNG and nothing ever
+        removed them, so an assistant that can see the screen slowly filled the
+        disk with full-resolution screenshots - which are also a privacy
+        liability sitting around in plaintext.
+        """
+        if keep <= 0:
+            return
+        try:
+            shots = sorted(out_dir.glob("screen_*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for stale in shots[keep:]:
+                stale.unlink(missing_ok=True)
+        except OSError:
+            pass   # pruning is housekeeping; never fail a capture over it
 
     @staticmethod
     def to_base64(path: Path) -> str:

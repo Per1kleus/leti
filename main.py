@@ -109,6 +109,20 @@ logging.basicConfig(
 logger = logging.getLogger("leti.main")
 
 
+def _apply_log_level() -> None:
+    """Honor app.log_level from settings.yaml, which was documented but unread.
+
+    Called after config is available; basicConfig above still runs first so that
+    a failure to load config is itself logged.
+    """
+    level_name = str(get_settings().get("app", {}).get("log_level", "INFO")).upper()
+    level = getattr(logging, level_name, None)
+    if isinstance(level, int):
+        logging.getLogger().setLevel(level)
+    else:
+        logger.warning(f"Unknown app.log_level '{level_name}' - keeping INFO.")
+
+
 def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSession, social_login_manager: SocialLoginManager) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(ReadScreenTool(llm_client))
@@ -372,6 +386,7 @@ async def build_app():
     run_until_complete() on its own dedicated loop, instead of the loop
     asyncio.run(main()) creates - the two must never nest (see run_gui's docstring)."""
     ensure_data_dirs()
+    _apply_log_level()
     settings = get_settings()
 
     llm_client = OllamaClient()

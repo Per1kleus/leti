@@ -6,10 +6,7 @@ app:
   name: "Leti"
   wake_word: "hey_leti"          # must match a trained/available openwakeword model name
   wake_word_threshold: 0.5
-  interrupt_word: "stop leti"
-  default_mode: "push_to_talk"   # "push_to_talk" | "continuous"
-  ptt_hotkey: "<ctrl>+<space>"
-  log_level: "INFO"
+  log_level: "INFO"              # DEBUG | INFO | WARNING | ERROR
 
 ollama:
   host: "http://localhost:11434"
@@ -35,21 +32,18 @@ ollama:
   max_tool_iterations: 8          # cap on chained tool calls per user turn
 
 stt:
-  engine: "whisper"                # openai-whisper
   model_size: "base.en"            # tiny.en/base.en/small.en/medium.en/large-v3
   device: "cpu"                    # "cpu" | "cuda"
   fp16: false                      # set true if running on a CUDA GPU
   silence_timeout_seconds: 1.2
 
 tts:
-  engine: "pyttsx3"
   voice_id: ""                     # leave blank for system default; see README to list available voice IDs
   rate: 180                        # words per minute
   volume: 1.0                      # 0.0 - 1.0
   interruptible: true
 
 memory:
-  vector_backend: "chromadb"
   persist_dir: "./data/chroma"
   sqlite_path: "./data/leti.db"
   session_buffer_max_turns: 20
@@ -59,9 +53,9 @@ vision:
   screenshot_dir: "./data/screenshots"
   max_screenshot_age_seconds: 5    # reuse cached capture within this window
   downscale_width: 1280            # resize before sending to vision model
+  keep_screenshots: 20             # older captures are deleted after each new one
 
 safety:
-  require_confirmation_for: ["risky", "destructive"]
   confirmation_timeout_seconds: 15
   # If true, every risky/destructive tool call is reported instead of performed:
   # Leti describes what it would have done and nothing changes on the system.
@@ -192,14 +186,18 @@ paths:
 #   watches_file_path: "./data/social_watches.json"
 
 # -----------------------------------------------------------------------------
-# Weather (GUI dashboard) - Open-Meteo needs no API key. Location defaults to
-# free IP-based geolocation; set latitude/longitude here to override it.
+# Weather (GUI dashboard) - Open-Meteo needs no API key.
+# Set latitude/longitude to say where you are. If you'd rather not, Leti can
+# look your approximate location up from your IP instead - but that sends a
+# request to a third party (ipapi.co) revealing your IP, so it's off unless you
+# turn it on. With neither set, the weather tool says so rather than guessing.
 # -----------------------------------------------------------------------------
 # weather:
 #   latitude: 37.7749
 #   longitude: -122.4194
 #   location_label: "San Francisco, CA"
 #   unit: "celsius"   # or "fahrenheit"
+#   allow_ip_geolocation: false
 
 # -----------------------------------------------------------------------------
 # To-do list (GUI dashboard) - shared storage between GUI checkbox clicks and
