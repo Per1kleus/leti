@@ -135,6 +135,13 @@ from tools.engineering import (
     CheckDimensionsTool,
     SolveSymbolicTool,
 )
+from tools.business import (
+    RecordBusinessDataTool,
+    UpdateLeadTool,
+    ListBusinessDataTool,
+    BusinessDashboardTool,
+    NextActionsTool,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 
@@ -298,6 +305,15 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ConvertUnitsTool())
     registry.register(CheckDimensionsTool())
     registry.register(SolveSymbolicTool())
+
+    # Business intelligence: leads, income and expenses, with every metric computed
+    # from them. People are not stored here - a record links to a contact by id, so
+    # the contact book stays the one place someone's details live.
+    registry.register(RecordBusinessDataTool())
+    registry.register(UpdateLeadTool())
+    registry.register(ListBusinessDataTool())
+    registry.register(BusinessDashboardTool())
+    registry.register(NextActionsTool())
 
     # Visual output: image search + simple diagrams, pushed straight to the GUI via
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.

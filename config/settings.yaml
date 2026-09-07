@@ -75,6 +75,18 @@ safety:
 projects:
   root: "./data/projects"
 
+# Business records (see tools/business.py). stage_weights is what each pipeline
+# stage is worth when weighting the pipeline - the defaults are conventional
+# sales-funnel probabilities; set your own if your business converts differently.
+# business:
+#   file_path: "./data/business.json"
+#   stage_weights:
+#     new: 0.10
+#     contacted: 0.20
+#     qualified: 0.40
+#     proposal: 0.60
+#     negotiation: 0.80
+
 paths:
   data_dir: "./data"
   logs_dir: "./logs"

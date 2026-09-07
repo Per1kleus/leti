@@ -290,6 +290,22 @@ tools:
   delete_todo_item:
     action: execute
 
+  # --- Business intelligence ---
+  business_dashboard:
+    action: read
+
+  list_business_data:
+    action: read
+
+  business_next_actions:
+    action: read
+
+  record_business_data:
+    action: modify
+
+  update_lead:
+    action: modify
+
   # --- Engineering ---
   # Pure computation - no files touched, nothing outside the process.
   engineering_calculate:
