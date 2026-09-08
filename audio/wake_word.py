@@ -36,13 +36,19 @@ class WakeWordListener:
         self._running = False
 
     async def start(self) -> None:
+        from audio.setup import chosen_input_device
+
         self._running = True
+        # The same microphone the user picked during first-run setup. Listening for
+        # the wake word on one device while transcribing from another is the kind of
+        # split that looks like "Leti ignores me" on a machine with two inputs.
         self._stream = self._pa.open(
             format=pyaudio.paInt16,
             channels=1,
             rate=SAMPLE_RATE,
             input=True,
             frames_per_buffer=CHUNK_SAMPLES,
+            input_device_index=chosen_input_device(),
         )
         logger.info(f"Wake word listener active for '{self.settings['wake_word']}'")
 

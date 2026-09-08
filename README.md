@@ -18,9 +18,11 @@ searches and pages you explicitly ask it to visit.
 - **Screen vision** via `llama3.2-vision` — ask Leti what's on your screen.
 - **Voice pipeline** — wake word (openWakeWord), speech-to-text
   (OpenAI Whisper), text-to-speech (pyttsx3, using your OS's native voice
-  engine), with interruptible playback. Optional in practice: on a machine with
-  no microphone, no speaker or no espeak, GUI mode says so once and runs
-  text-only rather than refusing to start (see below).
+  engine), with interruptible playback. Leti asks for the microphone and speakers
+  **once, on the first launch**, checks they actually work, and remembers the
+  answer (see below). Optional in practice: on a machine with no microphone, no
+  speaker or no espeak, GUI mode says so once and runs text-only rather than
+  refusing to start.
 - **Memory** — short-term conversation buffer + long-term semantic recall
   (ChromaDB) so Leti remembers preferences and facts across sessions.
 - **System control** — launch/close apps, focus windows, mouse/keyboard
@@ -174,6 +176,10 @@ searches and pages you explicitly ask it to visit.
    - Debian/Ubuntu/Linux: `sudo apt install espeak` (pyttsx3 drives espeak)
    - macOS: no extra install — uses the built-in `NSSpeechSynthesizer`
    - Windows: no extra install — uses the built-in SAPI5 engine
+
+   You won't need to find any of this yourself on a normal machine: the first
+   launch asks (see **Microphone and speakers** below) and tells you which piece
+   is missing if one is.
 
    None of this is required to *run* Leti. `--mode text` never touches audio;
    `--mode gui` prints why voice is unavailable and continues text-only, and
@@ -346,6 +352,46 @@ Leti says in text.
   state-changing tool *would* do instead of executing it — see Safety below).
   This file is the documented reference/template — most of its integration
   sections (email, calendar, weather, etc.) ship commented out with examples.
+### Microphone and speakers
+
+The first time you launch Leti it asks whether it may use this computer's
+microphone and speakers, and then checks that they actually work. The answer is
+saved to `data/audio_setup.json` and never asked again — `/audio` in text mode,
+or the **Audio** button in the interface, re-opens the same flow to change it.
+
+Asking deliberately, at a known moment, is the point. On macOS and Windows the
+*first attempt to open the microphone* is what triggers the operating system's
+own permission dialog; left to itself that appears at some random later moment —
+mid-sentence, behind the window, the first time you happen to say the wake word —
+and if it's missed, voice silently never works. So in GUI mode Leti does not
+touch the microphone at all until the card has been answered: it starts
+text-only, asks, and starts listening once you accept, in the same session.
+
+The check is a real one, not a checkbox:
+
+- **Microphone** — it records for three seconds and reports the peak level. A
+  microphone that opens but delivers silence (muted input, the wrong device, or
+  permission granted to your terminal but not to Python) is indistinguishable
+  from a working one unless the level is measured, so the answer is a number and
+  a verdict rather than "enabled". If the machine has more than one input, you
+  pick which; that choice is what `record_until_silence`, push-to-talk, *and* the
+  wake-word listener all open afterwards.
+- **Speakers** — it plays a test tone through the system's default output and
+  asks whether you heard it. A tone rather than only a spoken sentence, because
+  it separates the two failures: nothing at all means the speakers, while hearing
+  the beep but not the words means espeak or a voice setting.
+
+There's deliberately no speaker *picker*: pyttsx3 hands audio to whatever output
+your OS has set as default and offers no way to choose another, so a picker here
+would be a control that silently does nothing. The card names the device the
+system will actually use; change it in your OS to change Leti's.
+
+Declining is remembered too, and turns voice off rather than being re-asked every
+launch. Three states are tracked, not two — "allowed", "declined", and "never
+asked" — so a launch that has nobody at the keyboard to answer (a service, a
+piped script, cron's `--mode run-scheduled`) saves nothing and leaves the question
+open for the next real launch, instead of recording a decline on your behalf.
+
 ### Controlling the computer
 
 Leti opens things the way you'd ask a person to: `launch_app` takes an app name

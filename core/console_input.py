@@ -32,6 +32,13 @@ class _ConsoleReader:
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.Lock()
+        self._at_eof = False
+        """Sticky. The pump publishes EOF exactly once, so without remembering it
+        the FIRST caller to see end-of-input consumed the only notice of it and
+        every caller after that waited forever on a queue nothing would ever fill
+        again. That is one prompt away in normal use: /settings or the first-run
+        audio prompt reading the last of a piped script, and then the chat loop
+        hanging instead of exiting."""
 
     def _ensure_started(self) -> asyncio.Queue:
         """Bind to the running loop and start the reader thread, once."""
@@ -42,6 +49,7 @@ class _ConsoleReader:
 
             self._loop = loop
             self._queue = asyncio.Queue()
+            self._at_eof = False   # a new loop means a new process-lifetime read
             queue = self._queue
 
             def publish(item) -> None:
@@ -65,13 +73,15 @@ class _ConsoleReader:
 
         Called before prompting so a line the user typed ahead - or an answer to
         a prompt that already timed out - isn't silently accepted as the answer
-        to this one.
+        to this one. An EOF found here is remembered rather than thrown away, for
+        the same reason read_line remembers it.
         """
         if self._queue is None:
             return
         while True:
             try:
-                self._queue.get_nowait()
+                if self._queue.get_nowait() is EOF:
+                    self._at_eof = True
             except asyncio.QueueEmpty:
                 return
 
@@ -84,6 +94,10 @@ class _ConsoleReader:
         thread stranded - it only stops this coroutine waiting.
         """
         queue = self._ensure_started()
+        if self._at_eof:
+            # Nothing more is coming. Answer immediately rather than printing a
+            # prompt nobody can respond to and blocking on it.
+            return None
         if drain_stale:
             self.drain()
         if prompt:
@@ -99,6 +113,7 @@ class _ConsoleReader:
             return None
 
         if item is EOF:
+            self._at_eof = True
             return None
         return item
 

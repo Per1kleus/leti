@@ -286,6 +286,42 @@
   }
   .settings-back:hover{ color:var(--cyan); }
   .settings-error{ color:var(--amber); font-size:12px; margin-top:8px; }
+
+  /* ---------- First-run audio permission (audio/setup.py) ----------
+     Reuses .settings-overlay / .settings-panel / .settings-btn rather than
+     introducing a second modal system - this is one more panel, not a new kind
+     of thing. Only the parts a permission card needs are added here. */
+  .audio-intro{ font-size:13px; color:var(--ice); line-height:1.55; margin-bottom:14px; }
+  .audio-intro .quiet{ color:var(--ice-dim); font-size:12px; }
+  .audio-step{
+    border:1px solid var(--panel-border); border-radius:6px; padding:12px; margin-bottom:10px;
+  }
+  .audio-step .head{
+    display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;
+  }
+  .audio-step .name{
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px; color:var(--ice);
+  }
+  .audio-step .verdict{
+    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px;
+    text-transform:uppercase; color:var(--ice-dim);
+  }
+  .audio-step .verdict.good{ color:var(--cyan); }
+  .audio-step .verdict.bad{ color:var(--amber); }
+  .audio-step select{
+    width:100%; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:7px 9px;
+    outline:none; box-sizing:border-box; margin-bottom:8px;
+  }
+  .audio-meter{
+    height:6px; background:#0f1f2c; border-radius:3px; overflow:hidden; margin-top:8px;
+    border:1px solid var(--panel-border);
+  }
+  .audio-meter > span{
+    display:block; height:100%; width:0%; background:var(--cyan-dim); transition:width 0.25s;
+  }
+  .audio-detail{ font-size:12px; color:var(--ice-dim); margin-top:7px; line-height:1.5; }
+  .audio-detail.bad{ color:var(--amber); }
 </style>
 
 <div id="leti-root">
@@ -354,6 +390,7 @@
     <div class="hud-controls">
       <button class="hud-btn" id="micBtn">Enable Microphone</button>
       <button class="hud-btn" id="simBtn">Simulate Speaking</button>
+      <button class="hud-btn" id="audioBtn">Audio</button>
     </div>
     <div class="hud-note" id="hudNote">The ring reacts to live mic input if your browser allows it here, or use Simulate Speaking to preview the effect.</div>
 
@@ -382,6 +419,14 @@
     <div class="settings-panel">
       <div class="settings-close" id="settingsClose">&times;</div>
       <div id="settingsContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="audioOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="audioClose">&times;</div>
+      <div class="settings-panel-title">Microphone &amp; Speakers</div>
+      <div id="audioContent"></div>
     </div>
   </div>
 </div>
@@ -754,6 +799,211 @@
     lightboxImg.src = url;
     lightbox.classList.add('open');
   }
+
+  // ---------- Microphone & speakers, asked once (see audio/setup.py) ----------
+  // The backend deliberately does NOT open the microphone before this card has
+  // been answered: on macOS and Windows the first open is what raises the OS's
+  // own permission dialog, and it should appear while this explanation is on
+  // screen. Answering "allow" here starts voice in the current session.
+  const audioOverlay = document.getElementById('audioOverlay');
+  const audioContent = document.getElementById('audioContent');
+  let audioState = { devices: null, micResult: null, speakerHeard: null, firstRun: false, deviceIndex: null };
+
+  document.getElementById('audioClose').onclick = () => audioOverlay.classList.remove('open');
+  audioOverlay.addEventListener('click', (e) => {
+    // Click-outside dismisses a re-check, but not the first-run ask: silently
+    // closing that would leave voice off with nothing said about why.
+    if(e.target === audioOverlay && !audioState.firstRun) audioOverlay.classList.remove('open');
+  });
+  document.getElementById('audioBtn').onclick = () => openAudioSetup(false);
+
+  async function openAudioSetup(firstRun){
+    audioState = { devices: null, micResult: null, speakerHeard: null, firstRun: !!firstRun, deviceIndex: null };
+    audioOverlay.classList.add('open');
+    audioContent.innerHTML = '<div class="audio-intro">Checking this computer\u2019s audio\u2026</div>';
+    let info;
+    try { info = await callApi('get_audio_setup'); }
+    catch(e){ audioContent.innerHTML = '<div class="settings-error">Couldn\u2019t reach Leti: ' + e.message + '</div>'; return; }
+    audioState.devices = info.devices || {};
+    audioState.saved = info.setup;
+    // Start from whatever is already chosen: the saved device on a re-check, the
+    // system default on a first run.
+    const savedIndex = info.setup && info.setup.microphone ? info.setup.microphone.device_index : null;
+    const fallback = audioState.devices.default_input ? audioState.devices.default_input.index : null;
+    audioState.deviceIndex = (savedIndex === null || savedIndex === undefined) ? fallback : savedIndex;
+    renderAudioSetup();
+  }
+
+  function audioStep(name, verdict, verdictClass, bodyHtml){
+    return '<div class="audio-step"><div class="head"><span class="name">' + name +
+           '</span><span class="verdict ' + (verdictClass||'') + '">' + verdict + '</span></div>' +
+           bodyHtml + '</div>';
+  }
+
+  function renderAudioSetup(){
+    const devices = audioState.devices || {};
+    const inputs = devices.inputs || [];
+    const output = devices.default_output;
+
+    if(!devices.available || (!inputs.length && !output)){
+      audioContent.innerHTML =
+        '<div class="audio-intro">This computer has no audio devices Leti can use' +
+        (devices.error ? ' <span class="quiet">(' + devices.error + ')</span>' : '') +
+        '.<br><span class="quiet">Everything else works \u2014 just type instead of talking.</span></div>' +
+        '<div class="settings-actions"><button class="settings-btn primary" id="audioDismiss">Continue without voice</button></div>';
+      document.getElementById('audioDismiss').onclick = () => saveAudioChoice(false, false);
+      return;
+    }
+
+    const mic = audioState.micResult;
+    let micVerdict = 'not tested', micClass = '';
+    if(mic && mic.ok && mic.heard_sound){ micVerdict = 'hears you'; micClass = 'good'; }
+    else if(mic && mic.ok){ micVerdict = 'no sound'; micClass = 'bad'; }
+    else if(mic){ micVerdict = 'failed'; micClass = 'bad'; }
+
+    let micBody = '';
+    if(inputs.length > 1){
+      // Selected from audioState, NOT from the system default: this markup is
+      // rebuilt after every test, and re-deriving it would silently throw away
+      // the device the user just picked and tested - saving a different mic than
+      // the one that was verified.
+      micBody += '<select id="audioDevice">' + inputs.map(d =>
+        '<option value="' + d.index + '"' + (d.index === audioState.deviceIndex ? ' selected' : '') +
+        '>' + d.name + (devices.default_input && d.index === devices.default_input.index ? ' (system default)' : '') +
+        '</option>').join('') + '</select>';
+    } else if(inputs.length === 1){
+      micBody += '<div class="audio-detail">' + inputs[0].name + '</div>';
+    } else {
+      micBody += '<div class="audio-detail bad">No microphone found on this computer.</div>';
+    }
+
+    if(inputs.length){
+      micBody += '<button class="settings-btn" id="audioTestMic">Test microphone</button>';
+      micBody += '<div class="audio-meter"><span id="audioLevel"></span></div>';
+      if(mic && mic.ok){
+        micBody += '<div class="audio-detail' + (mic.heard_sound ? '' : ' bad') + '">' +
+          (mic.heard_sound
+            ? 'Sound is arriving \u2014 peak level ' + mic.peak.toFixed(2) + '.'
+            : 'The microphone opened but nothing came through (peak ' + mic.peak.toFixed(3) +
+              '). It may be muted, or your operating system may have blocked access.') + '</div>';
+      } else if(mic){
+        micBody += '<div class="audio-detail bad">' + mic.error + '</div>';
+      } else {
+        micBody += '<div class="audio-detail">Press Test, then speak for about three seconds.</div>';
+      }
+    }
+
+    let spkVerdict = 'not tested', spkClass = '';
+    if(audioState.speakerHeard === true){ spkVerdict = 'audible'; spkClass = 'good'; }
+    else if(audioState.speakerHeard === false){ spkVerdict = 'not heard'; spkClass = 'bad'; }
+
+    let spkBody = '<div class="audio-detail">' +
+      (output ? output.name : 'the system default output') +
+      ' \u2014 Leti speaks through whatever your operating system uses by default.</div>' +
+      '<button class="settings-btn" id="audioTestSpk">Play test tone</button>' +
+      '<div class="audio-detail" id="audioSpkDetail">' +
+      (audioState.speakerHeard === false
+        ? 'Turn the volume up, or change your system\u2019s default output device, then try again.'
+        : '') + '</div>';
+
+    audioContent.innerHTML =
+      '<div class="audio-intro">' +
+      (audioState.firstRun
+        ? 'Leti can listen through this computer\u2019s microphone and reply through its speakers. Speech is transcribed locally \u2014 nothing is uploaded.'
+        : 'Re-check the microphone and speakers, or turn voice off.') +
+      '<br><span class="quiet">Your operating system may ask for permission too \u2014 allow it there as well, or voice stays off.</span></div>' +
+      audioStep('Microphone', micVerdict, micClass, micBody) +
+      audioStep('Speakers', spkVerdict, spkClass, spkBody) +
+      '<div class="settings-actions">' +
+      '<button class="settings-btn" id="audioDecline">' + (audioState.firstRun ? 'Not now' : 'Turn voice off') + '</button>' +
+      '<button class="settings-btn primary" id="audioAllow">' + (audioState.firstRun ? 'Allow &amp; save' : 'Save') + '</button>' +
+      '</div><div class="audio-detail" id="audioSaveNote"></div>';
+
+    const deviceSelect = document.getElementById('audioDevice');
+    if(deviceSelect) deviceSelect.onchange = () => {
+      audioState.deviceIndex = Number(deviceSelect.value);
+      // A level measured on the old microphone says nothing about the new one.
+      audioState.micResult = null;
+      renderAudioSetup();
+    };
+
+    const testMic = document.getElementById('audioTestMic');
+    if(testMic) testMic.onclick = async () => {
+      testMic.disabled = true; testMic.textContent = 'Listening\u2026 speak now';
+      try {
+        audioState.micResult = await callApi('check_audio', 'microphone', audioState.deviceIndex);
+      } catch(e){ audioState.micResult = { ok:false, error:e.message }; }
+      renderAudioSetup();
+      const bar = document.getElementById('audioLevel');
+      if(bar && audioState.micResult && audioState.micResult.ok){
+        bar.style.width = Math.min(100, audioState.micResult.peak * 100) + '%';
+      }
+    };
+
+    const testSpk = document.getElementById('audioTestSpk');
+    testSpk.onclick = async () => {
+      testSpk.disabled = true; testSpk.textContent = 'Playing\u2026';
+      let result;
+      try { result = await callApi('check_audio', 'speakers'); }
+      catch(e){ result = { ok:false, error:e.message }; }
+      testSpk.disabled = false; testSpk.textContent = 'Play test tone';
+      const detail = document.getElementById('audioSpkDetail');
+      if(!result.ok){
+        audioState.speakerHeard = false;
+        detail.className = 'audio-detail bad';
+        detail.textContent = result.error;
+        return;
+      }
+      // Whether a sound was audible is not something the machine can measure -
+      // only the person in the room knows, so ask them.
+      detail.className = 'audio-detail';
+      detail.innerHTML = 'Did you hear it? <button class="settings-btn" id="spkYes" style="width:auto;padding:4px 12px">Yes</button> ' +
+                         '<button class="settings-btn" id="spkNo" style="width:auto;padding:4px 12px">No</button>';
+      document.getElementById('spkYes').onclick = () => { audioState.speakerHeard = true; renderAudioSetup(); };
+      document.getElementById('spkNo').onclick = () => { audioState.speakerHeard = false; renderAudioSetup(); };
+    };
+
+    document.getElementById('audioDecline').onclick = () => saveAudioChoice(false, false);
+    document.getElementById('audioAllow').onclick = () => saveAudioChoice(true, audioState.speakerHeard !== false);
+  }
+
+  async function saveAudioChoice(micAllowed, speakersOk){
+    const devices = audioState.devices || {};
+    const inputs = devices.inputs || [];
+    const index = (inputs.length === 1) ? inputs[0].index : audioState.deviceIndex;
+    const chosen = inputs.find(d => d.index === index);
+    const note = document.getElementById('audioSaveNote');
+    if(note) note.textContent = 'Saving\u2026';
+    let result;
+    try {
+      result = await callApi('save_audio_setup', {
+        microphone_allowed: micAllowed,
+        speakers_ok: !!speakersOk,
+        device_index: micAllowed ? index : null,
+        device_name: chosen ? chosen.name : '',
+        mic_measurement: audioState.micResult || {},
+        output_name: devices.default_output ? devices.default_output.name : '',
+      });
+    } catch(e){
+      if(note){ note.className = 'audio-detail bad'; note.textContent = 'Couldn\u2019t save: ' + e.message; }
+      return;
+    }
+    audioOverlay.classList.remove('open');
+    audioState.firstRun = false;
+    appendSessionMessage('leti', micAllowed
+      ? (result.starting_voice
+          ? 'Audio saved. Starting voice now \u2014 this takes a few seconds the first time.'
+          : 'Audio saved.')
+      : 'Voice is off. Press Audio any time to turn it back on.');
+  }
+
+  // Ask on the very first launch, once the socket is up so the call can be made.
+  (async function askAudioOnFirstRun(){
+    try {
+      const info = await callApi('get_audio_setup');
+      if(!info.configured) openAudioSetup(true);
+    } catch(e){ /* the socket will retry; the card can also be opened by hand */ }
+  })();
 
   // ---------- Settings modal (/settings) ----------
   const settingsOverlay = document.getElementById('settingsOverlay');

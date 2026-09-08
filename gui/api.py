@@ -43,8 +43,10 @@ logger = logging.getLogger("leti.gui")
 SYNC_METHODS = {
     "get_todos", "add_todo_item", "toggle_todo_item", "delete_todo_item", "get_session_messages",
     "list_settings_sections", "get_settings_section", "update_settings_section", "clear_settings_section",
+    "get_audio_setup",
 }
-ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather"}
+ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
+                 "check_audio", "save_audio_setup"}
 
 
 class LetiAPI:
@@ -56,6 +58,12 @@ class LetiAPI:
         # make_text_confirmation_callback. The next message the user sends answers
         # the question instead of starting a new turn.
         self._pending_confirmation: Any = None
+        # Wired by run_gui_mode: a coroutine that loads the voice stack and starts
+        # listening, so accepting the first-run audio prompt takes effect now rather
+        # than at the next launch. None means voice isn't available at all here.
+        self.enable_voice: Any = None
+        self.voice_active = False
+        self._background: Set[Any] = set()   # strong refs; asyncio only holds weak ones
 
     def push(self, fn_name: str, *args: Any) -> None:
         """Broadcasts a call to a named JS function (e.g. appendLetiReply) to every
@@ -134,6 +142,65 @@ class LetiAPI:
         """Current session only (the in-process rolling buffer) - not past sessions,
         per the user's explicit answer when this was designed."""
         return self.orchestrator.session_memory.get_recent_messages()
+
+    # ---- Audio permission (audio/setup.py). The same ask-test-save flow the
+    # terminal runs, driven from the HUD instead, so the question is answered
+    # wherever the user actually is - including a phone, which has no terminal
+    # to read a console prompt from. ----
+
+    def get_audio_setup(self) -> dict:
+        """What we know, and what there is to choose from. Drives the first-run card."""
+        from audio import setup as audio_setup
+
+        return {
+            "configured": audio_setup.is_configured(),
+            "setup": audio_setup.load_setup(),
+            "devices": audio_setup.list_devices(),
+            # Whether voice is live in THIS session, which is not the same as whether
+            # it's permitted: accepting mid-session still has to load Whisper.
+            "voice_active": self.voice_active,
+        }
+
+    async def a_check_audio(self, what: str, device_index=None) -> dict:
+        """Run one hardware check. Blocking audio I/O, so it goes to a thread -
+        the websocket server shares this loop, and a 3-second recording on it
+        would freeze every connected client for 3 seconds."""
+        from audio import setup as audio_setup
+
+        loop = asyncio.get_running_loop()
+        if what == "microphone":
+            index = int(device_index) if device_index not in (None, "", "default") else None
+            return await loop.run_in_executor(None, lambda: audio_setup.measure_microphone(index))
+        if what == "speakers":
+            return await loop.run_in_executor(None, audio_setup.play_test_tone)
+        return {"ok": False, "error": f"Unknown check: {what}"}
+
+    async def a_save_audio_setup(self, choice: dict) -> dict:
+        """Persist the answer, and start voice now if it was yes.
+
+        Starting it here rather than telling the user to restart is the whole point
+        of asking at first launch: the next thing they do should be able to be
+        talking to Leti.
+        """
+        from audio import setup as audio_setup
+
+        index = choice.get("device_index")
+        record = audio_setup.record_choice(
+            mic_allowed=bool(choice.get("microphone_allowed")),
+            speakers_ok=bool(choice.get("speakers_ok")),
+            device_index=int(index) if index not in (None, "", "default") else None,
+            device_name=str(choice.get("device_name", "")),
+            mic_measurement=choice.get("mic_measurement") or {},
+            output_name=str(choice.get("output_name", "")),
+            note=str(choice.get("note", "")),
+        )
+        started = False
+        if record["microphone"]["allowed"] and self.enable_voice is not None and not self.voice_active:
+            started = True
+            task = asyncio.create_task(self.enable_voice())
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+        return {"saved": record, "starting_voice": started}
 
     # ---- Settings editor (the /settings command) - deterministic, deliberately
     # not routed through the orchestrator/LLM. See core/settings_editor.py. ----
@@ -250,7 +317,7 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     keep working) while the web server and, if available, a native window run.
     Blocks until the app is closed (window close, or Ctrl+C in headless/browser-only
     mode when pywebview isn't installed)."""
-    from audio import load_voice_stack
+    from audio import load_voice_stack, setup as audio_setup
     from gui.server import LetiWebServer
 
     def _run_background_loop():
@@ -270,17 +337,28 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     # connected client for however long model loading takes. One Whisper model is
     # loaded once and reused for both voice input and confirmation prompts -
     # loading it twice was also just wasted time and memory.
-    print("Loading voice models (Whisper + TTS) - this happens once per launch...")
-    tts, transcriber, voice_error = load_voice_stack()
-    if voice_error:
-        # Deliberately not fatal. The HUD is fully usable by typing, and the server
-        # below is what serves it - a machine with no microphone, no speakers, or
-        # no espeak installed should get a working text interface and an honest
-        # note about what's missing, not a traceback instead of an application.
-        print(f"Voice is unavailable, continuing in text-only mode: {voice_error}")
-        logger.warning(f"Voice unavailable, text-only: {voice_error}")
+    # On a machine that has never been asked, DON'T touch the microphone yet: the
+    # first open is what makes macOS and Windows show their permission dialog, and
+    # that dialog should appear while the user is looking at the card in the HUD
+    # explaining it - not seconds after launch with nothing on screen to connect it
+    # to. The interface starts text-only and the card asks; accepting starts voice
+    # in this same session, via api.enable_voice below.
+    if not audio_setup.is_configured():
+        print("Audio hasn't been set up yet - the interface will ask. Starting in text-only mode.")
+        tts, transcriber, voice_error = None, None, "First-run audio setup hasn't been completed yet."
     else:
-        print("Voice models ready.")
+        print("Loading voice models (Whisper + TTS) - this happens once per launch...")
+        tts, transcriber, voice_error = load_voice_stack()
+        if voice_error:
+            # Deliberately not fatal. The HUD is fully usable by typing, and the
+            # server below is what serves it - a machine with no microphone, no
+            # speakers, or no espeak installed should get a working text interface
+            # and an honest note about what's missing, not a traceback instead of
+            # an application.
+            print(f"Voice is unavailable, continuing in text-only mode: {voice_error}")
+            logger.warning(f"Voice unavailable, text-only: {voice_error}")
+        else:
+            print("Voice models ready.")
 
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
     orchestrator.visual_callback = _make_gui_visual_callback(api)
@@ -290,26 +368,66 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     # go to the chat window instead: the alternative was a user sitting in front of
     # a working interface, unable to approve the action they had just asked for.
     from core.confirmation import make_text_confirmation_callback, make_voice_confirmation_callback
-    if tts and transcriber:
-        safety_guard.set_confirmation_callback(make_voice_confirmation_callback(tts, transcriber))
-    else:
-        safety_guard.set_confirmation_callback(make_text_confirmation_callback(api))
+
+    def _use_voice(tts_engine, stt_engine) -> None:
+        """Point the reply and confirmation paths at voice, or back at text.
+
+        Called once at startup and again if first-run setup turns voice on
+        mid-session, so both paths switch together - a session that speaks its
+        replies but asks for confirmation in text, or the reverse, would be a
+        confusing half-state.
+        """
+        orchestrator.speak_callback = _make_gui_speak_callback(api, tts_engine)
+        if tts_engine and stt_engine:
+            safety_guard.set_confirmation_callback(
+                make_voice_confirmation_callback(tts_engine, stt_engine))
+        else:
+            safety_guard.set_confirmation_callback(make_text_confirmation_callback(api))
+
+    _use_voice(tts, transcriber)
 
     server = LetiWebServer(api)
     server_ready = threading.Event()
+
+    async def _listen(stt_engine) -> None:
+        api.voice_active = True
+        try:
+            await _run_voice_loop(orchestrator, api, continuous_voice, stt_engine)
+        except Exception:
+            # A voice/mic failure (e.g. the audio device disappearing mid-session)
+            # shouldn't take the whole app down - the server is already up and fully
+            # usable via text regardless of what happens to voice.
+            logger.exception("Voice pipeline stopped unexpectedly - text chat is unaffected.")
+        finally:
+            api.voice_active = False
+
+    async def enable_voice() -> None:
+        """Turn voice on in THIS session, after the user accepts the audio prompt.
+
+        Loading Whisper takes seconds of real work, and this runs on the loop the
+        websocket server shares - so it goes to a thread, exactly as the startup
+        path loads it before the server exists. Doing it inline here is the same
+        bug that used to freeze every connected client's chat.
+        """
+        if api.voice_active:
+            return
+        new_tts, new_stt, error = await loop.run_in_executor(None, load_voice_stack)
+        if error:
+            logger.warning(f"Voice couldn't start after audio setup: {error}")
+            api.push("appendLetiReply", f"I saved that, but voice couldn't start: {error}")
+            return
+        _use_voice(new_tts, new_stt)
+        api.push("appendLetiReply", "Voice is on - say the wake word whenever you're ready.")
+        await _listen(new_stt)
+
+    api.enable_voice = enable_voice
 
     async def _start_server_and_voice():
         await server.start()
         server_ready.set()
         if transcriber is None:
-            return  # text-only: there is no voice loop to run
-        try:
-            await _run_voice_loop(orchestrator, api, continuous_voice, transcriber)
-        except Exception:
-            # A voice/mic failure (e.g. the audio device disappearing mid-session)
-            # shouldn't take the whole app down - the server above is already up and
-            # fully usable via text regardless of what happens to voice.
-            logger.exception("Voice pipeline stopped unexpectedly - text chat is unaffected.")
+            return  # text-only for now; enable_voice() can still start it later
+        await _listen(transcriber)
 
     asyncio.run_coroutine_threadsafe(_start_server_and_voice(), loop)
     if not server_ready.wait(timeout=15):

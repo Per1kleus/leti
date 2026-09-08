@@ -41,6 +41,23 @@ class WhisperTranscriber:
         self.fp16 = self.settings.get("fp16", False)
         self._pa = pyaudio.PyAudio()
 
+        # The microphone chosen during first-run setup, or None for the system
+        # default. Read here rather than per-recording: switching input device
+        # mid-session isn't a thing, and PyAudio takes the index at stream open.
+        from audio.setup import chosen_input_device
+
+        self.input_device_index = chosen_input_device()
+        if self.input_device_index is not None:
+            logger.info(f"Recording from input device index {self.input_device_index}.")
+
+    def _open_input_stream(self):
+        """One place that opens the microphone, so the chosen device applies to
+        every capture path - push-to-talk and silence-detected alike."""
+        return self._pa.open(
+            format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True,
+            frames_per_buffer=CHUNK, input_device_index=self.input_device_index,
+        )
+
     def _transcribe_array(self, audio_np: np.ndarray) -> str:
         result = self.model.transcribe(audio_np, fp16=self.fp16)
         return result.get("text", "").strip()
@@ -48,9 +65,7 @@ class WhisperTranscriber:
     async def record_while(self, should_continue: Callable[[], bool]) -> bytes:
         """Generic recorder: keeps capturing frames while should_continue() is True.
         Use this to wire up a real push-to-talk hotkey (press -> True, release -> False)."""
-        stream = self._pa.open(
-            format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True, frames_per_buffer=CHUNK
-        )
+        stream = self._open_input_stream()
         frames = []
         loop = asyncio.get_event_loop()
         try:
@@ -65,9 +80,7 @@ class WhisperTranscriber:
     async def record_until_silence(self, silence_timeout: Optional[float] = None) -> bytes:
         """Records continuously until `silence_timeout` seconds of near-silence is detected."""
         timeout = silence_timeout or self.settings.get("silence_timeout_seconds", 1.2)
-        stream = self._pa.open(
-            format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True, frames_per_buffer=CHUNK
-        )
+        stream = self._open_input_stream()
         frames = []
         silence_chunks = 0
         silence_threshold = 500  # RMS amplitude below this counts as silence

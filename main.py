@@ -408,7 +408,8 @@ async def _run_settings_editor_cli() -> None:
 async def run_text_mode(orchestrator: Orchestrator) -> None:
     from core.console_input import read_line
 
-    print("Leti is ready. Type your message ('/settings' to configure integrations, 'exit' to quit).\n")
+    print("Leti is ready. Type your message ('/settings' to configure integrations, "
+          "'/audio' for microphone and speakers, 'exit' to quit).\n")
     while True:
         # Shared stdin reader, not input() on an executor - see core/console_input.py.
         line = await read_line("You: ")
@@ -422,6 +423,13 @@ async def run_text_mode(orchestrator: Orchestrator) -> None:
         if user_text.lower().startswith("/settings"):
             await _run_settings_editor_cli()
             continue
+        if user_text.lower().startswith("/audio"):
+            # Same flow as the first launch, on purpose: one implementation of
+            # "ask, test, save", whether it's the first time or a re-check.
+            from audio.setup import run_console_setup
+
+            await run_console_setup(force=True)
+            continue
         answer = await orchestrator.handle_user_input(user_text)
         print(f"Leti: {answer}\n")
 
@@ -432,13 +440,20 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
     tts, transcriber, voice_error = load_voice_stack()
     if voice_error:
         # Unlike GUI mode, there's nothing to fall back to here - voice IS the mode
-        # that was asked for. But "no microphone" and "espeak isn't installed" are
-        # ordinary situations with obvious fixes, and a traceback names neither.
-        print(f"\nVoice mode needs a working microphone and speaker, and this machine "
-              f"couldn't provide one:\n  {voice_error}\n\n"
-              f"On Linux, text-to-speech needs espeak (`sudo apt install espeak`).\n"
-              f"To use Leti without voice, run:  python main.py --mode text\n"
-              f"                            or:  python main.py --mode gui\n")
+        # that was asked for. But "you said no" and "espeak isn't installed" are
+        # different problems with different fixes, and a traceback names neither.
+        from audio.setup import blocked_reason
+
+        if blocked_reason():
+            print(f"\nVoice mode needs the microphone, which is currently turned off.\n"
+                  f"  {voice_error}\n"
+                  f"Run `python main.py --mode text` and type /audio to turn it back on.\n")
+        else:
+            print(f"\nVoice mode needs a working microphone and speaker, and this machine "
+                  f"couldn't provide one:\n  {voice_error}\n\n"
+                  f"On Linux, text-to-speech needs espeak (`sudo apt install espeak`).\n"
+                  f"To use Leti without voice, run:  python main.py --mode text\n"
+                  f"                            or:  python main.py --mode gui\n")
         return
 
     # Route risky/destructive confirmations through voice instead of terminal typing -
@@ -572,6 +587,14 @@ async def main(args) -> None:
     """CLI modes only (text/voice/continuous). GUI mode is handled by run_gui()
     instead, called directly from __main__ - see its docstring for why."""
     llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler = await build_app()
+
+    # Ask about the microphone and speakers once, on the first launch, before any
+    # mode starts using them. On macOS and Windows this is also what makes the OS's
+    # own permission dialog appear while the user is looking at an explanation of
+    # why - rather than mid-conversation, behind the window. See audio/setup.py.
+    from audio.setup import run_console_setup
+
+    await run_console_setup()
 
     try:
         if args.mode == "text":

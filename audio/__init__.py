@@ -5,6 +5,9 @@ not have - a microphone, a sound card, espeak on Linux, the whisper and pyaudio
 packages. They import their dependencies at module scope, so importing them is
 itself the thing that can fail, which is why load_voice_stack() below exists and
 why callers use it instead of importing the classes directly.
+
+Whether Leti may use the microphone and speakers at all is a separate question
+from whether it can, and it is asked once - see audio/setup.py.
 """
 from __future__ import annotations
 
@@ -25,6 +28,14 @@ def load_voice_stack() -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
     (speaking with no way to answer, or listening with no way to reply) is worse
     than text, and confirmation needs both to ask a question and hear the answer.
     """
+    from audio.setup import blocked_reason
+
+    # A saved "no" is an answer, not a failure: don't load models, don't open a
+    # device, and don't ask again. See audio/setup.py.
+    declined = blocked_reason()
+    if declined:
+        return None, None, declined
+
     try:
         from audio.stt import WhisperTranscriber
         from audio.tts import Pyttsx3TTS

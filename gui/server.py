@@ -209,6 +209,10 @@ class LetiWebServer:
                 value = await self.api.a_get_system_stats()
             elif method == "get_weather":
                 value = await self.api.a_get_weather()
+            elif method == "check_audio":
+                value = await self.api.a_check_audio(*args)
+            elif method == "save_audio_setup":
+                value = await self.api.a_save_audio_setup(*args)
             elif method in SYNC_METHODS:
                 value = getattr(self.api, method)(*args)
             else:
