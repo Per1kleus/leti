@@ -341,8 +341,33 @@ Everything on it is wired to something real — the panels are readouts, not sce
 - **Weather** is Open-Meteo, no key needed — IP-based location by default, or set
   `weather.latitude`/`longitude` in `config/settings.yaml` to override. With no
   location configured it says so rather than showing a placeholder number.
+  **It keeps working offline**: the last successful reading is cached to
+  `data/weather_cache.json` and served when the network is gone, labelled
+  `OFFLINE · 40 MIN AGO`. A local-first assistant that blanks its dashboard the
+  moment the wi-fi drops is the wrong shape — but a cached reading is only useful
+  if it admits to being one, so the age travels with it everywhere, including into
+  the `get_weather` tool's output (`stale`, `age_minutes`) so Leti doesn't report
+  an hour-old temperature as the weather right now. The resolved coordinates are
+  cached too, since IP geolocation needs the network as much as the forecast does.
+  Two things it deliberately won't do: invent a reading when none has ever been
+  taken, and answer "you never told me where you are" with a reading from wherever
+  you used to be. The clock beside it is local and never depended on anything.
 - **Resource monitor** and the **task queue** are live (`system_report`, and the same
   to-do storage a spoken "add a task" writes to).
+- **The radar** runs off a single clock. Everything that moves — the core, the
+  sweep, both rings, the contact blips, the level meter — is advanced by one
+  animation loop in seconds of elapsed time, not in frames. That is what fixed the
+  jitter: motion used to step by a fixed amount per frame (so it ran at double
+  speed on a 120Hz screen), each mode had its own loop with its own counter (so
+  switching to speaking made the core jump at the moment it should have been
+  smoothest), the speaking animation re-rolled `Math.random()` per bin per frame
+  (sixty unrelated shapes a second rather than a wobble), and the rings were three
+  separate SMIL timelines beside the script's own that came back out of step after
+  a backgrounded tab. Now the shape eases toward its target with frame-rate
+  independent smoothing, so 60Hz and 144Hz look the same rather than merely running
+  at the same speed, and the blips light up as the beam passes them instead of on
+  timers of their own. `prefers-reduced-motion` stops the rotation; the core still
+  tracks audio, because that part is information rather than decoration.
 - **The core** reacts to real audio: your own voice via the browser's mic (if
   permitted) while the backend is listening, and a synthetic-but-correctly-timed
   pattern while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device,
@@ -365,6 +390,17 @@ Everything on it is wired to something real — the panels are readouts, not sce
 Below 1200px the three columns fold into two with the radar across the top, and below
 820px into a single stack — nothing is hidden at any width, since a phone is a
 first-class client here rather than a fallback.
+
+**Minimising.** The control in the top bar shrinks the whole interface to a radar
+puck in the corner with LETI at its centre, and Escape or a click on it brings the
+interface back. It is a CSS class on the root and nothing else: the same radar, the
+same animation loop with the same clock, the same websocket, the same session. So
+minimised is not paused — voice keeps running on the machine, replies keep arriving
+into the log, the state ring still says whether Leti is listening or answering, and
+a confirmation prompt still opens over the top where you can answer it. What you
+can't see from a puck is the log, so replies that arrive while it is collapsed are
+counted on a badge. The choice is remembered in `localStorage`, which matters on a
+phone whose browser drops the tab whenever you switch apps.
 
 ---
 
