@@ -259,8 +259,59 @@ def test_replies_arriving_while_minimised_are_counted():
 
 
 def test_the_puck_can_always_be_reopened():
-    assert re.search(r"radarEl\.addEventListener\('click'", HUD)
-    assert "Escape" in HUD and "setMinimized(false)" in HUD
+    assert re.search(r"radarEl\.addEventListener\('pointerup'", CODE)
+    assert "restore()" in CODE
+    assert "Escape" in CODE
+
+
+def test_dragging_the_puck_does_not_also_reopen_it():
+    """The puck is both the thing you move and the thing you click. Without a
+    movement threshold every drag would end by reopening the window it was being
+    dragged out of the way."""
+    assert "DRAG_SLOP" in CODE
+    end = re.search(r"function endDrag\(e\)\{(.*?)\n  \}", CODE, re.S)
+    assert end, "endDrag moved; this test needs updating"
+    assert "if(!wasDrag && minimized) restore();" in end.group(1)
+
+
+def test_the_puck_asks_for_a_real_window_before_settling_for_a_smaller_layout():
+    """Overlapping other applications needs a native always-on-top window. In a
+    browser tab there isn't one, so the same control collapses the layout instead
+    - but it must try for the real thing first."""
+    assert "callApi('set_window_mode', 'puck')" in CODE
+    minimize = re.search(r"async function minimize\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert minimize and "if(!swapped) applyMinimizedLayout(true);" in minimize.group(1)
+
+
+def test_only_the_native_window_asks_to_swap_windows():
+    """Every client shares one session, so a phone minimising must not hide the
+    desktop app's windows on someone else's screen. The window a client can
+    shrink is the window it is."""
+    minimize = re.search(r"async function minimize\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert minimize, "minimize() moved; this test needs updating"
+    body = minimize.group(1)
+    guard = body.index("IN_DESKTOP_WINDOW")
+    call = body.index("set_window_mode")
+    assert guard < call, "the window swap is not gated on actually being a native window"
+
+
+def test_the_puck_window_renders_itself_collapsed():
+    """The small window loads the same page with ?puck=1 rather than a second,
+    smaller interface that would have to be kept in step with the first."""
+    assert "IS_PUCK_WINDOW" in CODE
+    assert "?puck=1" in CODE or "'puck'" in CODE
+    assert HUD.count('id="orbPath"') == 1, "the puck must not be a second renderer"
+
+
+def test_the_puck_window_is_transparent_behind_the_circle():
+    assert "html.puck-window, html.puck-window body{ background:transparent" in HUD
+
+
+def test_native_dragging_is_scoped_to_a_region_the_page_marks():
+    """easy_drag moves the window on any drag anywhere, which swallows the click
+    that reopens the interface."""
+    assert "pywebview-drag-region" in CODE
+    assert "pywebviewready" in CODE
 
 
 def test_confirmations_still_reach_the_user_while_minimised():
@@ -283,3 +334,33 @@ def test_a_cached_reading_is_labelled_as_one_in_the_interface():
     """The backend marks it stale; the panel has to actually say so."""
     assert "weatherAge" in _element_ids()
     assert "data.stale" in HUD and "describeAge" in HUD
+
+
+# --- Load-time ordering inside the one big script ---------------------------------
+
+def test_the_minimised_layout_is_applied_after_what_it_touches():
+    """A real bug, and one a static check is the right shape for.
+
+    The puck window applies its collapsed layout as the page loads, and that call
+    reaches into the session panel. While the minimise block sat ABOVE the session
+    panel's `let sessionExpanded`, that load-time call hit the temporal dead zone
+    and threw - after the CSS class had already been set. So the page LOOKED
+    collapsed while every line below the throw never ran, which included the five
+    window.* push handlers: the puck rendered perfectly and could not receive a
+    single reply.
+
+    The earlier test asserted the class was present and passed happily.
+    """
+    declaration = HUD.index("let sessionExpanded")
+    block = HUD.index("// ---------- Minimised mode ----------")
+    assert declaration < block, (
+        "the minimise block runs setSessionExpanded() at load; moving it above that "
+        "declaration puts the call in the temporal dead zone and kills the rest of "
+        "the script"
+    )
+
+
+def test_the_push_handlers_are_defined_before_the_minimise_block_runs():
+    """Same failure from the other side: appendLetiReply has to exist whatever
+    happens later in the file, because a push can arrive at any time."""
+    assert HUD.index("window.appendLetiReply") < HUD.index("// ---------- Minimised mode ----------")

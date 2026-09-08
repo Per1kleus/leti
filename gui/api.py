@@ -43,7 +43,7 @@ logger = logging.getLogger("leti.gui")
 SYNC_METHODS = {
     "get_todos", "add_todo_item", "toggle_todo_item", "delete_todo_item", "get_session_messages",
     "list_settings_sections", "get_settings_section", "update_settings_section", "clear_settings_section",
-    "get_audio_setup",
+    "get_audio_setup", "set_window_mode",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup"}
@@ -64,6 +64,10 @@ class LetiAPI:
         self.enable_voice: Any = None
         self.voice_active = False
         self._background: Set[Any] = set()   # strong refs; asyncio only holds weak ones
+        # Set by run_gui_mode when there are native windows to switch between.
+        # None means the page is being viewed in a browser (or a phone), where
+        # minimising can only collapse the layout inside the window it already has.
+        self.desktop: Any = None
 
     def push(self, fn_name: str, *args: Any) -> None:
         """Broadcasts a call to a named JS function (e.g. appendLetiReply) to every
@@ -201,6 +205,20 @@ class LetiAPI:
             self._background.add(task)
             task.add_done_callback(self._background.discard)
         return {"saved": record, "starting_voice": started}
+
+    def set_window_mode(self, mode: str) -> dict:
+        """Switch between the full window and the always-on-top puck.
+
+        Returns whether a native swap actually happened. It won't have in a
+        browser tab or on a phone, and the page then collapses its own layout
+        instead - the same control doing the best available version of the same
+        thing, rather than a button that silently does nothing on half the
+        surfaces this interface runs on.
+        """
+        if self.desktop is None:
+            return {"desktop": False, "mode": mode}
+        ok = self.desktop.show_puck() if mode == "puck" else self.desktop.show_full()
+        return {"desktop": bool(ok), "mode": mode}
 
     # ---- Settings editor (the /settings command) - deterministic, deliberately
     # not routed through the orchestrator/LLM. See core/settings_editor.py. ----
@@ -439,10 +457,12 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         webview = None
 
     if webview:
-        webview.create_window(
-            "Leti", f"http://127.0.0.1:{server.port}/", width=1180, height=760,
-            background_color="#050b14",
-        )
+        from gui.desktop import DesktopWindows
+
+        # Both native windows live here: the full interface, and the frameless
+        # always-on-top puck that minimising switches to. See gui/desktop.py.
+        api.desktop = DesktopWindows(webview, f"http://127.0.0.1:{server.port}")
+        api.desktop.create_main()
         # Window/taskbar icon. pywebview takes this on its GTK and Qt backends;
         # older versions don't accept the argument at all, and on Windows/macOS
         # the window icon comes from the launcher shortcut or app bundle instead

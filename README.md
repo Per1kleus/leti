@@ -391,16 +391,32 @@ Below 1200px the three columns fold into two with the radar across the top, and 
 820px into a single stack — nothing is hidden at any width, since a phone is a
 first-class client here rather than a fallback.
 
-**Minimising.** The control in the top bar shrinks the whole interface to a radar
-puck in the corner with LETI at its centre, and Escape or a click on it brings the
-interface back. It is a CSS class on the root and nothing else: the same radar, the
-same animation loop with the same clock, the same websocket, the same session. So
-minimised is not paused — voice keeps running on the machine, replies keep arriving
+**Minimising.** The control in the top bar shrinks the interface to a radar puck
+with LETI at its centre. Click it to come back, or press Escape. Drag it anywhere.
+
+In the desktop app that is a **second native window** (`gui/desktop.py`): 190×190,
+frameless, and **always on top**, so it floats over whatever else you are working
+in — which is the point, and something a page can only pretend to do from inside
+its own window. Dragging moves the real window across the whole desktop, not just
+within the app, and it reappears wherever you left it. The two windows load the
+*same* page (the puck adds `?puck=1`), so there is one interface and one renderer,
+not a second miniature app to keep in step; swapping between them is a hide and a
+show, which is why the puck keeps its position, its socket and its unread count.
+
+In a browser tab or on a phone there is no window to float, so the same control
+collapses the layout in place and the puck is dragged around the page instead, its
+corner remembered in `localStorage`. A browser client deliberately cannot swap the
+desktop app's windows: every client shares one session, and minimising on your
+phone should not hide the window on your desk.
+
+Minimised is not paused, in either form. Voice keeps running, replies keep arriving
 into the log, the state ring still says whether Leti is listening or answering, and
-a confirmation prompt still opens over the top where you can answer it. What you
-can't see from a puck is the log, so replies that arrive while it is collapsed are
-counted on a badge. The choice is remembered in `localStorage`, which matters on a
-phone whose browser drops the tab whenever you switch apps.
+confirmation prompts still reach you. What a puck can't show is the log, so replies
+arriving while it is collapsed are counted on a badge, and the first-run audio card
+is never opened in the small window — 190px is no place for a dialogue.
+
+Transparency behind the puck is honoured on Linux and macOS and ignored on Windows,
+where the puck's own circular backing keeps it looking deliberate.
 
 ---
 

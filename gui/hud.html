@@ -18,6 +18,15 @@
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
+<script>
+  // Before anything is painted: the always-on-top puck window is transparent, and
+  // a round puck on an opaque page is a circle inside a square of colour. Marking
+  // the document here rather than from the main script avoids a flash of it.
+  if(new URLSearchParams(location.search).get('puck') === '1'){
+    document.documentElement.classList.add('puck-window');
+  }
+</script>
+
 <style>
   :root{
     --void:#03080f;
@@ -391,6 +400,27 @@
   }
   #leti-root.log-expanded .log-panel .session-panel-inner{ font-size:12.5px; }
   #leti-root.log-expanded .log-panel .image-grid{ grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
+
+  /* ---------- The always-on-top puck window (gui/desktop.py) ----------
+     A separate 190x190 native window loading this same page with ?puck=1. Here
+     the puck IS the window, so it fills it and everything behind it is
+     transparent - on GTK and Cocoa that leaves a round puck floating over the
+     desktop, and on Windows, where transparency is unsupported, the puck's own
+     circular backing keeps it looking deliberate. */
+  html.puck-window, html.puck-window body{ background:transparent !important; overflow:hidden; }
+  html.puck-window #leti-root{ background:transparent; min-height:100vh; }
+  html.puck-window #leti-root::before, html.puck-window #leti-root::after{ display:none; }
+  html.puck-window #leti-root.minimized .radar{
+    position:fixed; inset:0; right:auto; bottom:auto;
+    width:100%; height:100%;
+  }
+  /* pywebview moves the window when a drag starts on an element carrying this
+     class; without it a frameless window can only be moved by turning on
+     easy_drag, which swallows the click that reopens the interface. */
+  /* Nothing modal belongs in a 190px window, whatever asks to open one. */
+  html.puck-window .settings-overlay, html.puck-window .lightbox{ display:none !important; }
+  .pywebview-drag-region{ cursor:grab; }
+  .pywebview-drag-region:active{ cursor:grabbing; }
 
   /* ---------- Minimised: a radar puck in the corner ----------
      The SAME .radar element, moved and scaled by CSS. Nothing is torn down and
@@ -1409,58 +1439,6 @@
   document.getElementById('settingsCellBtn').onclick = () => openSettingsModal();
   document.getElementById('settingsBtn').onclick = () => openSettingsModal();
 
-  // ---------- Minimised mode ----------
-  // Shrinks to a radar puck in the corner with LETI at its centre. It is a CSS
-  // class on the root and nothing else: the websocket stays connected, the
-  // animation loop keeps its clock, replies keep arriving into the log, voice
-  // keeps running on the machine, and confirmations still open over the top. The
-  // puck is a smaller window onto a session that never stopped - not a paused one.
-  //
-  // What it can still tell you, without being opened: the state ring says whether
-  // Leti is listening or answering, and the badge counts replies you haven't seen.
-  const MINIMIZED_KEY = 'leti.minimized';
-  const puckBadge = document.getElementById('puckBadge');
-  const radarEl = document.querySelector('.radar');
-  const radarSvg = radarEl.querySelector('svg');
-  // Shrinking the whole 400-unit radar into a 184px puck would leave the core -
-  // the part that carries the state and the name - about 45px across. Zooming the
-  // viewBox in keeps the sweep and the rings while making the middle big enough
-  // to read, rather than scaling everything down uniformly into illegibility.
-  const FULL_VIEWBOX = '0 0 400 400';
-  const PUCK_VIEWBOX = '50 50 300 300';
-  let minimized = false;
-  let unseen = 0;
-
-  function renderUnseen(){
-    puckBadge.textContent = unseen > 9 ? '9+' : String(unseen);
-    puckBadge.hidden = !(minimized && unseen > 0);
-  }
-
-  function setMinimized(next){
-    minimized = next;
-    root.classList.toggle('minimized', minimized);
-    radarSvg.setAttribute('viewBox', minimized ? PUCK_VIEWBOX : FULL_VIEWBOX);
-    // Leaving the log expanded under a puck would put a full-screen panel behind
-    // something the size of a coaster.
-    if(minimized) setSessionExpanded(false);
-    if(!minimized){ unseen = 0; }
-    renderUnseen();
-    try { localStorage.setItem(MINIMIZED_KEY, minimized ? '1' : '0'); } catch(e) {}
-    radarEl.setAttribute('title', minimized ? 'Click to reopen Leti' : '');
-  }
-
-  document.getElementById('minimizeBtn').onclick = () => setMinimized(true);
-  radarEl.addEventListener('click', () => { if(minimized) setMinimized(false); });
-  document.addEventListener('keydown', (e) => {
-    if(e.key === 'Escape' && minimized) setMinimized(false);
-  });
-
-  // Restore the last choice, so minimising survives the reload a phone does every
-  // time its browser drops the tab.
-  try {
-    if(localStorage.getItem(MINIMIZED_KEY) === '1') setMinimized(true);
-  } catch(e) { /* private mode, or storage disabled - just start open */ }
-
   setMode('idle');
   startAnimation();
 
@@ -1557,6 +1535,192 @@
   window.appendUserMessage = function(text){ appendSessionMessage('user', text); };
   window.setHudState = function(state){ setMode(state); };
   window.focusChatInput = function(){ chatInput.focus(); };
+
+  // ---------- Minimised mode ----------
+  // Shrinks to a radar puck in the corner with LETI at its centre. It is a CSS
+  // class on the root and nothing else: the websocket stays connected, the
+  // animation loop keeps its clock, replies keep arriving into the log, voice
+  // keeps running on the machine, and confirmations still open over the top. The
+  // puck is a smaller window onto a session that never stopped - not a paused one.
+  //
+  // What it can still tell you, without being opened: the state ring says whether
+  // Leti is listening or answering, and the badge counts replies you haven't seen.
+  const MINIMIZED_KEY = 'leti.minimized';
+  const PUCK_POS_KEY = 'leti.puckPosition';
+  const puckBadge = document.getElementById('puckBadge');
+  const radarEl = document.querySelector('.radar');
+  const radarSvg = radarEl.querySelector('svg');
+
+  // This page is loaded by two windows. `?puck=1` is the small always-on-top one
+  // (see gui/desktop.py); it renders collapsed from the start and never shows the
+  // full layout, so the two windows never have to agree about a shared state.
+  const IS_PUCK_WINDOW = new URLSearchParams(location.search).get('puck') === '1';
+  // pywebview injects this. Its presence is how the page knows it is inside a
+  // native window that can float over other applications and be moved on the
+  // desktop, rather than a browser tab that can only rearrange its own contents.
+  let IN_DESKTOP_WINDOW = !!window.pywebview;
+  // Shrinking the whole 400-unit radar into a 184px puck would leave the core -
+  // the part that carries the state and the name - about 45px across. Zooming the
+  // viewBox in keeps the sweep and the rings while making the middle big enough
+  // to read, rather than scaling everything down uniformly into illegibility.
+  const FULL_VIEWBOX = '0 0 400 400';
+  const PUCK_VIEWBOX = '50 50 300 300';
+  let minimized = false;
+  let unseen = 0;
+
+  function renderUnseen(){
+    puckBadge.textContent = unseen > 9 ? '9+' : String(unseen);
+    puckBadge.hidden = !(minimized && unseen > 0);
+  }
+
+  function applyMinimizedLayout(next){
+    minimized = next;
+    root.classList.toggle('minimized', minimized);
+    radarSvg.setAttribute('viewBox', minimized ? PUCK_VIEWBOX : FULL_VIEWBOX);
+    // Leaving the log expanded under a puck would put a full-screen panel behind
+    // something the size of a coaster.
+    if(minimized) setSessionExpanded(false);
+    if(!minimized){ unseen = 0; }
+    renderUnseen();
+    radarEl.setAttribute('title', minimized ? 'Click to reopen Leti · drag to move' : '');
+  }
+
+  // Two ways to be small, and the page asks for the better one first.
+  //
+  //   Desktop: the backend swaps to a separate frameless, always-on-top window,
+  //           and THIS window just hides. It never enters the collapsed layout,
+  //           so restoring it is not a state that has to be put back.
+  //   Browser: no window to swap to, so the layout collapses in place - the same
+  //           control doing the best available version of the same thing.
+  async function minimize(){
+    let swapped = false;
+    // Only the native window asks for the swap. A phone or a browser tab is one
+    // more client of the same session, and minimising THERE must not hide the
+    // desktop app's windows on someone else's screen - the window a client can
+    // shrink is the window it is.
+    if(IN_DESKTOP_WINDOW){
+      try {
+        swapped = (await callApi('set_window_mode', 'puck')).desktop;
+      } catch(e) { /* not connected - fall through to collapsing in place */ }
+    }
+    if(!swapped) applyMinimizedLayout(true);
+    try { localStorage.setItem(MINIMIZED_KEY, swapped ? '0' : '1'); } catch(e) {}
+  }
+
+  async function restore(){
+    if(IS_PUCK_WINDOW){
+      // Hand back to the full window; this one is hidden, not restyled.
+      try { await callApi('set_window_mode', 'full'); } catch(e) {}
+      unseen = 0; renderUnseen();
+      return;
+    }
+    applyMinimizedLayout(false);
+    try { localStorage.setItem(MINIMIZED_KEY, '0'); } catch(e) {}
+  }
+
+  document.getElementById('minimizeBtn').onclick = () => minimize();
+  document.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape' && minimized) restore();
+  });
+
+  // ---------- Dragging the puck ----------
+  // In the native window the toolkit moves the WINDOW: the element carries
+  // pywebview's drag-region class and pywebview does the rest, so the puck travels
+  // across the whole desktop and there is no per-mousemove round trip to Python.
+  // In a browser there is no window to move, so the puck is repositioned within
+  // the page and its corner is remembered.
+  //
+  // Either way a click still has to reopen the interface, so a press only counts
+  // as a click if the pointer barely moved - otherwise every drag would also
+  // reopen the window it was trying to move.
+  const DRAG_SLOP = 5;    // px of movement still treated as a click
+  let dragging = null;
+
+  function markDraggableForDesktop(){
+    IN_DESKTOP_WINDOW = true;
+    radarEl.classList.add('pywebview-drag-region');
+  }
+  if(IN_DESKTOP_WINDOW) markDraggableForDesktop();
+  // pywebview injects its bridge shortly after load, so the check above can run
+  // too early. This is the event it fires when it is ready.
+  window.addEventListener('pywebviewready', markDraggableForDesktop);
+
+  function loadPuckPosition(){
+    if(IN_DESKTOP_WINDOW) return;   // the window's own position is the position
+    try {
+      const saved = JSON.parse(localStorage.getItem(PUCK_POS_KEY) || 'null');
+      if(saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) placePuck(saved.x, saved.y);
+    } catch(e) {}
+  }
+
+  function placePuck(x, y){
+    // Kept fully on screen: a puck dragged half off the edge of a window that is
+    // later resized smaller can otherwise end up somewhere unreachable.
+    const size = radarEl.offsetWidth || 184;
+    const maxX = Math.max(0, window.innerWidth - size);
+    const maxY = Math.max(0, window.innerHeight - size);
+    const left = Math.min(Math.max(0, x), maxX);
+    const top  = Math.min(Math.max(0, y), maxY);
+    radarEl.style.left = left + 'px';
+    radarEl.style.top = top + 'px';
+    radarEl.style.right = 'auto';
+    radarEl.style.bottom = 'auto';
+    try { localStorage.setItem(PUCK_POS_KEY, JSON.stringify({x: left, y: top})); } catch(e) {}
+  }
+
+  radarEl.addEventListener('pointerdown', (e) => {
+    if(!minimized || e.button !== 0) return;
+    const rect = radarEl.getBoundingClientRect();
+    dragging = {
+      startX: e.clientX, startY: e.clientY,
+      offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top,
+      moved: false,
+    };
+    // Not captured in the native window: pywebview's drag region needs the events.
+    if(!IN_DESKTOP_WINDOW) radarEl.setPointerCapture(e.pointerId);
+  });
+
+  radarEl.addEventListener('pointermove', (e) => {
+    if(!dragging) return;
+    if(Math.hypot(e.clientX - dragging.startX, e.clientY - dragging.startY) > DRAG_SLOP){
+      dragging.moved = true;
+    }
+    if(dragging.moved && !IN_DESKTOP_WINDOW){
+      placePuck(e.clientX - dragging.offsetX, e.clientY - dragging.offsetY);
+    }
+  });
+
+  function endDrag(e){
+    if(!dragging) return;
+    const wasDrag = dragging.moved;
+    dragging = null;
+    if(!IN_DESKTOP_WINDOW){
+      try { radarEl.releasePointerCapture(e.pointerId); } catch(err) {}
+    }
+    if(!wasDrag && minimized) restore();
+  }
+  radarEl.addEventListener('pointerup', endDrag);
+  radarEl.addEventListener('pointercancel', () => { dragging = null; });
+
+  // Re-clamp after a resize, for the same reason placePuck clamps.
+  window.addEventListener('resize', () => {
+    if(minimized && !IN_DESKTOP_WINDOW && radarEl.style.left){
+      placePuck(parseInt(radarEl.style.left, 10) || 0, parseInt(radarEl.style.top, 10) || 0);
+    }
+  });
+
+  if(IS_PUCK_WINDOW){
+    // The small window is only ever the puck.
+    applyMinimizedLayout(true);
+  } else {
+    // Restore the last choice, so minimising survives the reload a phone does
+    // every time its browser drops the tab. Only meaningful in a browser: the
+    // desktop app always starts as the full window.
+    try {
+      if(localStorage.getItem(MINIMIZED_KEY) === '1') applyMinimizedLayout(true);
+    } catch(e) { /* private mode, or storage disabled - just start open */ }
+  }
+  loadPuckPosition();
 
   // ---------- Visual pop-ups (images, diagrams) ----------
   const lightbox = document.getElementById('lightbox');
@@ -1800,10 +1964,18 @@
   }
 
   // Ask on the very first launch, once the socket is up so the call can be made.
+  // Never in the puck window: it is 190px square, both windows load this same
+  // page, and a first-run card that opens there is a dialogue nobody can read let
+  // alone answer. The full window asks - and if the interface is collapsed inside
+  // a browser tab, it reopens itself first rather than talking to a corner.
   (async function askAudioOnFirstRun(){
+    if(IS_PUCK_WINDOW) return;
     try {
       const info = await callApi('get_audio_setup');
-      if(!info.configured) openAudioSetup(true);
+      if(!info.configured){
+        if(minimized) await restore();
+        openAudioSetup(true);
+      }
     } catch(e){ /* the socket will retry; the card can also be opened by hand */ }
   })();
 
