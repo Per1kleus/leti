@@ -224,11 +224,41 @@ def test_reduced_motion_is_respected():
     assert "REDUCED_MOTION" in HUD
 
 
-def test_the_meter_is_not_animated_twice():
-    """The loop sets these heights every frame; a CSS transition on top is a
-    second interpolation fighting the first, which is what made them lag."""
-    bar_rule = re.search(r"\.waveform i\{(.*?)\}", CODE, re.S)
-    assert bar_rule and "transition" not in bar_rule.group(1)
+def test_the_meter_is_one_path_not_twenty_eight_elements():
+    """The meter used to be 28 <i> elements whose inline heights were rewritten
+    every frame, which made the browser lay the whole page out sixty times a
+    second for a decoration. One path draws the same bars and changes nothing
+    about layout. (Measured in Chromium: layout duration fell about a quarter.)
+
+    Also guards the older bug: a CSS transition on top of a per-frame update is a
+    second interpolation fighting the first, which is what made the bars lag.
+    """
+    assert "waveformPath" in CODE
+    assert 'setAttribute(\'d\'' in CODE or "setAttribute('d'" in CODE
+    rule = re.search(r"\.waveform\{(.*?)\}", CODE, re.S)
+    assert rule and "transition" not in rule.group(1)
+
+
+def test_the_slow_rings_are_not_redrawn_for_movement_nobody_can_see():
+    """They turn at 6 and 4 degrees a second. At 60fps that is a sixteenth of a
+    degree per frame - under a pixel at that radius - and on the tick ring it
+    repaints forty-eight lines to achieve it."""
+    assert "RING_STEP_DEGREES" in CODE
+    assert "lastRingUpdate" in CODE
+
+
+def test_the_sweep_is_still_drawn_every_frame():
+    """The rings can be throttled because their motion is sub-pixel. The sweep
+    turns at 60 degrees a second and is the thing the eye follows, so it is not
+    throttled with them - an earlier attempt to cap the whole loop while idle
+    bought nothing measurable and coarsened exactly the motion the smoothing work
+    was for."""
+    frame = re.search(r"function tickFrame\(ts\)\{(.*?)\n  \}", CODE, re.S)
+    assert frame, "tickFrame moved; this test needs updating"
+    body = frame.group(1)
+    assert "sweepGroup.setAttribute" in body
+    # No frame budget gate before the sweep is drawn.
+    assert "IDLE_FPS" not in body and "pendingDt" not in body
 
 
 # --- Minimised mode ---------------------------------------------------------------

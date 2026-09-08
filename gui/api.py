@@ -250,6 +250,24 @@ class LetiAPI:
             return False
 
 
+def _serve_headless(note: str = "") -> None:
+    """Keep serving until Ctrl+C, with no window of our own.
+
+    Reached two ways - pywebview not installed, and pywebview installed but unable
+    to open a window - because the outcome is the same either way: the server is
+    up, the interface is at the printed URL, and there is nothing left for this
+    thread to do but stay alive.
+    """
+    if note:
+        print(note)
+    print(" Press Ctrl+C to stop Leti.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+
+
 def _make_gui_speak_callback(api: LetiAPI, tts):
     """Unified reply handler for every input channel (typed, voice, from the desktop
     window or a phone): shows the reply as a bubble, speaks it, and focuses the text
@@ -456,6 +474,17 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     except ImportError:
         webview = None
 
+    from gui.desktop import display_available
+
+    no_window_reason = None
+    if webview is None:
+        no_window_reason = "pywebview isn't installed"
+    elif not display_available():
+        # pywebview is here, but there is no window server to put a window on.
+        # Deliberately checked rather than attempted - see display_available().
+        no_window_reason = "there's no graphical display (normal over SSH, or on a headless machine)"
+        webview = None
+
     if webview:
         from gui.desktop import DesktopWindows
 
@@ -471,18 +500,22 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         # reason the app won't open.
         icon_path = Path(__file__).parent / "icons" / "leti-512.png"
         try:
-            webview.start(icon=str(icon_path))
-        except TypeError:
-            webview.start()  # blocks until the window is closed
+            try:
+                webview.start(icon=str(icon_path))
+            except TypeError:
+                webview.start()  # blocks until the window is closed
+        except Exception as e:
+            # Whatever went wrong opening or running the window, the server is
+            # already up and serving this same interface to every browser and
+            # phone on the network. Losing the window is not a reason to take
+            # that away from them.
+            logger.warning(f"The desktop window stopped unexpectedly ({e}); still serving.")
+            _serve_headless(f" The desktop window couldn't run ({e}), but the web interface\n"
+                            " above is fully usable from any browser.")
     else:
-        print("(pywebview not installed - no desktop window will open, but the web")
-        print(" interface above is fully usable from any browser, including this")
-        print(" machine's. Press Ctrl+C to stop Leti.)")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
+        print(f"\n(No desktop window: {no_window_reason}.")
+        _serve_headless(" The web interface above is fully usable from any browser,\n"
+                        " including this machine's.")
 
     asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
     loop.call_soon_threadsafe(loop.stop)

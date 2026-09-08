@@ -227,3 +227,59 @@ async def test_an_answer_is_not_mistaken_for_a_new_request():
     api._pending_confirmation = None
     await api.a_send_text_message("what's the weather")
     assert orchestrator.turns == ["what's the weather"]
+
+
+# --- A desktop app on a machine with no desktop ------------------------------------
+
+def test_a_missing_display_is_checked_for_rather_than_walked_into():
+    """GTK does not raise "cannot open display" - it prints it and takes the
+    process down. So an app that merely tried and handled the failure would still
+    die, and take the web server with it: the interface every phone and browser on
+    the network was using would go with the window nobody could see anyway.
+
+    Found by installing pywebview in a container with no display, which is the
+    same situation as running the desktop app over SSH.
+    """
+    from gui.desktop import display_available
+
+    assert callable(display_available)
+    import inspect
+    source = inspect.getsource(display_available)
+    assert "DISPLAY" in source and "WAYLAND_DISPLAY" in source
+
+
+def test_no_display_leaves_the_server_running(monkeypatch):
+    from gui import desktop
+
+    monkeypatch.setattr(desktop.sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert desktop.display_available() is False
+
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert desktop.display_available() is True
+
+
+def test_windows_and_macos_always_have_a_window_server(monkeypatch):
+    """The question only arises on Linux; asking it elsewhere would refuse to open
+    a window on a machine that has one."""
+    from gui import desktop
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    for platform in ("win32", "darwin"):
+        monkeypatch.setattr(desktop.sys, "platform", platform)
+        assert desktop.display_available() is True
+
+
+def test_losing_the_window_does_not_take_the_interface_with_it():
+    """The server is already up and serving the same interface to every other
+    device. Losing the window is not a reason to take that away from them."""
+    import inspect
+
+    import gui.api
+
+    source = inspect.getsource(gui.api.run_gui_mode)
+    start = source.index("webview.start")
+    after = source[start:]
+    assert "_serve_headless" in after, "a failed webview.start() has no fallback"

@@ -26,6 +26,8 @@ falls back to collapsing inside its own window.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +39,24 @@ PUCK_SIZE = 190
 # Bottom-right because that is where system trays and notifications live, so it is
 # the corner people already expect small persistent things to occupy.
 PUCK_MARGIN = 40
+
+
+def display_available() -> bool:
+    """Whether this machine can open a window at all.
+
+    Checked BEFORE creating one, because on Linux there is no second chance: GTK
+    prints "cannot open display" and takes the process down with it rather than
+    raising something Python can catch, so an app that only tried and handled the
+    failure would simply die - taking the web server, and with it the interface
+    every other device was using, along with it.
+
+    Windows and macOS always have a window server when there is a user session, so
+    the question only arises on Linux, where "no DISPLAY and no WAYLAND_DISPLAY"
+    is exactly the SSH session, the headless server and the systemd unit.
+    """
+    if sys.platform.startswith("win") or sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 class DesktopWindows:
