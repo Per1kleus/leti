@@ -20,399 +20,810 @@
 
 <style>
   :root{
-    --void:#050b14;
-    --panel:#0a1420;
-    --panel-border:#12293a;
+    --void:#03080f;
+    --void-2:#050d16;
+    --panel:rgba(8,20,31,0.72);
+    --panel-solid:#08141f;
+    --panel-border:#123044;
+    --panel-border-soft:rgba(18,48,68,0.55);
     --cyan:#4fe3ff;
     --cyan-dim:#1c6b82;
+    --cyan-ghost:rgba(79,227,255,0.10);
     --ice:#d8f4ff;
     --ice-dim:#5c7d8c;
     --amber:#ffb454;
+    --mono:'Share Tech Mono',ui-monospace,monospace;
+    --display:'Rajdhani','Inter',sans-serif;
   }
   *{box-sizing:border-box;}
+
   #leti-root{
-    background:radial-gradient(ellipse at 50% 30%, #081826 0%, var(--void) 65%);
+    background:
+      radial-gradient(ellipse 70% 55% at 50% 42%, #071726 0%, transparent 70%),
+      radial-gradient(ellipse at 50% 120%, #06121d 0%, var(--void) 60%),
+      var(--void);
     color:var(--ice);
     font-family:'Inter',sans-serif;
-    min-height:100%;
+    min-height:100vh;
     display:flex;
-    padding:22px;
-    gap:22px;
+    flex-direction:column;
     position:relative;
     overflow:hidden;
   }
+  /* Faint engineering grid, and a vignette so the edges fall away rather than
+     ending on a hard rectangle. Both are pointer-events:none so nothing under
+     them stops being clickable. */
   #leti-root::before{
     content:'';
-    position:absolute; inset:0;
+    position:absolute; inset:0; z-index:0; pointer-events:none;
     background-image:
-      linear-gradient(rgba(79,227,255,0.025) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(79,227,255,0.025) 1px, transparent 1px);
-    background-size:34px 34px;
-    pointer-events:none;
+      linear-gradient(rgba(79,227,255,0.022) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79,227,255,0.022) 1px, transparent 1px);
+    background-size:40px 40px;
   }
-
-  /* ---------- Sidebar ---------- */
-  .sidebar{ width:230px; flex-shrink:0; display:flex; flex-direction:column; gap:14px; z-index:1; }
-  .panel{
-    background:var(--panel);
-    border:1px solid var(--panel-border);
-    border-radius:6px;
-    padding:13px 14px;
-    position:relative;
-  }
-  .panel::before{
+  #leti-root::after{
     content:'';
-    position:absolute; top:-1px; left:-1px;
-    width:10px; height:10px;
-    border-top:2px solid var(--cyan);
-    border-left:2px solid var(--cyan);
-    border-radius:5px 0 0 0;
-    opacity:0.85;
-  }
-  .panel-title{
-    font-family:'Rajdhani', sans-serif;
-    font-weight:600;
-    font-size:11px;
-    letter-spacing:2.5px;
-    color:var(--cyan);
-    text-transform:uppercase;
-    margin:0 0 9px;
+    position:absolute; inset:0; z-index:0; pointer-events:none;
+    background:radial-gradient(ellipse 80% 70% at 50% 50%, transparent 45%, rgba(3,8,15,0.85) 100%);
   }
 
-  /* Clock */
-  .clock-time{ font-family:'Share Tech Mono', monospace; font-size:27px; color:var(--ice); letter-spacing:1px; }
-  .clock-date{ font-family:'Share Tech Mono', monospace; font-size:11px; color:var(--ice-dim); margin-top:3px; }
-
-  /* Weather */
-  .weather-row{ display:flex; align-items:center; gap:11px; }
-  .weather-temp{ font-family:'Share Tech Mono', monospace; font-size:24px; color:var(--ice); }
-  .weather-desc{ font-size:12px; color:var(--ice-dim); margin-top:1px; }
-  .placeholder-tag{
-    font-family:'Share Tech Mono', monospace; font-size:9px; color:var(--cyan-dim);
-    letter-spacing:1px; margin-top:8px; opacity:0.8;
+  /* ---------- Top bar ---------- */
+  .topbar{
+    position:relative; z-index:2;
+    display:flex; align-items:center; gap:20px;
+    padding:14px 26px;
+    border-bottom:1px solid var(--panel-border-soft);
+    background:linear-gradient(180deg, rgba(6,16,26,0.9), rgba(6,16,26,0));
+    flex-shrink:0;
+  }
+  .brand{ display:flex; align-items:center; gap:13px; min-width:0; }
+  .brand-mark{ width:22px; height:22px; flex-shrink:0; color:var(--cyan); }
+  .brand-name{
+    font-family:var(--display); font-weight:700; font-size:19px;
+    letter-spacing:5px; color:var(--ice); line-height:1;
+  }
+  .brand-tag{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.7px;
+    color:var(--ice-dim); text-transform:uppercase; margin-top:4px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .topbar-center{ display:flex; gap:36px; margin:0 auto; }
+  .readout{ text-align:center; }
+  .readout .k{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.6px;
+    color:var(--ice-dim); text-transform:uppercase;
+  }
+  .readout .v{
+    font-family:var(--mono); font-size:14px; letter-spacing:1.5px;
+    color:var(--cyan); margin-top:3px; display:flex; align-items:center; gap:7px;
+    justify-content:center;
+  }
+  .status-dot{
+    width:7px; height:7px; border-radius:50%; background:var(--cyan);
+    box-shadow:0 0 8px var(--cyan); animation:pulse-dot 2.4s ease-in-out infinite;
+  }
+  .status-dot.warn{ background:var(--amber); box-shadow:0 0 8px var(--amber); }
+  @keyframes pulse-dot{ 0%,100%{opacity:1} 50%{opacity:0.35} }
+  .topbar-right{ display:flex; align-items:center; gap:10px; }
+  .icon-btn{
+    width:34px; height:34px; border-radius:6px; flex-shrink:0;
+    border:1px solid transparent; background:transparent; color:var(--ice-dim);
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    transition:color .15s, border-color .15s, background .15s;
+  }
+  .icon-btn:hover{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .icon-btn.active{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .user-chip{
+    display:flex; align-items:center; gap:11px;
+    border:1px solid var(--panel-border); border-radius:22px;
+    padding:5px 6px 5px 16px; background:rgba(8,20,31,0.6);
+  }
+  .user-chip .who{
+    font-family:var(--mono); font-size:11px; letter-spacing:2px; color:var(--ice);
+    white-space:nowrap;
+  }
+  .user-chip .avatar{
+    width:26px; height:26px; border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, #6fe9ff, #14607a);
+    box-shadow:0 0 10px rgba(79,227,255,0.45);
   }
 
-  /* System stats */
-  .stat-row{ margin-bottom:9px; }
+  /* ---------- Layout ---------- */
+  .stage{
+    position:relative; z-index:1;
+    flex:1; min-height:0;
+    display:grid;
+    grid-template-columns:290px minmax(0,1fr) 320px;
+    gap:18px;
+    padding:18px 26px 0;
+  }
+  .col{ display:flex; flex-direction:column; gap:16px; min-height:0; }
+
+  /* ---------- Panel chrome (corner brackets + header) ---------- */
+  .panel{
+    position:relative;
+    background:var(--panel);
+    border:1px solid var(--panel-border-soft);
+    padding:14px 15px 15px;
+    min-height:0;
+    display:flex; flex-direction:column;
+  }
+  /* The four L-shaped corner brackets. Two elements, four corners: each pseudo
+     draws a top+left and the mirrored copy is rotated into place. */
+  .panel::before, .panel::after{
+    content:''; position:absolute; width:11px; height:11px; pointer-events:none;
+    border:1px solid var(--cyan); opacity:0.75;
+  }
+  .panel::before{ top:-1px; left:-1px; border-right:0; border-bottom:0; }
+  .panel::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
+  .panel > .bracket-tr, .panel > .bracket-bl{
+    position:absolute; width:11px; height:11px; pointer-events:none;
+    border:1px solid var(--cyan); opacity:0.75;
+  }
+  .panel > .bracket-tr{ top:-1px; right:-1px; border-left:0; border-bottom:0; }
+  .panel > .bracket-bl{ bottom:-1px; left:-1px; border-right:0; border-top:0; }
+
+  .panel-head{
+    display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+    padding-bottom:9px; margin-bottom:12px;
+    border-bottom:1px solid var(--panel-border-soft);
+    flex-shrink:0;
+  }
+  .panel-head .sys{
+    font-family:var(--mono); font-size:10px; letter-spacing:2.2px;
+    color:var(--ice-dim); text-transform:uppercase;
+  }
+  /* The reference's blurred sub-heading: present, unreadable, atmospheric. It is
+     decoration, so it is hidden from assistive tech rather than read aloud. */
+  .panel-head .sub{
+    display:block; margin-top:4px;
+    font-family:var(--mono); font-size:11px; letter-spacing:3px;
+    color:var(--cyan-dim); text-transform:uppercase;
+    filter:blur(2.6px); opacity:0.75; user-select:none;
+  }
+  .panel-head .tag{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.6px;
+    color:var(--ice-dim); text-transform:uppercase; white-space:nowrap;
+  }
+  .panel-head .dots{ display:flex; gap:4px; align-items:center; }
+  .panel-head .dots i{
+    width:3px; height:3px; border-radius:50%; background:var(--cyan-dim); display:block;
+  }
+  .panel-head .dots i:last-child{ background:var(--cyan); box-shadow:0 0 5px var(--cyan); }
+
+  /* ---------- Weather / environment ---------- */
+  .env-row{ display:flex; align-items:flex-start; gap:14px; }
+  .env-temp{
+    font-family:var(--display); font-weight:600; font-size:38px; line-height:1;
+    color:var(--ice);
+  }
+  .env-temp .unit{ font-size:17px; color:var(--ice-dim); margin-left:2px; }
+  .env-temp.na{ font-size:19px; color:var(--ice-dim); letter-spacing:1px; padding-top:8px; }
+  .env-meta{ padding-top:5px; min-width:0; }
+  .env-desc{ font-size:12px; color:var(--ice); line-height:1.45; }
+  .env-date{
+    font-family:var(--mono); font-size:10px; letter-spacing:1.4px;
+    color:var(--ice-dim); text-transform:uppercase; margin-top:4px;
+  }
+
+  /* ---------- Stat bars ---------- */
+  .stat-row{ margin-bottom:13px; }
   .stat-row:last-child{ margin-bottom:0; }
   .stat-label{
-    display:flex; justify-content:space-between;
-    font-family:'Share Tech Mono', monospace; font-size:10.5px; color:var(--ice-dim);
-    margin-bottom:4px;
+    display:flex; justify-content:space-between; align-items:center;
+    font-family:var(--mono); font-size:11px; letter-spacing:1.3px;
+    color:var(--ice-dim); text-transform:uppercase; margin-bottom:6px;
   }
-  .stat-label span:last-child{ color:var(--cyan); }
-  .stat-track{ height:5px; background:#0f1f2c; border-radius:3px; overflow:hidden; }
-  .stat-fill{ height:100%; background:linear-gradient(90deg, var(--cyan-dim), var(--cyan)); border-radius:3px; transition:width 0.6s ease; }
+  .stat-label .n{ display:flex; align-items:center; gap:7px; }
+  .stat-label .n svg{ width:12px; height:12px; color:var(--cyan-dim); }
+  .stat-label .v{ color:var(--ice); font-size:12px; }
+  .stat-track{ height:4px; background:rgba(18,48,68,0.75); overflow:hidden; }
+  .stat-fill{
+    height:100%; background:linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+    box-shadow:0 0 9px rgba(79,227,255,0.55); transition:width .5s ease;
+  }
 
-  /* Todo */
-  .todo-input-row{ display:flex; gap:6px; margin-bottom:10px; }
+  /* ---------- Tasks ---------- */
+  .todo-input-row{ display:flex; gap:7px; margin-bottom:11px; flex-shrink:0; }
   .todo-input-row input{
-    flex:1; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
-    color:var(--ice); font-family:'Inter',sans-serif; font-size:12px; padding:6px 8px; outline:none;
+    flex:1; min-width:0; background:rgba(4,12,20,0.8);
+    border:1px solid var(--panel-border); color:var(--ice);
+    font-family:'Inter',sans-serif; font-size:12px; padding:7px 9px; outline:none;
   }
   .todo-input-row input:focus{ border-color:var(--cyan-dim); }
   .todo-input-row button{
-    background:var(--cyan-dim); border:none; border-radius:4px; color:var(--void);
-    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; padding:0 12px; cursor:pointer;
+    width:32px; background:transparent; border:1px solid var(--panel-border);
+    color:var(--cyan); font-size:15px; cursor:pointer; line-height:1;
   }
-  .todo-input-row button:hover{ background:var(--cyan); }
-  .todo-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; max-height:150px; overflow-y:auto; }
-  .todo-item{ display:flex; align-items:center; gap:8px; font-size:12.5px; }
+  .todo-input-row button:hover{ border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .task-panel{ flex:0 1 auto; min-height:0; }
+  .todo-list{ list-style:none; margin:0; padding:0; overflow-y:auto; max-height:260px; }
+  .todo-item{
+    display:flex; align-items:center; gap:9px; padding:6px 0; font-size:12px;
+    border-bottom:1px solid rgba(18,48,68,0.35);
+  }
   .todo-item .check{
-    width:14px; height:14px; border:1.5px solid var(--cyan-dim); border-radius:3px; flex-shrink:0;
-    cursor:pointer; display:flex; align-items:center; justify-content:center;
+    width:13px; height:13px; flex-shrink:0; cursor:pointer;
+    border:1px solid var(--cyan-dim); position:relative;
   }
   .todo-item.done .check{ background:var(--cyan-dim); }
-  .todo-item.done .check::after{ content:'✓'; font-size:10px; color:var(--void); }
-  .todo-item span.text{ flex:1; cursor:pointer; }
-  .todo-item.done span.text{ color:var(--ice-dim); text-decoration:line-through; }
-  .todo-item .del{ color:var(--ice-dim); cursor:pointer; font-size:14px; opacity:0.5; }
-  .todo-item .del:hover{ opacity:1; color:var(--amber); }
+  .todo-item.done .check::after{
+    content:''; position:absolute; left:3px; top:0px; width:4px; height:8px;
+    border:solid var(--void); border-width:0 2px 2px 0; transform:rotate(45deg);
+  }
+  .todo-item .text{ flex:1; cursor:pointer; color:var(--ice); word-break:break-word; }
+  .todo-item.done .text{ color:var(--ice-dim); text-decoration:line-through; }
+  .todo-item .del{ color:var(--ice-dim); cursor:pointer; font-size:15px; line-height:1; padding:0 2px; }
+  .todo-item .del:hover{ color:var(--amber); }
+  .todo-empty{
+    font-family:var(--mono); font-size:10px; letter-spacing:1.2px;
+    color:var(--ice-dim); text-transform:uppercase; padding:6px 0;
+  }
 
-  /* ---------- Main HUD ---------- */
-  .hud-main{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:1; gap:26px; position:relative; }
-  .hud-stage{ position:relative; width:400px; height:400px; }
-  .hud-stage svg{ width:100%; height:100%; overflow:visible; }
-  /* Rotation for .scan-ring/.tick-ring is done via native SVG <animateTransform>
-     (see the markup below), not CSS transform-origin - the latter is ambiguous
-     about whether px values mean SVG user-units or final rendered CSS pixels
-     when a viewBox and its rendered size don't match, and different
-     WebKit/WebView2/GTK engines have historically disagreed. animateTransform
-     always rotates in the SVG's own coordinate space, no ambiguity possible. */
-
-  .hud-label{
-    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  /* ---------- Centre: radar ---------- */
+  .centre{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-height:0; position:relative;
+  }
+  .radar{
+    position:relative; flex:1; width:100%;
+    display:flex; align-items:center; justify-content:center; min-height:0;
+  }
+  .radar svg{ width:min(100%, 560px); height:100%; max-height:560px; overflow:visible; }
+  .radar-core{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
     text-align:center; pointer-events:none;
   }
-  .hud-label .wordmark{
-    font-family:'Rajdhani', sans-serif; font-weight:700; font-size:30px; letter-spacing:6px;
-    color:var(--ice); text-shadow:0 0 18px rgba(79,227,255,0.55);
+  .radar-core .state{
+    font-family:var(--mono); font-size:12px; letter-spacing:3px;
+    text-transform:uppercase; line-height:1.5;
   }
-  .hud-label .state{
-    font-family:'Share Tech Mono', monospace; font-size:11px; letter-spacing:3px;
-    margin-top:6px; text-transform:uppercase; transition:color 0.3s;
+  .radar-core .state.idle{ color:var(--cyan); }
+  .radar-core .state.listening{ color:var(--cyan); text-shadow:0 0 12px var(--cyan); }
+  .radar-core .state.speaking{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
+  .radar-core .core-label{
+    font-family:var(--mono); font-size:9px; letter-spacing:2.4px;
+    color:var(--ice-dim); text-transform:uppercase; margin-top:3px;
   }
-  .state.idle{ color:var(--cyan-dim); }
-  .state.listening{ color:var(--cyan); }
-  .state.speaking{ color:var(--amber); }
 
-  .hud-controls{ display:flex; gap:10px; align-items:center; }
-  .hud-btn{
-    background:transparent; border:1px solid var(--panel-border); color:var(--ice);
-    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px; letter-spacing:0.5px;
-    padding:9px 18px; border-radius:5px; cursor:pointer; transition:border-color 0.2s, color 0.2s;
+  /* ---------- Centre: waveform + command pill ---------- */
+  .command-area{
+    display:flex; flex-direction:column; align-items:center; gap:16px;
+    padding:6px 0 22px; flex-shrink:0; width:100%;
   }
-  .hud-btn:hover{ border-color:var(--cyan); color:var(--cyan); }
-  .hud-btn.active{ border-color:var(--cyan); color:var(--cyan); background:rgba(79,227,255,0.08); }
-  .hud-note{ font-family:'Share Tech Mono', monospace; font-size:10px; color:var(--ice-dim); text-align:center; max-width:340px; }
+  .waveform{ display:flex; align-items:center; gap:3px; height:34px; }
+  .waveform i{
+    display:block; width:3px; height:4px; background:var(--cyan);
+    opacity:0.85; border-radius:1px; transition:height .08s linear;
+  }
+  .command-pill{
+    display:flex; align-items:center; gap:11px;
+    padding:11px 26px; border-radius:26px; cursor:pointer;
+    border:1px solid var(--cyan-dim); background:rgba(8,26,38,0.65);
+    color:var(--ice); font-family:var(--mono); font-size:12px; letter-spacing:2.4px;
+    text-transform:uppercase; transition:border-color .15s, box-shadow .15s, color .15s;
+  }
+  .command-pill:hover{ border-color:var(--cyan); box-shadow:0 0 18px rgba(79,227,255,0.22); }
+  .command-pill.active{
+    border-color:var(--cyan); color:var(--cyan);
+    box-shadow:0 0 22px rgba(79,227,255,0.3);
+  }
+  .command-pill svg{ width:15px; height:15px; flex-shrink:0; }
+  .hud-note{
+    font-size:11px; color:var(--ice-dim); text-align:center; max-width:440px;
+    line-height:1.5; padding:0 12px;
+  }
 
-  /* ---------- Bottom chat bar + session panel ---------- */
-  .bottom-bar{
-    position:absolute; left:0; right:0; bottom:20px;
-    display:flex; gap:8px; padding:0 6px; z-index:2;
+  /* ---------- Voice & audio status ---------- */
+  .kv-row{
+    display:flex; justify-content:space-between; align-items:baseline; gap:10px;
+    padding:6px 0; border-bottom:1px solid rgba(18,48,68,0.35);
+    font-family:var(--mono); font-size:11px; letter-spacing:1.2px;
   }
-  .icon-btn{
-    width:42px; height:42px; flex-shrink:0;
-    background:var(--panel); border:1px solid var(--panel-border); border-radius:6px;
-    display:flex; align-items:center; justify-content:center; cursor:pointer;
-    color:var(--ice-dim); transition:border-color 0.2s, color 0.2s;
-  }
-  .icon-btn:hover, .icon-btn.active{ border-color:var(--cyan); color:var(--cyan); }
-  .chat-input{
-    flex:1; background:var(--panel); border:1px solid var(--panel-border); border-radius:6px;
-    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:0 14px; outline:none;
-  }
-  .chat-input:focus{ border-color:var(--cyan-dim); }
-  .send-btn{
-    background:var(--cyan-dim); border:none; border-radius:6px; color:var(--void);
-    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px; padding:0 20px; cursor:pointer;
-    flex-shrink:0; transition:background 0.2s;
-  }
-  .send-btn:hover{ background:var(--cyan); }
+  .kv-row:last-of-type{ border-bottom:0; }
+  .kv-row .k{ color:var(--ice-dim); text-transform:uppercase; }
+  .kv-row .v{ color:var(--cyan); text-transform:uppercase; text-align:right;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:62%; }
+  .kv-row .v.off{ color:var(--ice-dim); }
+  .kv-row .v.warn{ color:var(--amber); }
 
-  .session-panel{
-    position:absolute; left:0; right:0; bottom:72px;
-    max-height:0; opacity:0; overflow:hidden;
-    background:rgba(9,18,28,0.94); backdrop-filter:blur(8px);
-    border:1px solid var(--panel-border); border-radius:8px;
-    transition:max-height 0.3s ease, opacity 0.25s ease;
-    z-index:2;
+  .control-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
+  .control-cell{
+    aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--panel-border); background:rgba(4,12,20,0.55);
+    color:var(--ice-dim); cursor:pointer; transition:all .15s;
   }
-  .session-panel.open{ max-height:280px; opacity:1; }
-  .session-panel-inner{ padding:14px; max-height:280px; overflow-y:auto; display:flex; flex-direction:column; gap:9px; }
-  .session-panel-title{
-    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:11px; letter-spacing:2.5px;
-    color:var(--cyan); text-transform:uppercase; margin-bottom:2px;
+  .control-cell:hover{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .control-cell.active{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .control-cell svg{ width:17px; height:17px; }
+
+  /* ---------- Session log ---------- */
+  .log-panel{ flex:1; min-height:0; }
+  .session-panel-inner{
+    overflow-y:auto; flex:1; min-height:0;
+    font-family:var(--mono); font-size:11px; line-height:1.65;
+    scrollbar-width:thin; scrollbar-color:var(--cyan-dim) transparent;
   }
-  .msg{ font-size:12.5px; line-height:1.5; max-width:82%; padding:7px 12px; border-radius:8px; }
-  .msg.user{ align-self:flex-end; background:rgba(79,227,255,0.12); color:var(--ice); border:1px solid var(--cyan-dim); }
-  .msg.leti{ align-self:flex-start; background:rgba(216,244,255,0.06); color:var(--ice); border:1px solid var(--panel-border); }
-  .msg.system{ align-self:center; color:var(--ice-dim); font-family:'Share Tech Mono',monospace; font-size:10.5px; font-style:italic; text-align:center; }
-  .msg.visual{ align-self:flex-start; background:rgba(216,244,255,0.04); border:1px solid var(--panel-border); max-width:94%; padding:10px; }
+  .session-panel-inner::-webkit-scrollbar{ width:5px; }
+  .session-panel-inner::-webkit-scrollbar-thumb{ background:var(--cyan-dim); }
+  .session-panel-title{ display:none; }
+  .msg{ margin-bottom:7px; word-wrap:break-word; display:flex; gap:8px; align-items:flex-start; }
+  .msg .stamp{ color:var(--cyan-dim); flex-shrink:0; }
+  .msg .body{ min-width:0; flex:1; }
+  .msg.user .body{ color:var(--ice); }
+  .msg.leti .body{ color:var(--cyan); }
+  .msg.system .body{ color:var(--ice-dim); }
+  .msg.visual{ display:block; }
+
   .visual-title{
-    font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--cyan-dim);
-    text-transform:uppercase; letter-spacing:1px; margin-bottom:8px;
+    font-family:var(--mono); font-size:9px; letter-spacing:1.6px;
+    color:var(--ice-dim); text-transform:uppercase; margin:9px 0 6px;
   }
-  .image-grid{ display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; }
+  .image-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(74px,1fr)); gap:5px; }
   .image-grid img{
-    width:100%; height:78px; object-fit:cover; border-radius:4px;
-    border:1px solid var(--panel-border); cursor:zoom-in; transition:border-color 0.15s;
+    width:100%; aspect-ratio:1; object-fit:cover; cursor:pointer;
+    border:1px solid var(--panel-border);
   }
-  .image-grid img:hover{ border-color:var(--cyan); }
-  .diagram-box{ background:#0a1420; border-radius:6px; padding:12px; overflow-x:auto; }
-  .diagram-box pre{ margin:0; font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--ice-dim); white-space:pre-wrap; }
+  .image-grid img:hover{ border-color:var(--cyan-dim); }
+  .diagram-box{
+    background:rgba(4,12,20,0.7); border:1px solid var(--panel-border);
+    padding:9px; overflow-x:auto; margin-bottom:8px;
+  }
+  .diagram-box svg{ max-width:100%; height:auto; }
+  .diagram-box pre{ margin:0; font-size:10px; color:var(--ice-dim); white-space:pre-wrap; }
 
+  /* Expanded: the same panel and the same renderer, promoted to a reading size.
+     A second transcript view would be a second thing to keep in step. */
+  #leti-root.log-expanded .log-panel{
+    position:fixed; z-index:55;
+    top:6vh; left:50%; transform:translateX(-50%);
+    width:min(900px, 92vw); height:88vh;
+    background:var(--panel-solid); border-color:var(--panel-border);
+    box-shadow:0 24px 80px rgba(0,0,0,0.75);
+  }
+  #leti-root.log-expanded .log-panel .session-panel-inner{ font-size:12.5px; }
+  #leti-root.log-expanded .log-panel .image-grid{ grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); }
+
+  /* ---------- Terminal / chat bar ---------- */
+  .terminal-bar{
+    position:relative; z-index:2; flex-shrink:0;
+    display:flex; align-items:center; gap:12px;
+    margin:16px 26px 22px;
+    padding:11px 16px;
+    border:1px solid var(--panel-border);
+    background:rgba(6,16,26,0.85);
+  }
+  .terminal-bar .prompt{
+    font-family:var(--mono); font-size:13px; letter-spacing:1px;
+    color:var(--cyan); flex-shrink:0;
+  }
+  .chat-input{
+    flex:1; min-width:0; background:transparent; border:0; outline:none;
+    color:var(--ice); font-family:var(--mono); font-size:13px; letter-spacing:0.6px;
+  }
+  .chat-input::placeholder{ color:var(--ice-dim); }
+  .send-btn{
+    background:transparent; border:1px solid var(--cyan-dim); color:var(--cyan);
+    font-family:var(--mono); font-size:11px; letter-spacing:2px; text-transform:uppercase;
+    padding:7px 18px; cursor:pointer; flex-shrink:0; transition:all .15s;
+  }
+  .send-btn:hover{ background:var(--cyan-ghost); box-shadow:0 0 14px rgba(79,227,255,0.2); }
+
+  /* ---------- Lightbox ---------- */
   .lightbox{
-    position:fixed; inset:0; background:rgba(2,6,12,0.92); z-index:50;
-    display:none; align-items:center; justify-content:center; cursor:zoom-out;
+    position:fixed; inset:0; background:rgba(2,6,12,0.94); z-index:70;
+    display:none; align-items:center; justify-content:center; padding:36px;
   }
   .lightbox.open{ display:flex; }
-  .lightbox img{ max-width:88%; max-height:88%; border-radius:6px; border:1px solid var(--cyan-dim); }
+  .lightbox img{ max-width:92%; max-height:92%; border:1px solid var(--panel-border); }
 
-  /* ---------- Settings modal (/settings) ---------- */
+  /* ---------- Settings + audio modals ---------- */
   .settings-overlay{
-    position:fixed; inset:0; background:rgba(2,6,12,0.85); z-index:60;
-    display:none; align-items:center; justify-content:center;
+    position:fixed; inset:0; background:rgba(2,6,12,0.88); z-index:60;
+    display:none; align-items:center; justify-content:center; padding:20px;
   }
   .settings-overlay.open{ display:flex; }
   .settings-panel{
-    background:var(--panel); border:1px solid var(--panel-border); border-radius:8px;
-    width:420px; max-width:90vw; max-height:80vh; overflow-y:auto;
-    padding:20px; position:relative;
+    background:var(--panel-solid); border:1px solid var(--panel-border);
+    width:430px; max-width:100%; max-height:86vh; overflow-y:auto;
+    padding:22px; position:relative;
   }
   .settings-panel-title{
-    font-family:'Rajdhani',sans-serif; font-weight:700; font-size:16px; letter-spacing:1px;
-    color:var(--ice); margin-bottom:14px; text-transform:uppercase;
+    font-family:var(--display); font-weight:700; font-size:15px; letter-spacing:2.5px;
+    color:var(--cyan); margin-bottom:16px; text-transform:uppercase;
   }
   .settings-close{
-    position:absolute; top:14px; right:16px; cursor:pointer; color:var(--ice-dim); font-size:20px; line-height:1;
+    position:absolute; top:15px; right:17px; cursor:pointer;
+    color:var(--ice-dim); font-size:20px; line-height:1;
   }
   .settings-close:hover{ color:var(--cyan); }
   .settings-section-row{
     display:flex; justify-content:space-between; align-items:center;
-    padding:10px 12px; border:1px solid var(--panel-border); border-radius:6px;
-    margin-bottom:8px; cursor:pointer; transition:border-color 0.15s;
+    padding:11px 13px; border:1px solid var(--panel-border);
+    margin-bottom:8px; cursor:pointer; transition:border-color .15s;
   }
   .settings-section-row:hover{ border-color:var(--cyan-dim); }
   .settings-section-row .label{ font-size:13px; color:var(--ice); }
   .settings-section-row .status{
-    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; text-transform:uppercase;
+    font-family:var(--mono); font-size:9px; letter-spacing:1.4px; text-transform:uppercase;
   }
   .settings-section-row .status.configured{ color:var(--cyan); }
   .settings-section-row .status.unset{ color:var(--ice-dim); }
-  .settings-field{ margin-bottom:12px; }
+  .settings-field{ margin-bottom:13px; }
   .settings-field label{
-    display:block; font-family:'Share Tech Mono',monospace; font-size:10px;
-    color:var(--ice-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;
+    display:block; font-family:var(--mono); font-size:10px;
+    color:var(--ice-dim); text-transform:uppercase; letter-spacing:1.2px; margin-bottom:5px;
   }
   .settings-field input{
-    width:100%; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
-    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:7px 9px; outline:none;
-    box-sizing:border-box;
+    width:100%; background:rgba(4,12,20,0.8); border:1px solid var(--panel-border);
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:8px 10px;
+    outline:none;
   }
   .settings-field input:focus{ border-color:var(--cyan-dim); }
-  .settings-actions{ display:flex; gap:8px; margin-top:16px; }
+  .settings-actions{ display:flex; gap:9px; margin-top:18px; }
   .settings-btn{
-    flex:1; font-family:'Rajdhani',sans-serif; font-weight:600; font-size:13px;
-    padding:9px; border-radius:5px; cursor:pointer; border:1px solid var(--panel-border);
-    background:transparent; color:var(--ice);
+    flex:1; font-family:var(--mono); font-size:11px; letter-spacing:1.6px;
+    text-transform:uppercase; padding:10px; cursor:pointer;
+    border:1px solid var(--panel-border); background:transparent; color:var(--ice);
+    transition:all .15s;
   }
+  .settings-btn:hover{ border-color:var(--cyan-dim); background:var(--cyan-ghost); }
   .settings-btn.primary{ background:var(--cyan-dim); color:var(--void); border-color:var(--cyan-dim); }
   .settings-btn.primary:hover{ background:var(--cyan); }
   .settings-btn.danger:hover{ border-color:var(--amber); color:var(--amber); }
   .settings-back{
-    font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--cyan-dim);
-    cursor:pointer; margin-bottom:12px; display:inline-block;
+    font-family:var(--mono); font-size:11px; color:var(--cyan-dim);
+    cursor:pointer; margin-bottom:13px; display:inline-block;
   }
   .settings-back:hover{ color:var(--cyan); }
-  .settings-error{ color:var(--amber); font-size:12px; margin-top:8px; }
+  .settings-error{ color:var(--amber); font-size:12px; margin-top:9px; }
 
-  /* ---------- First-run audio permission (audio/setup.py) ----------
-     Reuses .settings-overlay / .settings-panel / .settings-btn rather than
-     introducing a second modal system - this is one more panel, not a new kind
-     of thing. Only the parts a permission card needs are added here. */
-  .audio-intro{ font-size:13px; color:var(--ice); line-height:1.55; margin-bottom:14px; }
+  /* ---------- First-run audio permission (audio/setup.py) ---------- */
+  .audio-intro{ font-size:13px; color:var(--ice); line-height:1.55; margin-bottom:15px; }
   .audio-intro .quiet{ color:var(--ice-dim); font-size:12px; }
-  .audio-step{
-    border:1px solid var(--panel-border); border-radius:6px; padding:12px; margin-bottom:10px;
-  }
+  .audio-step{ border:1px solid var(--panel-border); padding:13px; margin-bottom:10px; }
   .audio-step .head{
-    display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px;
+    display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:9px;
   }
-  .audio-step .name{
-    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px; color:var(--ice);
-  }
+  .audio-step .name{ font-family:var(--display); font-weight:600; font-size:14px; color:var(--ice); }
   .audio-step .verdict{
-    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px;
+    font-family:var(--mono); font-size:9px; letter-spacing:1.5px;
     text-transform:uppercase; color:var(--ice-dim);
   }
   .audio-step .verdict.good{ color:var(--cyan); }
   .audio-step .verdict.bad{ color:var(--amber); }
   .audio-step select{
-    width:100%; background:#0f1f2c; border:1px solid var(--panel-border); border-radius:4px;
-    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:7px 9px;
-    outline:none; box-sizing:border-box; margin-bottom:8px;
+    width:100%; background:rgba(4,12,20,0.8); border:1px solid var(--panel-border);
+    color:var(--ice); font-family:'Inter',sans-serif; font-size:13px; padding:8px 10px;
+    outline:none; margin-bottom:9px;
   }
   .audio-meter{
-    height:6px; background:#0f1f2c; border-radius:3px; overflow:hidden; margin-top:8px;
+    height:5px; background:rgba(4,12,20,0.9); overflow:hidden; margin-top:9px;
     border:1px solid var(--panel-border);
   }
   .audio-meter > span{
-    display:block; height:100%; width:0%; background:var(--cyan-dim); transition:width 0.25s;
+    display:block; height:100%; width:0%; background:var(--cyan);
+    box-shadow:0 0 8px var(--cyan); transition:width .25s;
   }
-  .audio-detail{ font-size:12px; color:var(--ice-dim); margin-top:7px; line-height:1.5; }
+  .audio-detail{ font-size:12px; color:var(--ice-dim); margin-top:8px; line-height:1.5; }
   .audio-detail.bad{ color:var(--amber); }
+
+  /* ---------- Narrow screens: the phone is a first-class client ----------
+     The three columns become one scrolling stack, the radar shrinks to a size
+     that leaves room for the command pill, and the terminal bar stays put. */
+  /* Between phone and desktop the three columns become two, with the radar across
+     the top. Nothing is hidden: an earlier version dropped the right column here,
+     which took the session log with it - and the log is where Leti's replies
+     arrive, so that width silently had no way to read the answer. */
+  @media (max-width: 1200px){
+    #leti-root{ overflow-y:auto; }
+    .stage{
+      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      grid-template-areas:"centre centre" "left right";
+      overflow:visible;
+    }
+    .col.left{ grid-area:left; }
+    .col.centre{ grid-area:centre; }
+    .col.right{ grid-area:right; }
+    .col{ min-height:auto; }
+    .radar{ min-height:min(42vw, 340px); }
+    .radar svg{ max-height:min(42vw, 340px); }
+    .log-panel{ height:340px; flex:none; }
+  }
+  @media (max-width: 820px){
+    .topbar{ flex-wrap:wrap; gap:12px; padding:12px 16px; }
+    .topbar-center{ order:3; width:100%; margin:0; justify-content:space-between; gap:16px; }
+    .brand-tag{ display:none; }
+    .stage{
+      grid-template-columns:minmax(0,1fr); gap:14px; padding:14px 16px 0;
+      grid-template-areas:"centre" "left" "right";
+    }
+    .radar svg{ max-height:min(58vw, 330px); }
+    .radar{ min-height:min(60vw, 350px); }
+    .log-panel{ height:300px; }
+    /* The core readout is HTML over a scaled SVG, so it does not shrink with the
+       radar - at phone size it has to be told to. */
+    .radar-core .state{ font-size:10px; letter-spacing:2px; }
+    .radar-core .core-label{ font-size:7.5px; letter-spacing:1.4px; }
+    .todo-list{ max-height:190px; }
+    .terminal-bar{ margin:14px 16px 18px; }
+    .send-btn{ padding:7px 12px; }
+  }
 </style>
 
 <div id="leti-root">
-  <div class="sidebar">
-    <div class="panel">
-      <div class="panel-title">Time</div>
-      <div class="clock-time" id="clockTime">--:--:--</div>
-      <div class="clock-date" id="clockDate">-</div>
-    </div>
 
-    <div class="panel">
-      <div class="panel-title">Weather</div>
-      <div class="weather-row">
-        <div class="weather-temp" id="weatherTemp">--°</div>
-        <div><div class="weather-desc" id="weatherDesc">Loading...</div></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">System</div>
-      <div class="stat-row">
-        <div class="stat-label"><span>CPU</span><span id="cpuVal">0%</span></div>
-        <div class="stat-track"><div class="stat-fill" id="cpuFill" style="width:0%"></div></div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-label"><span>MEM</span><span id="memVal">0%</span></div>
-        <div class="stat-track"><div class="stat-fill" id="memFill" style="width:0%"></div></div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-label"><span>DISK</span><span id="diskVal">0%</span></div>
-        <div class="stat-track"><div class="stat-fill" id="diskFill" style="width:0%"></div></div>
+  <!-- ---------- Top bar ---------- -->
+  <div class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+        <path d="M12 2 L21 12 L12 22 L3 12 Z"/>
+        <path d="M12 7 L17 12 L12 17 L7 12 Z" opacity="0.55"/>
+      </svg>
+      <div>
+        <div class="brand-name">LETI</div>
+        <div class="brand-tag">Local Enhanced Terminal Intelligence</div>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-title">Tasks</div>
-      <div class="todo-input-row">
-        <input type="text" id="todoInput" placeholder="Add a task..." />
-        <button id="todoAddBtn">+</button>
+    <div class="topbar-center">
+      <div class="readout">
+        <div class="k">System Status</div>
+        <div class="v"><span class="status-dot" id="statusDot"></span><span id="statusText">STARTING</span></div>
       </div>
-      <ul class="todo-list" id="todoList"></ul>
+      <div class="readout">
+        <div class="k">Local Time</div>
+        <div class="v" id="clockTime">--:--:--</div>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="icon-btn" id="audioBtn" title="Microphone &amp; speakers">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
+        </svg>
+      </div>
+      <div class="icon-btn" id="settingsBtn" title="Settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </div>
+      <div class="user-chip">
+        <span class="who" id="userName">LOCAL</span>
+        <span class="avatar"></span>
+      </div>
     </div>
   </div>
 
-  <div class="hud-main">
-    <div class="hud-stage">
-      <svg viewBox="0 0 400 400">
-        <g class="scan-ring">
-          <animateTransform attributeName="transform" type="rotate" from="0 200 200" to="360 200 200" dur="22s" repeatCount="indefinite"/>
-          <circle cx="200" cy="200" r="188" fill="none" stroke="var(--panel-border)" stroke-width="1"/>
-          <path d="M 200 12 A 188 188 0 0 1 320 55" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.85"/>
-          <path d="M 380 200 A 188 188 0 0 1 345 320" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.6"/>
-          <path d="M 200 388 A 188 188 0 0 1 80 345" fill="none" stroke="var(--cyan)" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
-        </g>
-        <g class="tick-ring" id="tickRing" stroke="var(--cyan-dim)" stroke-width="1.5">
-          <animateTransform attributeName="transform" type="rotate" from="360 200 200" to="0 200 200" dur="40s" repeatCount="indefinite"/>
-        </g>
-        <path id="orbPath" fill="rgba(79,227,255,0.08)" stroke="var(--cyan)" stroke-width="2"/>
-      </svg>
-      <div class="hud-label">
-        <div class="wordmark">LETI</div>
-        <div class="state idle" id="stateLabel">IDLE</div>
+  <!-- ---------- Three columns ---------- -->
+  <div class="stage">
+
+    <div class="col left">
+      <div class="panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">System //</div>
+            <div class="sub" aria-hidden="true">Environment</div>
+          </div>
+          <div class="tag">Local Cond.</div>
+        </div>
+        <div class="env-row">
+          <div class="env-temp" id="weatherTemp">--<span class="unit">&deg;</span></div>
+          <div class="env-meta">
+            <div class="env-desc" id="weatherDesc">Loading...</div>
+            <div class="env-date" id="clockDate">-</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">System //</div>
+            <div class="sub" aria-hidden="true">System Resources</div>
+          </div>
+          <div class="tag">RT-Monitor</div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label">
+            <span class="n">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="1"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/></svg>
+              CPU Load
+            </span>
+            <span class="v" id="cpuVal">0%</span>
+          </div>
+          <div class="stat-track"><div class="stat-fill" id="cpuFill" style="width:0%"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label">
+            <span class="n">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="7" width="20" height="10" rx="1"/><path d="M6 7v10M12 7v10M18 7v10"/></svg>
+              Memory
+            </span>
+            <span class="v" id="memVal">0%</span>
+          </div>
+          <div class="stat-track"><div class="stat-fill" id="memFill" style="width:0%"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-label">
+            <span class="n">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>
+              Storage
+            </span>
+            <span class="v" id="diskVal">0%</span>
+          </div>
+          <div class="stat-track"><div class="stat-fill" id="diskFill" style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <div class="panel task-panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">System //</div>
+            <div class="sub" aria-hidden="true">Task Queue</div>
+          </div>
+          <div class="tag" id="todoCount">0 OPEN</div>
+        </div>
+        <div class="todo-input-row">
+          <input type="text" id="todoInput" placeholder="Add a task..." />
+          <button id="todoAddBtn" title="Add">+</button>
+        </div>
+        <ul class="todo-list" id="todoList"></ul>
       </div>
     </div>
 
-    <div class="hud-controls">
-      <button class="hud-btn" id="micBtn">Enable Microphone</button>
-      <button class="hud-btn" id="simBtn">Simulate Speaking</button>
-      <button class="hud-btn" id="audioBtn">Audio</button>
-    </div>
-    <div class="hud-note" id="hudNote">The ring reacts to live mic input if your browser allows it here, or use Simulate Speaking to preview the effect.</div>
-
-    <div class="session-panel" id="sessionPanel">
-      <div class="session-panel-inner" id="sessionPanelInner">
-        <div class="session-panel-title">Current Session</div>
-        <div class="msg system" id="emptyHint">No messages yet this session.</div>
-      </div>
-    </div>
-    <div class="bottom-bar">
-      <div class="icon-btn" id="historyBtn" title="Show current chat session">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    <!-- ---------- Centre: radar + command ---------- -->
+    <div class="col centre">
+      <div class="radar">
+        <svg viewBox="0 0 400 400" aria-hidden="true">
+          <!-- Outer dashed ring, turning slowly. -->
+          <g>
+            <animateTransform attributeName="transform" type="rotate" from="0 200 200" to="360 200 200" dur="60s" repeatCount="indefinite"/>
+            <circle cx="200" cy="200" r="188" fill="none" stroke="var(--cyan-dim)" stroke-width="1.2"
+                    stroke-dasharray="9 11" opacity="0.75"/>
+          </g>
+          <!-- Fixed graticule: concentric rings, crosshair, and sector spokes. -->
+          <g fill="none" stroke="var(--panel-border)" stroke-width="1">
+            <circle cx="200" cy="200" r="164"/>
+            <circle cx="200" cy="200" r="120"/>
+            <circle cx="200" cy="200" r="76"/>
+            <line x1="36" y1="200" x2="364" y2="200"/>
+            <line x1="200" y1="36" x2="200" y2="364"/>
+            <line x1="84" y1="84" x2="316" y2="316" opacity="0.5"/>
+            <line x1="316" y1="84" x2="84" y2="316" opacity="0.5"/>
+          </g>
+          <!-- Sweep: a soft wedge plus the leading edge, one rotation every 6s. -->
+          <g>
+            <animateTransform attributeName="transform" type="rotate" from="0 200 200" to="360 200 200" dur="6s" repeatCount="indefinite"/>
+            <path d="M 200 200 L 200 36 A 164 164 0 0 1 282 58 Z" fill="url(#sweepFade)"/>
+            <line x1="200" y1="200" x2="200" y2="36" stroke="var(--cyan)" stroke-width="1.6" opacity="0.85"/>
+          </g>
+          <!-- Contact blips, at the angles the reference puts them. -->
+          <g stroke="var(--cyan)" stroke-width="3" stroke-linecap="round">
+            <line x1="248" y1="92" x2="256" y2="112" opacity="0.9">
+              <animate attributeName="opacity" values="0.15;1;0.15" dur="4s" repeatCount="indefinite"/>
+            </line>
+            <line x1="292" y1="286" x2="286" y2="306" opacity="0.7">
+              <animate attributeName="opacity" values="1;0.15;1" dur="5.5s" repeatCount="indefinite"/>
+            </line>
+          </g>
+          <!-- Counter-rotating tick ring, filled in by script. -->
+          <g class="tick-ring" id="tickRing" stroke="var(--cyan-dim)" stroke-width="1.5">
+            <animateTransform attributeName="transform" type="rotate" from="360 200 200" to="0 200 200" dur="90s" repeatCount="indefinite"/>
+          </g>
+          <!-- The core: an audio-reactive blob, not decoration. Its radius follows
+               the microphone (or Leti's own speech) in real time. The disc behind it
+               is opaque so the sweep passes behind the readout instead of appearing
+               to cut through it. -->
+          <circle cx="200" cy="200" r="82" fill="url(#coreBacking)"/>
+          <path id="orbPath" fill="rgba(79,227,255,0.09)" stroke="var(--cyan)" stroke-width="1.8"/>
+          <!-- Bracket frame around the core readout. -->
+          <g fill="none" stroke="var(--cyan)" stroke-width="1.4" opacity="0.8">
+            <path d="M164 178 v-10 h10"/><path d="M236 178 v-10 h-10"/>
+            <path d="M164 222 v10 h10"/><path d="M236 222 v10 h-10"/>
+          </g>
+          <defs>
+            <radialGradient id="coreBacking">
+              <stop offset="0%" stop-color="#050d16" stop-opacity="0.97"/>
+              <stop offset="72%" stop-color="#050d16" stop-opacity="0.95"/>
+              <stop offset="100%" stop-color="#050d16" stop-opacity="0"/>
+            </radialGradient>
+            <linearGradient id="sweepFade" x1="0" y1="1" x2="1" y2="0">
+              <stop offset="0%" stop-color="var(--cyan)" stop-opacity="0.16"/>
+              <stop offset="100%" stop-color="var(--cyan)" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
         </svg>
+        <div class="radar-core">
+          <div class="state idle" id="stateLabel">IDLE</div>
+          <div class="core-label">Core Active</div>
+        </div>
       </div>
-      <input type="text" class="chat-input" id="chatInput" placeholder="Type to Leti..." />
-      <button class="send-btn" id="sendBtn">Send</button>
+
+      <div class="command-area">
+        <div class="waveform" id="waveform" aria-hidden="true"></div>
+        <button class="command-pill" id="micBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
+          </svg>
+          <span id="micBtnLabel">Awaiting Command...</span>
+        </button>
+        <div class="hud-note" id="hudNote">Type below, or enable the microphone to make the core react to live audio.</div>
+      </div>
     </div>
+
+    <!-- ---------- Right: voice status, session log ---------- -->
+    <div class="col right">
+      <div class="panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">System //</div>
+            <div class="sub" aria-hidden="true">Voice Pipeline</div>
+          </div>
+          <div class="tag">Audio I/O</div>
+        </div>
+        <div class="kv-row"><span class="k">Microphone</span><span class="v off" id="voiceMic">Checking</span></div>
+        <div class="kv-row"><span class="k">Speakers</span><span class="v off" id="voiceSpk">Checking</span></div>
+        <div class="kv-row"><span class="k">Input Device</span><span class="v off" id="voiceDevice">-</span></div>
+        <div class="control-grid">
+          <div class="control-cell" id="simBtn" title="Preview the speaking animation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M2 12h3l2-7 4 14 3-9 2 4h6"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="audioSetupBtn" title="Microphone &amp; speaker setup">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/>
+              <path d="M1 14h6M9 8h6M17 16h6"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="historyBtn" title="Expand the session log">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="settingsCellBtn" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel log-panel" id="sessionPanel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">System //</div>
+            <div class="sub" aria-hidden="true">Session Log</div>
+          </div>
+          <div class="tag">RT-Log</div>
+        </div>
+        <div class="session-panel-inner" id="sessionPanelInner">
+          <div class="session-panel-title">Current Session</div>
+          <div class="msg system" id="emptyHint"><span class="stamp">[--:--:--]</span><span class="body">Awaiting user input ...</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------- Terminal / chat ---------- -->
+  <div class="terminal-bar">
+    <span class="prompt">&gt;_</span>
+    <input type="text" class="chat-input" id="chatInput" placeholder="Type to Leti..." autocomplete="off" />
+    <button class="send-btn" id="sendBtn">Send</button>
   </div>
 
   <div class="lightbox" id="lightbox">
-    <img id="lightboxImg" src="" />
+    <img id="lightboxImg" src="" alt="" />
   </div>
 
   <div class="settings-overlay" id="settingsOverlay">
@@ -509,16 +920,23 @@
   }
 
   // ---------- Clock ----------
+  // 24-hour, zero-padded: the readout sits in a fixed-width slot in the top bar,
+  // and a locale that renders "9:05:03 AM" makes it jump on every digit change.
   function tickClock(){
     const now = new Date();
-    document.getElementById('clockTime').textContent = now.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    document.getElementById('clockDate').textContent = now.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'});
+    document.getElementById('clockTime').textContent =
+      now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false});
+    document.getElementById('clockDate').textContent =
+      now.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'});
   }
   tickClock();
   setInterval(tickClock, 1000);
 
   // ---------- System stats (real, via Python bridge) ----------
   let stats = { cpu: 0, mem: 0, disk: 0 };
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+
   function renderStats(){
     document.getElementById('cpuVal').textContent = Math.round(stats.cpu) + '%';
     document.getElementById('cpuFill').style.width = stats.cpu + '%';
@@ -526,27 +944,55 @@
     document.getElementById('memFill').style.width = stats.mem + '%';
     document.getElementById('diskVal').textContent = Math.round(stats.disk) + '%';
     document.getElementById('diskFill').style.width = stats.disk + '%';
+
+    // The top bar's status light is derived from these same numbers rather than
+    // being decorative - it reads OPTIMAL until something is genuinely under
+    // pressure, using the thresholds system_report itself flags on.
+    const strained = stats.cpu >= 90 || stats.mem >= 85 || stats.disk >= 90;
+    statusText.textContent = strained ? 'UNDER LOAD' : 'OPTIMAL';
+    statusDot.classList.toggle('warn', strained);
   }
+
   function refreshStats(){
     callApi('get_system_stats').then(data => {
-      if(data.error) return;
+      if(data.error){
+        statusText.textContent = 'NO DATA';
+        statusDot.classList.add('warn');
+        return;
+      }
       stats = data;
       renderStats();
-    }).catch(() => {});
+    }).catch(() => {
+      statusText.textContent = 'OFFLINE';
+      statusDot.classList.add('warn');
+    });
   }
   refreshStats();
   setInterval(refreshStats, 5000);
 
   // ---------- Weather (real, via Python bridge) ----------
+  function setWeatherUnavailable(){
+    const temp = document.getElementById('weatherTemp');
+    temp.textContent = 'N/A';
+    temp.classList.add('na');
+    document.getElementById('weatherDesc').textContent = 'Unavailable';
+  }
+
   function refreshWeather(){
     callApi('get_weather').then(data => {
       if(data.error){
-        document.getElementById('weatherDesc').textContent = 'Unavailable';
+        setWeatherUnavailable();
         return;
       }
-      document.getElementById('weatherTemp').textContent = Math.round(data.temperature) + data.unit;
+      const temp = document.getElementById('weatherTemp');
+      temp.classList.remove('na');
+      temp.textContent = Math.round(data.temperature);
+      const unit = document.createElement('span');
+      unit.className = 'unit';
+      unit.textContent = data.unit;
+      temp.appendChild(unit);
       document.getElementById('weatherDesc').textContent = data.condition + ' · ' + data.location;
-    }).catch(() => { document.getElementById('weatherDesc').textContent = 'Unavailable'; });
+    }).catch(setWeatherUnavailable);
   }
   refreshWeather();
   setInterval(refreshWeather, 10 * 60 * 1000);
@@ -556,6 +1002,14 @@
   const todoListEl = document.getElementById('todoList');
   function renderTodos(){
     todoListEl.innerHTML = '';
+    const open = todos.filter(t => !t.done).length;
+    document.getElementById('todoCount').textContent = open + ' OPEN';
+    if(!todos.length){
+      const empty = document.createElement('li');
+      empty.className = 'todo-empty';
+      empty.textContent = 'Queue empty';
+      todoListEl.appendChild(empty);
+    }
     todos.forEach((t) => {
       const li = document.createElement('li');
       li.className = 'todo-item' + (t.done ? ' done' : '');
@@ -625,7 +1079,29 @@
   const micBtn = document.getElementById('micBtn');
   const simBtn = document.getElementById('simBtn');
   const hudNote = document.getElementById('hudNote');
-  const BASE_R = 92, CENTER = 200, BINS = 48;
+  const BASE_R = 54, CENTER = 200, BINS = 48, AMP_R = 19;
+  const waveformEl = document.getElementById('waveform');
+  const micBtnLabel = document.getElementById('micBtnLabel');
+
+  // The bar meter under the radar reads from the same amplitudes as the core, so
+  // the two always agree about what the audio is doing.
+  const WAVE_BARS = 28;
+  const waveBars = [];
+  for(let i=0; i<WAVE_BARS; i++){
+    const bar = document.createElement('i');
+    waveformEl.appendChild(bar);
+    waveBars.push(bar);
+  }
+  function drawWaveform(amplitudes){
+    for(let i=0; i<WAVE_BARS; i++){
+      // Sample across the spectrum, and mirror it so the meter is symmetrical
+      // about its centre the way the reference's is.
+      const half = Math.floor(WAVE_BARS / 2);
+      const from = i < half ? (half - 1 - i) : (i - half);
+      const amp = amplitudes[Math.floor(from * amplitudes.length / half)] || 0;
+      waveBars[i].style.height = (3 + amp * 46).toFixed(1) + 'px';
+    }
+  }
 
   let mode = 'idle'; // idle | listening | speaking
   let analyser = null, dataArray = null, audioCtx = null;
@@ -646,15 +1122,16 @@
   function drawOrb(amplitudes){
     const points = amplitudes.map((amp, i) => {
       const angle = (i / BINS) * Math.PI * 2 - Math.PI/2;
-      const r = BASE_R + amp * 46;
+      const r = BASE_R + amp * AMP_R;
       return [CENTER + r*Math.cos(angle), CENTER + r*Math.sin(angle)];
     });
     orbPath.setAttribute('d', smoothClosedPath(points));
+    drawWaveform(amplitudes);
   }
 
   function idleFrame(){
     t += 0.02;
-    const amps = Array.from({length: BINS}, (_, i) => 0.12 + 0.05*Math.sin(t*1.4 + i*0.5));
+    const amps = Array.from({length: BINS}, (_, i) => 0.09 + 0.09*Math.sin(t*1.4 + i*0.55));
     drawOrb(amps);
     rafId = requestAnimationFrame(idleFrame);
   }
@@ -689,11 +1166,19 @@
     rafId = requestAnimationFrame(speakingFrame);
   }
 
+  const PILL_LABEL = {
+    idle: 'Awaiting Command...',
+    listening: 'Listening...',
+    speaking: 'Responding...',
+  };
+
   function setMode(newMode){
     mode = newMode;
     if(rafId) cancelAnimationFrame(rafId);
     stateLabel.textContent = newMode.toUpperCase();
     stateLabel.className = 'state ' + newMode;
+    micBtnLabel.textContent = PILL_LABEL[newMode] || PILL_LABEL.idle;
+    micBtn.classList.toggle('active', newMode !== 'idle');
     if(newMode === 'idle') idleFrame();
     else if(newMode === 'listening') (analyser ? listeningFrame() : listeningIdleFrame());
     else if(newMode === 'speaking') speakingFrame();
@@ -701,9 +1186,7 @@
 
   micBtn.onclick = async () => {
     if(mode === 'listening'){
-      setMode('idle');
-      micBtn.classList.remove('active');
-      micBtn.textContent = 'Enable Microphone';
+      setMode('idle');   // also resets the pill's label and highlight
       return;
     }
     try{
@@ -715,11 +1198,9 @@
       dataArray = new Uint8Array(analyser.frequencyBinCount);
       source.connect(analyser); // not connected to destination - no feedback/echo
       setMode('listening');
-      micBtn.classList.add('active');
-      micBtn.textContent = 'Disable Microphone';
-      hudNote.textContent = 'Live microphone input active - the ring is reacting to real audio.';
+      hudNote.textContent = 'Live microphone input - the core and the meter are reacting to real audio. Press again to stop.';
     } catch(err){
-      hudNote.textContent = 'Microphone unavailable in this preview (browser blocked access) - try Simulate Speaking instead.';
+      hudNote.textContent = 'The browser blocked microphone access here. Leti still listens through the machine\u2019s own microphone if voice is on.';
     }
   };
 
@@ -733,6 +1214,9 @@
     }, 4000);
   };
 
+  document.getElementById('settingsCellBtn').onclick = () => openSettingsModal();
+  document.getElementById('settingsBtn').onclick = () => openSettingsModal();
+
   setMode('idle');
 
   // ---------- Bottom chat input + session panel ----------
@@ -742,21 +1226,55 @@
   const chatInput = document.getElementById('chatInput');
   const sendBtn = document.getElementById('sendBtn');
 
-  let sessionOpen = false;
-  function toggleSession(forceOpen){
-    sessionOpen = forceOpen !== undefined ? forceOpen : !sessionOpen;
-    sessionPanel.classList.toggle('open', sessionOpen);
-    historyBtn.classList.toggle('active', sessionOpen);
-    if(sessionOpen) sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  // The log panel is always on screen in the right column, so "open" is no longer
+  // a thing it is or isn't. The log button now EXPANDS it to a reading size
+  // instead. Same panel, same renderer, two sizes: a second transcript view would
+  // be a second thing to keep in step with this one.
+  let sessionExpanded = false;
+  function setSessionExpanded(expanded){
+    sessionExpanded = expanded;
+    root.classList.toggle('log-expanded', expanded);
+    historyBtn.classList.toggle('active', expanded);
+    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
   }
-  historyBtn.onclick = () => toggleSession();
+  // Called when new content arrives. The log is always on screen, so this only
+  // has to bring the newest line into view - it deliberately does NOT expand the
+  // panel over the whole window every time Leti says something.
+  function toggleSession(){
+    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
+  }
+  historyBtn.onclick = () => setSessionExpanded(!sessionExpanded);
+  // Escape closes the expanded log, the way it closes the modals.
+  document.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape' && sessionExpanded) setSessionExpanded(false);
+  });
 
-  function appendSessionMessage(role, text){
+  function stamp(){
+    const d = new Date();
+    return '[' + String(d.getHours()).padStart(2,'0') + ':' +
+                 String(d.getMinutes()).padStart(2,'0') + ':' +
+                 String(d.getSeconds()).padStart(2,'0') + ']';
+  }
+
+  // `restored` marks a line replayed from the session buffer on page load. That
+  // buffer stores only {role, content} - no time - so stamping those with the
+  // clock would date every one of them to the moment the page opened and read as
+  // if the whole conversation happened in one second. They get a blank stamp
+  // instead, which keeps the column aligned without inventing a reading.
+  function appendSessionMessage(role, text, restored){
     const hint = document.getElementById('emptyHint');
     if(hint) hint.remove();
     const div = document.createElement('div');
     div.className = 'msg ' + role;
-    div.textContent = text;
+    // Timestamp + body as separate nodes so the stamp column stays aligned and
+    // the message text is still set as text, never markup.
+    const time = document.createElement('span');
+    time.className = 'stamp';
+    time.textContent = restored ? '[--:--:--]' : stamp();
+    const body = document.createElement('span');
+    body.className = 'body';
+    body.textContent = text;
+    div.appendChild(time); div.appendChild(body);
     sessionPanelInner.appendChild(div);
     sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
   }
@@ -771,7 +1289,7 @@
     }
     appendSessionMessage('user', val);
     chatInput.value = '';
-    toggleSession(true);
+    toggleSession();
     // Fire-and-forget: the reply arrives asynchronously via appendLetiReply(),
     // pushed from Python through the same speak_callback path voice-mode
     // replies use - see gui/api.py's _make_gui_speak_callback.
@@ -782,7 +1300,7 @@
 
   // ---------- Load current session history on startup (this session only) ----------
   callApi('get_session_messages').then(messages => {
-    messages.forEach(m => appendSessionMessage(m.role === 'assistant' ? 'leti' : 'user', m.content));
+    messages.forEach(m => appendSessionMessage(m.role === 'assistant' ? 'leti' : 'user', m.content, true));
   }).catch(() => {});
 
   // ---------- Functions the server pushes calls into (see the WebSocket 'push' handler above) ----------
@@ -816,6 +1334,40 @@
     if(e.target === audioOverlay && !audioState.firstRun) audioOverlay.classList.remove('open');
   });
   document.getElementById('audioBtn').onclick = () => openAudioSetup(false);
+  document.getElementById('audioSetupBtn').onclick = () => openAudioSetup(false);
+
+  // The Voice Pipeline panel reads the same saved answer the card writes, so what
+  // it shows is the state the backend will actually use - not a separate notion
+  // of it. Refreshed after every save rather than polled.
+  function refreshVoiceStatus(){
+    callApi('get_audio_setup').then(info => {
+      const mic = document.getElementById('voiceMic');
+      const spk = document.getElementById('voiceSpk');
+      const dev = document.getElementById('voiceDevice');
+      if(!info.configured){
+        mic.textContent = 'Not set up'; mic.className = 'v warn';
+        spk.textContent = 'Not set up'; spk.className = 'v warn';
+        dev.textContent = '-';          dev.className = 'v off';
+        return;
+      }
+      const saved = info.setup || {};
+      const m = saved.microphone || {}, k = saved.speakers || {};
+      // "Allowed but unverified" is its own answer: the microphone opened during
+      // setup and no sound arrived. Reporting that as ON would be the same lie
+      // the level check exists to catch.
+      mic.textContent = !m.allowed ? 'Off' : (m.verified ? 'Ready' : 'No signal');
+      mic.className = 'v ' + (!m.allowed ? 'off' : (m.verified ? '' : 'warn'));
+      spk.textContent = k.allowed ? 'Ready' : 'Off';
+      spk.className = 'v ' + (k.allowed ? '' : 'off');
+      dev.textContent = m.device_name || (m.allowed ? 'System default' : '-');
+      dev.className = 'v ' + (m.allowed ? '' : 'off');
+      // voice_active is about THIS session: permitted is not the same as running.
+      if(m.allowed && !info.voice_active){
+        mic.textContent = m.verified ? 'Ready · idle' : 'No signal';
+      }
+    }).catch(() => {});
+  }
+  refreshVoiceStatus();
 
   async function openAudioSetup(firstRun){
     audioState = { devices: null, micResult: null, speakerHeard: null, firstRun: !!firstRun, deviceIndex: null };
@@ -990,6 +1542,7 @@
     }
     audioOverlay.classList.remove('open');
     audioState.firstRun = false;
+    refreshVoiceStatus();
     appendSessionMessage('leti', micAllowed
       ? (result.starting_voice
           ? 'Audio saved. Starting voice now \u2014 this takes a few seconds the first time.'
@@ -1198,7 +1751,7 @@
   }
 
   window.showVisual = function(payload){
-    toggleSession(true);
+    toggleSession();
     if(payload.type === 'images') appendVisualImages(payload);
     else if(payload.type === 'diagram') appendVisualDiagram(payload);
   };

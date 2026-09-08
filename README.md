@@ -329,19 +329,42 @@ approve something). This is LAN-trust-level security, like a home router's admin
 `gui.enable_remote_access: false` in `config/settings.yaml` to disable non-loopback access
 entirely and restrict the GUI to this machine only.
 
-What's real vs. not yet: the dashboard's **time**, **weather** (Open-Meteo, no key needed —
-IP-based location by default, or set `weather.latitude`/`longitude` in `config/settings.yaml`
-to override), **system stats** (via `system_report`), and **to-do list** are all live,
-not mocked. The center ring reacts to real audio: your own voice via the browser's mic
-(if permitted) while the backend is listening, and a synthetic-but-correctly-timed pattern
-while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device, not through the
-page, so the page can't analyze its actual waveform — the animation is triggered by the
-real speaking start/stop, just not literally amplitude-matched to it). The session panel
-shows the current session only, and the text input auto-focuses after Leti finishes
-speaking or after you finish a spoken turn, so you can seamlessly switch to typing.
-Image search results and diagrams (`search_images`, `create_sketch`) pop up as visual
-cards in the session panel on every connected device at once, independent of whatever
-Leti says in text.
+**The layout.** A top bar (system status, clock), three columns, and a terminal line
+across the bottom. Left: local conditions, resource monitor, task queue. Centre: the
+radar, with the audio-reactive core at its middle, a level meter, and the command
+button. Right: the voice pipeline's state with four controls, and the session log.
+Everything on it is wired to something real — the panels are readouts, not scenery.
+
+- **System status** (top bar) is derived from the same CPU/memory/disk figures the
+  monitor shows, against the thresholds `system_report` itself flags on: it reads
+  OPTIMAL until one of them is genuinely under pressure.
+- **Weather** is Open-Meteo, no key needed — IP-based location by default, or set
+  `weather.latitude`/`longitude` in `config/settings.yaml` to override. With no
+  location configured it says so rather than showing a placeholder number.
+- **Resource monitor** and the **task queue** are live (`system_report`, and the same
+  to-do storage a spoken "add a task" writes to).
+- **The core** reacts to real audio: your own voice via the browser's mic (if
+  permitted) while the backend is listening, and a synthetic-but-correctly-timed
+  pattern while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device,
+  not through the page, so the page can't analyse its actual waveform — the animation
+  is triggered by the real speaking start/stop, just not literally amplitude-matched to
+  it). The level meter under it reads from the same amplitudes, so the two always agree.
+- **Voice pipeline** reads the answers saved by first-run audio setup, so it shows what
+  the backend will actually use — including "no signal", which is what a microphone that
+  opened but heard nothing gets, rather than being reported as on.
+- **The session log** is the current session only, timestamped as things happen. Lines
+  replayed from the buffer when you open the page carry a blank stamp instead of a
+  fabricated one: that buffer stores no times, and dating them all to the moment the
+  page loaded would read as one conversation in one second. The log button expands it
+  to a reading size (Escape closes it); image results and diagrams (`search_images`,
+  `create_sketch`) appear there on every connected device at once, independent of
+  whatever Leti says in text.
+- The text input auto-focuses after Leti finishes speaking or after you finish a spoken
+  turn, so you can switch to typing without reaching for the mouse.
+
+Below 1200px the three columns fold into two with the radar across the top, and below
+820px into a single stack — nothing is hidden at any width, since a phone is a
+first-class client here rather than a fallback.
 
 ---
 
