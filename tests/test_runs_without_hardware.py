@@ -13,6 +13,7 @@ a state every installation is in for part of its life.
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -283,3 +284,60 @@ def test_losing_the_window_does_not_take_the_interface_with_it():
     start = source.index("webview.start")
     after = source[start:]
     assert "_serve_headless" in after, "a failed webview.start() has no fallback"
+
+
+# --- Desktop first, browser only as the fallback ----------------------------------
+
+def test_the_desktop_window_is_attempted_before_any_browser():
+    """This is a desktop application that can fall back to a browser, not a web app
+    that sometimes gets a window. The order matters: nothing may open a browser
+    while a native window is still possible."""
+    import inspect
+
+    import gui.api
+
+    source = inspect.getsource(gui.api.run_gui_mode)
+    desktop = source.index("DesktopWindows")
+    # _serve_headless is the only thing that opens a browser, and every call to it
+    # has to come after the desktop attempt.
+    for match in re.finditer(r"_serve_headless\(", source):
+        assert match.start() > desktop, "a browser is opened before the desktop window is tried"
+
+
+def test_creating_the_window_is_inside_the_fallback():
+    """Creating the window is part of the attempt. It used to sit outside the try,
+    where a failure ended the process instead of falling back."""
+    import inspect
+
+    import gui.api
+
+    source = inspect.getsource(gui.api.run_gui_mode)
+    block = source[source.index("if webview:"):]
+    create = block.index("create_main()")
+    try_start = block.index("try:")
+    assert try_start < create, "create_main() is outside the try that falls back"
+
+
+def test_the_fallback_opens_a_browser_rather_than_printing_a_url():
+    """'Falls back to the browser view' has to mean the interface is in front of
+    the user, not a URL they are told to copy."""
+    import inspect
+
+    import gui.api
+
+    source = inspect.getsource(gui.api._serve_headless)
+    assert "webbrowser" in source and "webbrowser.open" in source
+    # And it still serves when nothing can be opened - a headless box has no
+    # browser either, but a phone on the same network can still reach it.
+    assert "while True" in source
+
+
+def test_every_no_window_path_hands_over_the_url():
+    """A fallback with no URL would serve to nobody."""
+    import inspect
+
+    import gui.api
+
+    source = inspect.getsource(gui.api.run_gui_mode)
+    for match in re.finditer(r"_serve_headless\((.*?)\)\n", source, re.S):
+        assert "url=" in match.group(1), f"a fallback with no url: {match.group(1)[:60]}"

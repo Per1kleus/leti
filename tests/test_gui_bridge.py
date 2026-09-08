@@ -247,18 +247,49 @@ def test_the_slow_rings_are_not_redrawn_for_movement_nobody_can_see():
     assert "lastRingUpdate" in CODE
 
 
-def test_the_sweep_is_still_drawn_every_frame():
-    """The rings can be throttled because their motion is sub-pixel. The sweep
-    turns at 60 degrees a second and is the thing the eye follows, so it is not
-    throttled with them - an earlier attempt to cap the whole loop while idle
-    bought nothing measurable and coarsened exactly the motion the smoothing work
-    was for."""
-    frame = re.search(r"function tickFrame\(ts\)\{(.*?)\n  \}", CODE, re.S)
-    assert frame, "tickFrame moved; this test needs updating"
-    body = frame.group(1)
-    assert "sweepGroup.setAttribute" in body
-    # No frame budget gate before the sweep is drawn.
-    assert "IDLE_FPS" not in body and "pendingDt" not in body
+def test_the_idle_redraw_rate_is_limited_by_not_asking_for_frames():
+    """Asking for a frame is the expensive part, not what happens inside one: the
+    browser runs its whole frame pipeline per request. An earlier attempt asked for
+    every frame and skipped the drawing in most of them, which measured as no
+    saving at all. The rate is now limited by scheduling."""
+    assert "IDLE_REDRAW_FPS" in CODE
+    schedule = re.search(r"function scheduleNextFrame\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert schedule, "scheduleNextFrame moved; this test needs updating"
+    body = schedule.group(1)
+    assert "setTimeout" in body and "IDLE_REDRAW_FPS" in body
+    assert "requestAnimationFrame(tickFrame)" in body, "no full-rate path for live audio"
+
+
+def test_live_audio_is_never_throttled():
+    """Idle, the only motion is a breath and a slow sweep. Following a microphone,
+    the frame IS the information, so the cap must not apply there."""
+    schedule = re.search(r"function scheduleNextFrame\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert "if(mode === 'idle')" in schedule.group(1)
+
+
+def test_leaving_idle_does_not_wait_out_the_idle_timer():
+    mode_fn = re.search(r"function setMode\(newMode\)\{(.*?)\n  \}", CODE, re.S)
+    assert mode_fn and "clearTimeout(idleTimer)" in mode_fn.group(1)
+
+
+def test_stopping_the_loop_clears_a_pending_frame():
+    """A pending timer would wake the loop again after it was told to stop - that is
+    how a 'paused' animation keeps burning CPU behind a hidden window."""
+    stop = re.search(r"function stopAnimation\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert stop and "clearTimeout(idleTimer)" in stop.group(1)
+
+
+def test_there_are_no_perpetual_css_animations():
+    """A CSS animation that never ends keeps the browser's whole frame pipeline
+    running for as long as the page is open. The one that existed here - a pulsing
+    7px status dot - measured at roughly 1.7 cores on its own in the desktop
+    window's renderer, the single largest cost in the application. Promoting it to
+    its own layer did not help; it is the running animation itself that costs.
+    Anything that needs to pulse goes on the animation loop's clock instead."""
+    assert "infinite" not in CODE, "a perpetual CSS animation is back"
+    assert "@keyframes" not in CODE
+    # ...and the dot is still driven, just from the loop.
+    assert "statusDot.style.opacity" in CODE
 
 
 # --- Minimised mode ---------------------------------------------------------------
@@ -394,3 +425,27 @@ def test_the_push_handlers_are_defined_before_the_minimise_block_runs():
     """Same failure from the other side: appendLetiReply has to exist whatever
     happens later in the file, because a push can arrive at any time."""
     assert HUD.index("window.appendLetiReply") < HUD.index("// ---------- Minimised mode ----------")
+
+
+def test_an_unfocused_window_redraws_less():
+    """The interface sits open all day. While it is behind whatever the user is
+    actually working in, redrawing a decorative sweep for an audience that is not
+    looking is exactly the kind of work that should not be happening - and unlike
+    a lower rate while focused, nobody can see the difference."""
+    assert "UNFOCUSED_REDRAW_FPS" in CODE
+    schedule = re.search(r"function scheduleNextFrame\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert schedule and "windowFocused" in schedule.group(1)
+    assert "addEventListener('blur'" in CODE and "addEventListener('focus'" in CODE
+
+
+def test_refocusing_does_not_wait_out_the_slow_interval():
+    focus = re.search(r"window\.addEventListener\('focus', \(\) => \{(.*?)\n  \}\);", CODE, re.S)
+    assert focus and "clearTimeout(idleTimer)" in focus.group(1)
+
+
+def test_the_three_idle_states_are_all_handled():
+    """Hidden, unfocused and focused are different amounts of nobody-is-looking,
+    and each gets its own answer: no frames, few frames, and a smooth rate."""
+    assert "stopAnimation()" in CODE and "document.hidden" in CODE   # hidden: none
+    assert "UNFOCUSED_REDRAW_FPS" in CODE                            # unfocused: few
+    assert "IDLE_REDRAW_FPS" in CODE                                 # focused idle

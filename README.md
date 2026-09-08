@@ -368,6 +368,17 @@ Everything on it is wired to something real — the panels are readouts, not sce
   at the same speed, and the blips light up as the beam passes them instead of on
   timers of their own. `prefers-reduced-motion` stops the rotation; the core still
   tracks audio, because that part is information rather than decoration.
+- **What it costs.** The radar redraws at whatever rate the moment deserves: full
+  rate while the core is following live audio, ~30fps when idle and you are looking
+  at it, and 8fps while the window is behind something else — an interface that
+  sits open all day should not redraw a decorative sweep for an audience that isn't
+  there. Hidden entirely, it stops. There are deliberately **no CSS animations
+  anywhere in the page**: one perpetual keyframe animation on a 7px status dot
+  measured at roughly 1.7 cores on its own, because a running CSS animation keeps
+  the browser's whole frame pipeline going for as long as the page is open.
+  Anything that pulses is driven from the same animation clock instead. The two
+  idle rates are constants at the top of that loop if you want to trade smoothness
+  against CPU differently.
 - **The core** reacts to real audio: your own voice via the browser's mic (if
   permitted) while the backend is listening, and a synthetic-but-correctly-timed
   pattern while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device,

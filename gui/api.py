@@ -250,16 +250,34 @@ class LetiAPI:
             return False
 
 
-def _serve_headless(note: str = "") -> None:
-    """Keep serving until Ctrl+C, with no window of our own.
+def _serve_headless(note: str = "", url: str = "") -> None:
+    """The browser fallback: open the interface in the default browser, then serve.
 
-    Reached two ways - pywebview not installed, and pywebview installed but unable
-    to open a window - because the outcome is the same either way: the server is
-    up, the interface is at the printed URL, and there is nothing left for this
-    thread to do but stay alive.
+    Reached whenever the desktop window cannot be used - pywebview missing, no
+    display, or the window failing to open or run. The outcome is the same in
+    every case, which is why they share one path: the server is already up, so the
+    application stays usable; it just lives in a browser tab instead of its own
+    window.
+
+    Opening the browser rather than printing a URL is the difference between a
+    fallback and an error message. If nothing can be opened (a headless box has no
+    browser either), the URL is still printed and the server still runs, because a
+    phone on the same network can reach it even when this machine cannot show it.
     """
     if note:
         print(note)
+    if url:
+        try:
+            import webbrowser
+
+            if webbrowser.open(url):
+                print(f" Opened {url} in your browser.")
+            else:
+                print(f" No browser could be started here - open {url} yourself,")
+                print(" or reach it from another device at the address above.")
+        except Exception as e:
+            logger.warning(f"Couldn't open a browser ({e}).")
+            print(f" Couldn't open a browser automatically - open {url} yourself.")
     print(" Press Ctrl+C to stop Leti.")
     try:
         while True:
@@ -476,6 +494,8 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
 
     from gui.desktop import display_available
 
+    local_url = f"http://127.0.0.1:{server.port}"
+
     no_window_reason = None
     if webview is None:
         no_window_reason = "pywebview isn't installed"
@@ -486,36 +506,37 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         webview = None
 
     if webview:
+        # The desktop application is what this mode is: a real window is attempted
+        # first, every time, and the browser is only ever what we fall back TO.
         from gui.desktop import DesktopWindows
 
-        # Both native windows live here: the full interface, and the frameless
-        # always-on-top puck that minimising switches to. See gui/desktop.py.
-        api.desktop = DesktopWindows(webview, f"http://127.0.0.1:{server.port}")
-        api.desktop.create_main()
-        # Window/taskbar icon. pywebview takes this on its GTK and Qt backends;
-        # older versions don't accept the argument at all, and on Windows/macOS
-        # the window icon comes from the launcher shortcut or app bundle instead
-        # (see scripts/install_windows_launcher.ps1 and install_macos_icon.sh).
-        # Falling back to a plain start() keeps a missing icon from being the
-        # reason the app won't open.
-        icon_path = Path(__file__).parent / "icons" / "leti-512.png"
         try:
+            # Both native windows live here: the full interface, and the frameless
+            # always-on-top puck that minimising switches to. See gui/desktop.py.
+            api.desktop = DesktopWindows(webview, local_url)
+            api.desktop.create_main()
+            # Window/taskbar icon. pywebview takes this on its GTK and Qt backends;
+            # older versions don't accept the argument at all, and on Windows/macOS
+            # the window icon comes from the launcher shortcut or app bundle instead
+            # (see scripts/install_windows_launcher.ps1 and install_macos_icon.sh).
+            # Falling back to a plain start() keeps a missing icon from being the
+            # reason the app won't open.
+            icon_path = Path(__file__).parent / "icons" / "leti-512.png"
             try:
                 webview.start(icon=str(icon_path))
             except TypeError:
                 webview.start()  # blocks until the window is closed
         except Exception as e:
-            # Whatever went wrong opening or running the window, the server is
-            # already up and serving this same interface to every browser and
-            # phone on the network. Losing the window is not a reason to take
-            # that away from them.
-            logger.warning(f"The desktop window stopped unexpectedly ({e}); still serving.")
-            _serve_headless(f" The desktop window couldn't run ({e}), but the web interface\n"
-                            " above is fully usable from any browser.")
+            # Creating the window counts as part of the attempt, so it is inside
+            # this: a failure there used to end the process instead of falling
+            # back. The server is already up either way, so losing the window is
+            # never a reason to lose the application with it.
+            api.desktop = None
+            logger.warning(f"The desktop window couldn't run ({e}); falling back to the browser.")
+            _serve_headless(f"\n(The desktop window couldn't start: {e}.", url=local_url)
     else:
         print(f"\n(No desktop window: {no_window_reason}.")
-        _serve_headless(" The web interface above is fully usable from any browser,\n"
-                        " including this machine's.")
+        _serve_headless(url=local_url)
 
     asyncio.run_coroutine_threadsafe(server.stop(), loop).result(timeout=5)
     loop.call_soon_threadsafe(loop.stop)
