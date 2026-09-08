@@ -135,35 +135,16 @@ def set_shared_session(session: BrowserSession) -> None:
     _SHARED_SESSION = session
 
 
-class BrowserNavigateTool(BaseTool):
-    name = "browser_navigate"
-    description = "Open a URL in the browser."
-    parameters = [
-        ToolParameter(name="url", type="string", description="Full URL to navigate to."),
-    ]
-
-    def __init__(self, session: BrowserSession):
-        self.session = session
-
-    async def run(self, url: str, **kwargs) -> ToolResult:
-        try:
-            page = await self.session.get_page()
-            if not url.startswith(("http://", "https://")):
-                url = "https://" + url
-            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            title = await page.title()
-            return ToolResult(success=True, output=f"Navigated to '{title}' ({url})")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
-
 
 class BrowserReadPageTool(BaseTool):
     name = "browser_read_page"
     description = (
-        "Read the visible text of a web page so you can answer from what it actually says. "
-        "Pass a url to open it first, or omit url to read the page already open. Use this "
-        "after web_search when a result's snippet isn't enough - search gives you links and "
-        "summaries, this gives you the page itself."
+        "Open a page in the browser and read its visible text. Pass a url to go there, or "
+        "omit url to read the page already open. This is also how you navigate before "
+        "browser_click or browser_fill_form - going to a page and seeing what's on it are "
+        "the same step.\n"
+        "Use it after web_search when a snippet isn't enough: search gives you links, this "
+        "gives you the page itself."
     )
     parameters = [
         ToolParameter(

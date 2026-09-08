@@ -2,11 +2,17 @@
 Read-only local network / port security diagnostics.
 
 Scope, deliberately: this module only inspects the machine Leti runs on
-(open listening ports, the services bound to them, local firewall status)
-and does a passive ARP-table read of devices already visible on the LAN.
-It never scans, probes, or attempts to connect to other hosts' ports -
-that would be indistinguishable from doing recon against someone else's
-device and is out of scope for a personal assistant.
+(its sockets and the processes behind them, local firewall status) and does
+a passive ARP-table read of devices already visible on the LAN. It never
+scans, probes, or attempts to connect to other hosts' ports - that would be
+indistinguishable from doing recon against someone else's device and is out
+of scope for a personal assistant.
+
+Listening ports and established outbound connections are one tool here rather
+than one here and one in system_defense.py: they are two filters over the same
+walk of psutil.net_connections(), which is the expensive part. Asking both
+questions separately paid for that walk twice and could return answers taken a
+moment apart that disagreed about the same socket.
 """
 from __future__ import annotations
 
@@ -14,7 +20,7 @@ import asyncio
 import platform
 import socket
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from tools.base import BaseTool, ToolParameter, ToolResult
 from tools.command_runner import run_command
@@ -49,65 +55,118 @@ class PortFinding:
     concern: str = ""
 
 
-def _listening_ports_psutil() -> List[PortFinding]:
+def _connections(state: str = "all") -> Dict[str, Any]:
+    """Both socket views from one walk of the connection table.
+
+    "Which ports are open on this machine" and "which processes are talking to the
+    outside world" were two tools reading the same psutil.net_connections() list and
+    keeping opposite halves of it. That is a slow call on a busy host - a few hundred
+    milliseconds of kernel work plus a process lookup per row - so answering both
+    questions used to cost it twice, and the two answers were taken a moment apart
+    and could disagree about a socket that opened in between. One pass, filtered here.
+    """
     import psutil  # optional dep; declared in requirements.txt
 
-    findings: List[PortFinding] = []
-    for conn in psutil.net_connections(kind="inet"):
-        if conn.status != psutil.CONN_LISTEN or not conn.laddr:
-            continue
-        port = conn.laddr.port
-        proc_name = ""
-        if conn.pid:
+    want_listening = state in ("listening", "all")
+    want_established = state in ("established", "all")
+
+    # One Process lookup per pid rather than per socket: a browser with fifty
+    # connections is one process, and psutil.Process() re-reads /proc each time.
+    processes: Dict[int, Dict[str, str]] = {}
+
+    def describe(pid: Optional[int]) -> Dict[str, str]:
+        if not pid:
+            return {"process": "", "exe": ""}
+        if pid not in processes:
             try:
-                proc_name = psutil.Process(conn.pid).name()
+                proc = psutil.Process(pid)
+                processes[pid] = {"process": proc.name(), "exe": proc.exe() or ""}
             except Exception:
-                proc_name = f"pid:{conn.pid}"
-        proto = "tcp" if conn.type == socket.SOCK_STREAM else "udp"
-        note = WATCH_PORTS.get(port, "")
-        concern = "review" if note else ""
-        findings.append(PortFinding(port=port, proto=proto, process=proc_name, note=note, concern=concern))
-    return findings
+                # The process exited between listing the socket and looking it up,
+                # or it belongs to another user - the pid is still worth reporting.
+                processes[pid] = {"process": f"pid:{pid}", "exe": ""}
+        return processes[pid]
+
+    listening: List[PortFinding] = []
+    established: List[Dict[str, Any]] = []
+
+    for conn in psutil.net_connections(kind="inet"):
+        if want_listening and conn.status == psutil.CONN_LISTEN and conn.laddr:
+            port = conn.laddr.port
+            note = WATCH_PORTS.get(port, "")
+            listening.append(PortFinding(
+                port=port,
+                proto="tcp" if conn.type == socket.SOCK_STREAM else "udp",
+                process=describe(conn.pid)["process"],
+                note=note,
+                concern="review" if note else "",
+            ))
+        elif want_established and conn.status == psutil.CONN_ESTABLISHED and conn.pid:
+            info = describe(conn.pid)
+            established.append({
+                "pid": conn.pid,
+                "process": info["process"],
+                "exe": info["exe"],
+                "remote": f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else "",
+            })
+
+    report: Dict[str, Any] = {}
+    if want_listening:
+        flagged = [f for f in listening if f.note]
+        report["listening"] = {
+            "total": len(listening),
+            "all_ports": [f.__dict__ for f in listening],
+            "flagged_for_review": [f.__dict__ for f in flagged],
+        }
+    if want_established:
+        # Unfamiliar executables first: a process with no resolvable path making
+        # outbound calls is the one worth looking at, and sorting by name buries it.
+        established.sort(key=lambda r: (bool(r["exe"]), r["process"]))
+        report["established"] = {"total": len(established), "connections": established}
+    return report
 
 
-class ScanLocalPortsTool(BaseTool):
-    name = "scan_local_ports"
+class InspectNetworkConnectionsTool(BaseTool):
+    name = "inspect_network_connections"
     description = (
-        "List all ports currently listening on THIS machine, the process bound to each, "
-        "and flag any that are commonly-exploited or frequently misconfigured (e.g. exposed "
-        "RDP, SMB, Redis with no auth). Read-only - does not scan or contact other devices."
+        "What this machine's network sockets are doing. 'listening' shows the ports open on "
+        "it and the process behind each, flagging commonly-exploited ones (exposed RDP, SMB, "
+        "Redis without auth) - that's the attack surface. 'established' shows which processes "
+        "have live outbound connections and to where - that's what's phoning home. 'all' "
+        "gives both, which is what you want when investigating rather than checking one "
+        "thing.\n"
+        "Read-only, and about THIS machine only - it never scans or contacts other devices."
     )
-    parameters: List[ToolParameter] = []
+    parameters: List[ToolParameter] = [
+        ToolParameter(
+            name="state", type="string", required=False,
+            enum=["listening", "established", "all"],
+            description="Which sockets to report. Default 'all'.",
+        ),
+    ]
 
-    async def run(self, **kwargs) -> ToolResult:
+    async def run(self, state: str = "all", **kwargs) -> ToolResult:
+        if state not in ("listening", "established", "all"):
+            return ToolResult(success=False, error="state must be listening, established, or all.")
         try:
             # net_connections() walks every socket on the machine; on a busy host
             # that's long enough to stutter the GUI if run on the event loop.
-            findings = await asyncio.get_running_loop().run_in_executor(
-                None, _listening_ports_psutil
-            )
+            result = await asyncio.get_running_loop().run_in_executor(None, _connections, state)
         except ImportError:
-            return ToolResult(
-                success=False,
-                error="psutil is required for port scanning. Add it to requirements.txt and pip install.",
-            )
+            return ToolResult(success=False, error=(
+                "psutil is required to inspect network connections. Add it to requirements.txt "
+                "and pip install."
+            ))
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
-        flagged = [f for f in findings if f.note]
-        return ToolResult(
-            success=True,
-            output={
-                "total_listening": len(findings),
-                "all_ports": [f.__dict__ for f in findings],
-                "flagged_for_review": [f.__dict__ for f in flagged],
-                "summary": (
-                    f"{len(findings)} listening port(s), {len(flagged)} flagged for review."
-                    if findings
-                    else "No listening ports found."
-                ),
-            },
-        )
+        parts = []
+        if "listening" in result:
+            parts.append(f"{result['listening']['total']} listening port(s), "
+                         f"{len(result['listening']['flagged_for_review'])} flagged for review")
+        if "established" in result:
+            parts.append(f"{result['established']['total']} established outbound connection(s)")
+        return ToolResult(success=True, output={**result, "summary": "; ".join(parts) + "."})
 
 
 class FirewallStatusTool(BaseTool):

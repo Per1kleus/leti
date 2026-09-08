@@ -6,6 +6,11 @@ on startup). Detection is read-only and safe; every remediation action
 (enabling the firewall, killing a process, removing a startup entry) is
 tiered risky/destructive in permissions.yaml so SafetyGuard requires
 confirmation before Leti actually changes anything.
+
+Processes with live outbound connections are not listed here: that is the same
+walk of psutil.net_connections as the listening-port scan, so both live in
+tools/network_security.py's inspect_network_connections, which answers either
+question or both from one pass.
 """
 from __future__ import annotations
 
@@ -182,38 +187,6 @@ class CheckPersistenceTool(BaseTool):
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
-
-class ListSuspiciousProcessesTool(BaseTool):
-    name = "list_suspicious_processes"
-    description = (
-        "List running processes that have an active outbound network connection, sorted so "
-        "unfamiliar or unsigned executables making network calls are easy to spot. Read-only."
-    )
-    parameters: List[ToolParameter] = []
-
-    async def run(self, **kwargs) -> ToolResult:
-        try:
-            import psutil
-
-            rows = []
-            for conn in psutil.net_connections(kind="inet"):
-                if conn.status != psutil.CONN_ESTABLISHED or not conn.pid:
-                    continue
-                try:
-                    proc = psutil.Process(conn.pid)
-                    rows.append({
-                        "pid": conn.pid,
-                        "process": proc.name(),
-                        "exe": proc.exe() if proc.exe() else "",
-                        "remote": f"{conn.raddr.ip}:{conn.raddr.port}" if conn.raddr else "",
-                    })
-                except Exception:
-                    continue
-            return ToolResult(success=True, output={"connections": rows, "count": len(rows)})
-        except ImportError:
-            return ToolResult(success=False, error="psutil is required. Add to requirements.txt and pip install.")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
 
 
 class KillProcessTool(BaseTool):

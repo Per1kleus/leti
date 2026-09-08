@@ -4,11 +4,19 @@ mouse/keyboard. Wrapped in individual BaseTool subclasses so each action gets
 its own risk tier and audit trail entry (see config/permissions.yaml).
 
 Launching is deliberately capable: the user asks for something ("open Firefox on
-YouTube", "open my invoice"), Leti confirms the action, and it happens. That
-means resolving an app the way a person names it rather than demanding an exact
-binary, passing arguments through, and reporting honestly when nothing started.
-The confirmation prompt is the control here (launch_app is `risky` in
-permissions.yaml), not a narrow tool.
+YouTube", "open my invoice", "open YouTube"), Leti confirms the action, and it
+happens. That means resolving an app the way a person names it rather than
+demanding an exact binary, passing arguments through, and reporting honestly when
+nothing started. The confirmation prompt is the control here, not a narrow tool.
+
+launch_app opens web pages too, rather than a separate open_url tool beside it:
+"open YouTube" and "open Spotify" are one request as far as the user is
+concerned, and splitting them left the model choosing between two tools that
+both claimed to open things. What differs is the consequence, not the intent, so
+that is where the distinction lives now: action_case() reports whether a call is
+a web page or a program, and permissions.yaml gives each its own action class -
+handing a URL to the browser runs nothing locally and doesn't interrupt, while
+starting a program still asks first.
 """
 from __future__ import annotations
 
@@ -19,7 +27,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import pyautogui
 import pygetwindow as gw
@@ -56,8 +64,63 @@ def _matching_windows(window_title: str):
 _LAUNCH_SETTLE_SECONDS = 0.6
 
 
+_WEB_SCHEMES = ("http://", "https://")
+_OPENABLE_SCHEMES = _WEB_SCHEMES + ("mailto:", "file://")
+
+# A bare domain the user typed as a destination: 'youtube.com', 'news.ycombinator.com/best'.
+# Requires a dot-separated hostname with a real-looking TLD so a filename like
+# 'report.pdf' or a program like 'python3.11' isn't mistaken for a website.
+_BARE_DOMAIN = re.compile(r"^(?:[\w-]+\.)+[a-z]{2,}(?:[:/?#]\S*)?$", re.IGNORECASE)
+_NOT_A_DOMAIN_TLD = {"py", "sh", "exe", "app", "pdf", "txt", "md", "json", "yaml", "yml",
+                     "png", "jpg", "csv", "zip", "log", "conf", "cfg", "desktop"}
+
+
 def _looks_like_url(value: str) -> bool:
-    return value.startswith(("http://", "https://", "mailto:", "file://"))
+    return value.startswith(_OPENABLE_SCHEMES)
+
+
+def _looks_like_bare_domain(value: str) -> bool:
+    """'youtube.com' means a website; 'report.pdf' and 'python3.11' do not."""
+    if not _BARE_DOMAIN.match(value):
+        return False
+    host = value.split("/")[0].split(":")[0].split("?")[0]
+    return host.rsplit(".", 1)[-1].lower() not in _NOT_A_DOMAIN_TLD
+
+
+def _as_web_url(value: str) -> Optional[str]:
+    """The http(s) URL `value` denotes, or None if it isn't a web destination.
+
+    Bare domains are promoted to https://. Any other scheme is deliberately NOT
+    promoted: 'javascript:alert(1)' and 'file:/etc/passwd' contain no '//', so a
+    naive test lets them through to be prefixed with https:// and handed to the
+    browser anyway - one runs code in whatever page is open, the other exposes the
+    local filesystem. They fall through to be treated as a program name, which
+    fails with a clear message rather than being executed as a URL.
+    """
+    if value.startswith(_WEB_SCHEMES):
+        return value
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:", value):
+        return None
+    if _looks_like_bare_domain(value):
+        return "https://" + value
+    return None
+
+
+def _web_target(app_name: str, arguments: List[str]) -> Optional[str]:
+    """The web page this launch_app call opens, or None if it launches something else.
+
+    A call is "open a web page" only when the whole request is a page: an existing
+    local file of the same name wins (someone may really have a file called
+    'notes.io'), and arguments mean a program is being driven ('firefox' with a URL
+    in `arguments` starts Firefox, which is a program launch however web-shaped its
+    argument is).
+    """
+    if arguments:
+        return None
+    app_name = app_name.strip()
+    if Path(app_name).expanduser().exists():
+        return None
+    return _as_web_url(app_name)
 
 
 def _platform_opener() -> Optional[List[str]]:
@@ -122,16 +185,21 @@ def _resolve_launch(app_name: str, arguments: List[str]) -> tuple[Optional[List[
 class LaunchAppTool(BaseTool):
     name = "launch_app"
     description = (
-        "Open an application, file, or URL on the user's computer. Accepts a program name "
-        "('firefox', 'spotify', 'code'), a full path to a program or document, or a URL. "
-        "Pass `arguments` to open something IN that app - e.g. app_name 'firefox' with "
-        "arguments ['https://youtube.com'], or 'code' with ['~/projects']. Requires the "
-        "user's confirmation before anything starts."
+        "Open something on the user's computer: an application, a file, or a web page. "
+        "Accepts a program name ('firefox', 'spotify', 'code'), a path to a program or "
+        "document, or a web address ('youtube.com', 'https://docs.python.org').\n"
+        "A web address on its own opens in the user's OWN default browser - the one with "
+        "their logins, bookmarks and extensions - which is what they mean by 'open YouTube' "
+        "or 'pull up the docs'. Use `arguments` to open something IN a specific app instead: "
+        "app_name 'firefox' with arguments ['https://youtube.com'], or 'code' with ['~/projects'].\n"
+        "This is for pages the USER looks at. When Leti needs to read a page itself, use "
+        "web_search to find one and browser_read_page to read it."
     )
     parameters = [
         ToolParameter(
             name="app_name", type="string",
-            description="Program name (e.g. 'firefox'), a path to a program or file, or a URL.",
+            description=("Program name (e.g. 'firefox'), a path to a program or file, or a "
+                         "web address (e.g. 'youtube.com')."),
         ),
         ToolParameter(
             name="arguments", type="array", items_type="string", required=False,
@@ -139,8 +207,24 @@ class LaunchAppTool(BaseTool):
         ),
     ]
 
+    def action_case(self, arguments: Dict[str, Any]) -> Optional[str]:
+        """Opening a web page and starting a program are not the same act.
+
+        Handing a URL to the browser runs nothing on this machine and is what the
+        user asks for many times a day; starting an arbitrary program is the thing
+        worth a confirmation prompt. permissions.yaml assigns the class for each.
+        """
+        args = arguments.get("arguments") or []
+        target = _web_target(str(arguments.get("app_name", "")), [str(a) for a in args])
+        return "web_page" if target else "program"
+
     async def run(self, app_name: str, arguments: Optional[List[str]] = None, **kwargs) -> ToolResult:
         arguments = [str(a) for a in (arguments or [])]
+
+        web_url = _web_target(app_name, arguments)
+        if web_url:
+            return await self._open_in_default_browser(web_url)
+
         argv, how = _resolve_launch(app_name, arguments)
         if argv is None:
             return ToolResult(success=False, error=how)
@@ -179,36 +263,16 @@ class LaunchAppTool(BaseTool):
         opened = f" with {' '.join(arguments)}" if arguments else ""
         return ToolResult(success=True, output=f"Opened '{app_name}'{opened} ({how}).")
 
+    @staticmethod
+    async def _open_in_default_browser(url: str) -> ToolResult:
+        """Hand a page to the user's registered browser, with their session in it.
 
-class OpenUrlTool(BaseTool):
-    name = "open_url"
-    description = (
-        "Open a web page in the user's own default browser - the one with their logins, "
-        "bookmarks and extensions. Use this when the user wants to LOOK at a page themselves "
-        "('open YouTube', 'pull up the docs'). Use web_search to find information and "
-        "browser_navigate/browser_read_page when Leti needs to read a page itself."
-    )
-    parameters = [
-        ToolParameter(name="url", type="string", description="Full http(s) URL to open."),
-    ]
-
-    async def run(self, url: str, **kwargs) -> ToolResult:
+        Deliberately webbrowser rather than the generic platform opener used for
+        files: it picks the browser the user actually configured (honouring $BROWSER
+        on Linux), which is the whole point of showing them a page rather than
+        reading it with browser_read_page.
+        """
         import webbrowser
-
-        url = url.strip()
-        if not url.startswith(("http://", "https://")):
-            # Match any scheme, not just '://' ones: 'javascript:alert(1)' and
-            # 'file:/etc/passwd' have no slashes, so a '://' test lets them through
-            # to be prefixed with https:// and handed to the browser anyway.
-            scheme = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):", url)
-            if scheme:
-                return ToolResult(
-                    success=False,
-                    error=(f"Only http:// and https:// URLs can be opened, not "
-                           f"'{scheme.group(1)}:'. file: exposes the local filesystem and "
-                           f"javascript: runs code in whatever page is open."),
-                )
-            url = "https://" + url
 
         try:
             opened = await asyncio.get_running_loop().run_in_executor(

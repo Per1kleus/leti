@@ -40,14 +40,14 @@ searches and pages you explicitly ask it to visit.
   no audio sentiment model involved, just keyword-level intent matching (see
   `core/intent_signals.py`) — so it's a convenience, not a hard guarantee of
   vocal certainty.
-- **Cybersecurity** — scans listening ports/services on *this* machine and
-  flags commonly-exploited ones, checks OS firewall status (and can enable
-  it), detects brute-force login attempts in local auth logs, lists
-  startup/persistence entries and processes with live network connections
-  so unwanted software is easy to spot, and can hash-baseline any file or
-  folder to detect tampering/corruption later and restore it. It never
-  scans, probes, or connects to other people's devices — only your own
-  machine and what's passively visible in your local ARP table.
+- **Cybersecurity** — `inspect_network_connections` reports what *this* machine's
+  sockets are doing: the ports listening on it (flagging commonly-exploited ones)
+  and the processes holding live outbound connections, either view or both from
+  one pass. Alongside it: OS firewall status (and enabling it), brute-force login
+  attempts in local auth logs, startup/persistence entries, and hash-baselining
+  any file or folder to detect tampering later and restore it. It never scans,
+  probes, or connects to other people's devices — only your own machine and what's
+  passively visible in your local ARP table.
 - **Email** — reads unread mail over IMAP (peek mode, doesn't mark as read)
   and sorts it into `crucial` / `financial` / `promotions` / `general` with
   an importance score, using local rule-based heuristics (sender/keyword/
@@ -86,12 +86,15 @@ searches and pages you explicitly ask it to visit.
   commented `calendar:`, `zoom:`, and/or `teams:` blocks in `config/settings.yaml`.
 - **System health & updates** — a sibling to the cybersecurity tools above rather than an
   addition to them (that's specifically about attack surface; this is about hardware/OS health).
-  `get_system_specs` reports CPU/RAM/disk/GPU/battery/uptime. `run_health_check` samples CPU,
-  memory, swap, disk, temperature (where the platform exposes it), and battery against
-  configurable thresholds, and returns each problem with a plain-English suggestion - some
-  reference an existing tool by name (e.g. a runaway process points at `kill_process` with its
-  PID already filled in) rather than duplicating that logic. `check_for_updates` lists pending
-  OS updates (apt/dnf/pacman, macOS `softwareupdate`, or Windows Update) read-only;
+  `system_report` answers all three questions about the machine from one call, by section:
+  `specs` is what it *is* (CPU/RAM/disk/GPU/battery/uptime), `health` is how it's *doing*
+  (CPU, memory, swap, disk, temperature where the platform exposes it, and battery against
+  configurable thresholds), and `updates` lists pending OS updates (apt/dnf/pacman, macOS
+  `softwareupdate`, or Windows Update). It defaults to `health`, the usual question, and
+  collects only the sections asked for. Each health problem comes back with a plain-English
+  suggestion - some reference an existing tool by name (e.g. a runaway process points at
+  `kill_process` with its PID already filled in) rather than duplicating that logic.
+  Reporting is read-only;
   `apply_system_updates` actually installs them and is `risky` tier, so it always asks first -
   that's what satisfies "awaits user agreement" for anything it wants to change. Disk checks
   automatically skip pseudo-mounts like snap's squashfs images, which are always reported
@@ -112,9 +115,12 @@ searches and pages you explicitly ask it to visit.
   facts are present in every conversation rather than only surfacing when a similarity search
   happens to match the current topic. `view_user_profile` shows everything saved (with ids),
   `forget_user_fact` deletes one entry, and `clear_user_profile` (destructive) wipes it all.
-- **Social media** — split across two files by how each platform is actually accessible:
-  - **YouTube & Reddit** (`social_media.py`) use free, official, no-login APIs. `get_youtube_channel_latest`,
-    `search_youtube_trending`, `get_subreddit_posts`, and `search_reddit` all filter for
+- **Social media** — two tools across every platform, not one tool per platform.
+  `get_social_content` fetches the latest from a YouTube channel, a subreddit, a Reddit user,
+  an Instagram/TikTok/Facebook account, or any web page — you name the `platform` and the
+  `identifier` as that platform writes it. `search_social` searches a platform for a topic.
+  How each platform is reached differs, and that's split across two files:
+  - **YouTube & Reddit** (`social_media.py`) use free, official, no-login APIs. Both filter for
     significance rather than dumping everything - Reddit results take a `min_score` threshold,
     and YouTube's trend search flags videos with view counts high relative to their channel's
     subscriber count (a concrete "before it gets big" signal, not just "recently uploaded").
@@ -311,7 +317,7 @@ entirely and restrict the GUI to this machine only.
 
 What's real vs. not yet: the dashboard's **time**, **weather** (Open-Meteo, no key needed —
 IP-based location by default, or set `weather.latitude`/`longitude` in `config/settings.yaml`
-to override), **system stats** (via `run_health_check`), and **to-do list** are all live,
+to override), **system stats** (via `system_report`), and **to-do list** are all live,
 not mocked. The center ring reacts to real audio: your own voice via the browser's mic
 (if permitted) while the backend is listening, and a synthetic-but-correctly-timed pattern
 while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device, not through the
@@ -335,27 +341,34 @@ Leti says in text.
 ### Controlling the computer
 
 Leti opens things the way you'd ask a person to: `launch_app` takes an app name
-(`firefox`), a path to a program or document, or a URL, plus `arguments` to open
-something *in* an app — "open YouTube in Firefox" is `firefox` with
-`['https://youtube.com']`. It resolves apps by PATH lookup, then the platform's
-own launcher (`open -a` on macOS, `start` on Windows, `gtk-launch` on Linux), and
-reports honestly when nothing started rather than claiming success. It's `risky`,
-so you confirm each launch — and the prompt names the arguments, so what you
-approve is what happens.
+(`firefox`), a path to a program or document, or a web address (`youtube.com`),
+plus `arguments` to open something *in* an app — "open YouTube in Firefox" is
+`firefox` with `['https://youtube.com']`. It resolves apps by PATH lookup, then
+the platform's own launcher (`open -a` on macOS, `start` on Windows, `gtk-launch`
+on Linux), and reports honestly when nothing started rather than claiming success.
 
-`open_url` hands a page to your own default browser (http/https only). For
-browsing Leti does itself: `web_search` finds pages, `browser_read_page` reads
-one so it can answer from what the page says rather than a search snippet, and
-`browser_navigate`/`browser_click`/`browser_fill_form` drive a dedicated
-Playwright browser.
+A web address on its own goes to your own default browser — the one with your
+logins and extensions — which is what "open YouTube" means. That's the one case
+`launch_app` doesn't stop to confirm: it runs nothing on the machine, and a prompt
+you see twenty times a day is a prompt you stop reading. Starting a program still
+asks every time, and the prompt names the arguments, so what you approve is what
+happens. The two cases are classified separately in `config/permissions.yaml`
+(`action_by_case`), so you can change either without touching the other.
+
+For browsing Leti does itself: `web_search` finds pages, `browser_read_page` reads
+one (and is how you navigate) so it can answer from what the page says rather than
+a search snippet, and `browser_click`/`browser_fill_form` drive a dedicated
+Playwright browser from there.
 
 Window control (`close_app`, `focus_window`) works on Windows and macOS;
 pygetwindow doesn't implement it on Linux, where the tools now say so plainly
 instead of surfacing a bare exception.
 
-- `config/permissions.yaml` — per-tool risk tiers, forbidden shell patterns,
-  and protected filesystem paths. Review and tighten this before giving
-  Leti broad system access. `protected_paths` is worth extending: `read_file`
+- `config/permissions.yaml` — per-tool action classes, forbidden shell patterns,
+  and protected filesystem paths. A few tools cover acts of different weight and
+  carry an `action_by_case` block instead of one class (see `launch_app`): the tool
+  reports which case a call is, this file still decides what each case costs.
+  Review and tighten it before giving Leti broad system access. `protected_paths` is worth extending: `read_file`
   runs without confirmation and `send_email` needs only one, so anything
   readable is one approval away from leaving the machine.
 

@@ -88,51 +88,6 @@ async def search_reddit(query: str, sort: str = "top", time_filter: str = "week"
     return [p for p in posts if p["score"] >= min_score]
 
 
-class GetSubredditPostsTool(BaseTool):
-    name = "get_subreddit_posts"
-    description = "Get posts from a specific subreddit (hot/new/rising/top), optionally filtered by minimum score."
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="subreddit", type="string", description="Subreddit name, without 'r/'."),
-        ToolParameter(name="sort", type="string", required=False, enum=["hot", "new", "rising", "top"], description="Default 'hot'."),
-        ToolParameter(name="limit", type="number", required=False, description="Max posts, default 10."),
-        ToolParameter(name="min_score", type="number", required=False, description="Filter out posts below this score. Default 0."),
-    ]
-
-    async def run(self, subreddit: str, sort: str = "hot", limit: int = 10, min_score: int = 0, **kwargs) -> ToolResult:
-        try:
-            posts = await get_subreddit_posts(subreddit, sort, limit, min_score)
-            output = {"posts": posts, "count": len(posts)}
-            visual_items = [{"url": p["url"], "thumbnail": p["thumbnail"], "title": p["title"]} for p in posts if p.get("thumbnail")]
-            if visual_items:
-                output["visual"] = {"type": "images", "query": f"r/{subreddit}", "items": visual_items}
-            return ToolResult(success=True, output=output)
-        except httpx.HTTPStatusError as e:
-            return ToolResult(success=False, error=f"Reddit API error: {e.response.status_code}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
-
-
-class SearchRedditTool(BaseTool):
-    name = "search_reddit"
-    description = "Search all of Reddit for a keyword/topic, filtered by a minimum score so only genuinely notable posts show up."
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="query", type="string", description="Search terms."),
-        ToolParameter(name="time_filter", type="string", required=False, enum=["hour", "day", "week", "month", "year", "all"], description="Default 'week'."),
-        ToolParameter(name="min_score", type="number", required=False, description="Default 20 - filters out low-traction noise."),
-    ]
-
-    async def run(self, query: str, time_filter: str = "week", min_score: int = 20, **kwargs) -> ToolResult:
-        try:
-            posts = await search_reddit(query, "top", time_filter, 15, min_score)
-            output = {"posts": posts, "count": len(posts)}
-            visual_items = [{"url": p["url"], "thumbnail": p["thumbnail"], "title": p["title"]} for p in posts if p.get("thumbnail")]
-            if visual_items:
-                output["visual"] = {"type": "images", "query": query, "items": visual_items}
-            return ToolResult(success=True, output=output)
-        except httpx.HTTPStatusError as e:
-            return ToolResult(success=False, error=f"Reddit API error: {e.response.status_code}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
 
 
 # --- YouTube (official Data API v3, needs a free API key) ------------------------
@@ -251,52 +206,117 @@ async def search_youtube_trending(query: str, days: int = 7, max_results: int = 
     return results
 
 
-class GetYouTubeChannelLatestTool(BaseTool):
-    name = "get_youtube_channel_latest"
-    description = "Get the latest uploads from a YouTube channel by handle (e.g. '@mkbhd') or channel ID."
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="channel", type="string", description="Channel handle or ID."),
-        ToolParameter(name="max_results", type="number", required=False, description="Default 10."),
-    ]
-
-    async def run(self, channel: str, max_results: int = 10, **kwargs) -> ToolResult:
-        try:
-            videos = await get_channel_uploads(channel, max_results)
-            visual_items = [{"url": v["url"], "thumbnail": v["thumbnail"], "title": v["title"]} for v in videos if v.get("thumbnail")]
-            output = {"videos": videos, "count": len(videos)}
-            if visual_items:
-                output["visual"] = {"type": "images", "query": f"{channel} latest uploads", "items": visual_items}
-            return ToolResult(success=True, output=output)
-        except httpx.HTTPStatusError as e:
-            return ToolResult(success=False, error=f"YouTube API error: {e.response.status_code} {e.response.text[:200]}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
 
 
-class SearchYouTubeTrendingTool(BaseTool):
-    name = "search_youtube_trending"
+CONTENT_PLATFORMS = [
+    "youtube", "reddit_subreddit", "reddit_user", "instagram", "tiktok", "facebook", "webpage",
+]
+SEARCHABLE_PLATFORMS = ["reddit", "youtube"]
+
+
+class GetSocialContentTool(BaseTool):
+    name = "get_social_content"
     description = (
-        "Find recent YouTube videos on a topic that are outperforming their channel's normal "
-        "reach (high views relative to subscriber count) - a concrete early-traction signal, "
-        "not just 'recently uploaded'."
+        "Get the latest posts, videos or content from any account, channel, subreddit or page: "
+        "a YouTube channel ('@mkbhd'), a subreddit ('webdev'), a Reddit user, an Instagram, "
+        "TikTok or Facebook account (those need login_to_social_platform first), or any web "
+        "page. Results come back newest-first, with thumbnails shown automatically.\n"
+        "This is one tool across every platform - name the platform, and the identifier as "
+        "that platform writes it."
     )
     parameters: List[ToolParameter] = [
-        ToolParameter(name="query", type="string", description="Topic/keywords to search."),
-        ToolParameter(name="days", type="number", required=False, description="How far back to look. Default 7."),
+        ToolParameter(name="platform", type="string", enum=CONTENT_PLATFORMS,
+                      description="Where to look."),
+        ToolParameter(name="identifier", type="string",
+                      description=("Channel handle or id, subreddit name without 'r/', username "
+                                   "without '@', page name, or - for 'webpage' - the full URL.")),
+        ToolParameter(name="limit", type="number", required=False,
+                      description="How many items to return (default 10)."),
+        ToolParameter(name="sort", type="string", required=False,
+                      enum=["hot", "new", "rising", "top"],
+                      description="Subreddits only: ordering (default 'hot')."),
+        ToolParameter(name="min_score", type="number", required=False,
+                      description="Reddit only: drop posts below this score (default 0)."),
     ]
 
-    async def run(self, query: str, days: int = 7, **kwargs) -> ToolResult:
+    async def run(self, platform: str, identifier: str, limit: int = 10,
+                  sort: str = "hot", min_score: int = 0, **kwargs) -> ToolResult:
+        if platform not in CONTENT_PLATFORMS:
+            return ToolResult(success=False, error=(
+                f"Unknown platform '{platform}'. Use one of: {', '.join(CONTENT_PLATFORMS)}."
+            ))
         try:
-            results = await search_youtube_trending(query, days)
-            visual_items = [{"url": v["url"], "thumbnail": v["thumbnail"], "title": v["title"]} for v in results if v.get("thumbnail")]
-            output = {"videos": results, "count": len(results)}
-            if visual_items:
-                output["visual"] = {"type": "images", "query": query, "items": visual_items}
-            return ToolResult(success=True, output=output)
+            items = await fetch_platform_content(
+                platform, identifier, limit=int(limit), sort=sort, min_score=int(min_score)
+            )
         except httpx.HTTPStatusError as e:
-            return ToolResult(success=False, error=f"YouTube API error: {e.response.status_code} {e.response.text[:200]}")
+            return ToolResult(success=False, error=(
+                f"{platform} API error: {e.response.status_code} {e.response.text[:200]}"
+            ))
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+
+        label = f"r/{identifier}" if platform == "reddit_subreddit" else identifier
+        output: Dict[str, Any] = {
+            "platform": platform, "identifier": identifier,
+            "items": items, "count": len(items),
+        }
+        visual = _visual_payload(items, label)
+        if visual:
+            output["visual"] = visual
+        return ToolResult(success=True, output=output)
+
+
+class SearchSocialTool(BaseTool):
+    name = "search_social"
+    description = (
+        "Search a platform for a topic, rather than fetching one account's latest.\n"
+        "reddit returns notable posts above a score threshold, so low-traction noise is "
+        "filtered out. youtube returns recent videos outperforming their channel's normal "
+        "reach (high views relative to subscribers) - an early-traction signal, not just "
+        "'recently uploaded'. Use web_search or research_topic for the open web."
+    )
+    parameters: List[ToolParameter] = [
+        ToolParameter(name="platform", type="string", enum=SEARCHABLE_PLATFORMS,
+                      description="Which platform to search."),
+        ToolParameter(name="query", type="string", description="Topic or keywords."),
+        ToolParameter(name="days", type="number", required=False,
+                      description="YouTube: how far back to look (default 7)."),
+        ToolParameter(name="time_filter", type="string", required=False,
+                      enum=["hour", "day", "week", "month", "year", "all"],
+                      description="Reddit: how far back to look (default 'week')."),
+        ToolParameter(name="min_score", type="number", required=False,
+                      description="Reddit: minimum score (default 20)."),
+        ToolParameter(name="limit", type="number", required=False,
+                      description="Max results (default 15)."),
+    ]
+
+    async def run(self, platform: str, query: str, days: int = 7, time_filter: str = "week",
+                  min_score: int = 20, limit: int = 15, **kwargs) -> ToolResult:
+        try:
+            if platform == "reddit":
+                items = await search_reddit(query, "top", time_filter, int(limit), int(min_score))
+            elif platform == "youtube":
+                items = (await search_youtube_trending(query, int(days)))[:int(limit)]
+            else:
+                return ToolResult(success=False, error=(
+                    f"Can't search '{platform}'. Searchable: {', '.join(SEARCHABLE_PLATFORMS)}. "
+                    f"For one account's latest, use get_social_content."
+                ))
+        except httpx.HTTPStatusError as e:
+            return ToolResult(success=False, error=(
+                f"{platform} API error: {e.response.status_code} {e.response.text[:200]}"
+            ))
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+        output: Dict[str, Any] = {
+            "platform": platform, "query": query, "items": items, "count": len(items),
+        }
+        visual = _visual_payload(items, query)
+        if visual:
+            output["visual"] = visual
+        return ToolResult(success=True, output=output)
 
 
 # --- Generic watch list (works across all platforms) ------------------------------
@@ -348,26 +368,50 @@ async def _fetch_webpage_state(url: str) -> List[Dict[str, Any]]:
     }]
 
 
-async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Returns the platform's current latest items for a watch, most-recent-first,
-    each with at least an 'id' field usable for last_seen_id diffing."""
-    platform, identifier = watch["platform"], watch["identifier"]
+async def fetch_platform_content(
+    platform: str, identifier: str, limit: int = 15, sort: str = "new", min_score: int = 0
+) -> List[Dict[str, Any]]:
+    """The latest items from any supported source, most-recent-first.
 
+    One dispatcher for "what has this account/subreddit/page posted lately",
+    used by both get_social_content and the watch loop. Those were separate
+    paths - five near-identical tools plus this function - which is how a
+    platform came to be supported for watching but not for asking, or fixed in
+    one place and not the other. Every item carries an 'id', which is what
+    last_seen_id diffing needs.
+    """
     if platform == "youtube":
-        return await get_channel_uploads(identifier, max_results=15)
+        return await get_channel_uploads(identifier, max_results=limit)
     if platform == "reddit_user":
-        return await get_reddit_user_posts(identifier, limit=15)
+        return await get_reddit_user_posts(identifier, limit=limit)
     if platform == "reddit_subreddit":
-        return await get_subreddit_posts(identifier, sort="new", limit=15)
+        return await get_subreddit_posts(identifier, sort=sort, limit=limit, min_score=min_score)
     if platform == "webpage":
         return await _fetch_webpage_state(identifier)
     if platform in ("instagram", "tiktok", "facebook"):
         # Lazy import: keeps this module usable without Playwright installed if the
         # user only cares about YouTube/Reddit watches.
         from tools.social_login import fetch_latest_for_platform
-        return await fetch_latest_for_platform(platform, identifier)
+        return await fetch_latest_for_platform(platform, identifier, max_results=limit)
 
     raise ValueError(f"Unknown platform: {platform}")
+
+
+async def _fetch_latest_for_watch(watch: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What a watch should compare against - the same fetch the content tool does."""
+    return await fetch_platform_content(watch["platform"], watch["identifier"])
+
+
+def _visual_payload(items: List[Dict[str, Any]], label: str) -> Optional[Dict[str, Any]]:
+    """The image strip the HUD shows for results that have thumbnails.
+
+    Was rebuilt identically inside each of the five per-platform tools.
+    """
+    visual_items = [
+        {"url": i.get("url", ""), "thumbnail": i["thumbnail"], "title": i.get("title", label)}
+        for i in items if i.get("thumbnail")
+    ]
+    return {"type": "images", "query": label, "items": visual_items} if visual_items else None
 
 
 class AddSocialWatchTool(BaseTool):

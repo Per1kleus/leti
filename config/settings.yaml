@@ -185,7 +185,7 @@ paths:
 #   organizer_user_id: "YOUR_M365_USER_OBJECT_ID"
 
 # -----------------------------------------------------------------------------
-# System health - thresholds run_health_check flags as an issue. All optional;
+# System health - thresholds system_report flags as an issue. All optional;
 # defaults are shown below and used for anything not overridden here.
 # -----------------------------------------------------------------------------
 # system_health:

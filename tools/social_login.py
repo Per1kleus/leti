@@ -26,6 +26,13 @@ Honest limitations, stated plainly rather than glossed over:
 - A saved session can expire or get invalidated by the platform at any
   time (not just via explicit logout) - functions here surface that as a
   clear "please log in again" error rather than a confusing scrape failure.
+
+Reading these platforms' content is not a tool here: fetch_latest_for_platform
+below is called by tools/social_media.py's get_social_content, which covers
+every platform through one dispatcher. This module owns logging in and the
+scraping; asking "what has this account posted" is the same question whatever
+the platform, and having had three near-identical tools for it is what let
+Instagram gain a fix TikTok didn't.
 """
 from __future__ import annotations
 
@@ -311,67 +318,5 @@ class LogoutSocialPlatformTool(BaseTool):
         return ToolResult(success=True, output=f"Logged out of {platform} (saved session removed).")
 
 
-class GetInstagramUserLatestTool(BaseTool):
-    name = "get_instagram_user_latest"
-    description = "Get the latest posts from an Instagram profile. Requires being logged in (see login_to_social_platform)."
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="username", type="string", description="Instagram username, without '@'."),
-    ]
-
-    def __init__(self, manager: Optional[SocialLoginManager] = None):
-        self.manager = manager or _default_manager()
-
-    async def run(self, username: str, **kwargs) -> ToolResult:
-        try:
-            items = await fetch_latest_for_platform("instagram", username, manager=self.manager)
-            output = {"posts": items, "count": len(items)}
-            visual_items = [{"url": i["url"], "thumbnail": i["thumbnail"], "title": f"@{username}"} for i in items if i.get("thumbnail")]
-            if visual_items:
-                output["visual"] = {"type": "images", "query": f"@{username} on Instagram", "items": visual_items}
-            return ToolResult(success=True, output=output)
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
 
 
-class GetTikTokUserLatestTool(BaseTool):
-    name = "get_tiktok_user_latest"
-    description = "Get the latest videos from a TikTok profile. Requires being logged in (see login_to_social_platform)."
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="username", type="string", description="TikTok username, without '@'."),
-    ]
-
-    def __init__(self, manager: Optional[SocialLoginManager] = None):
-        self.manager = manager or _default_manager()
-
-    async def run(self, username: str, **kwargs) -> ToolResult:
-        try:
-            items = await fetch_latest_for_platform("tiktok", username, manager=self.manager)
-            output = {"videos": items, "count": len(items)}
-            visual_items = [{"url": i["url"], "thumbnail": i["thumbnail"], "title": f"@{username}"} for i in items if i.get("thumbnail")]
-            if visual_items:
-                output["visual"] = {"type": "images", "query": f"@{username} on TikTok", "items": visual_items}
-            return ToolResult(success=True, output=output)
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
-
-
-class GetFacebookPageLatestTool(BaseTool):
-    name = "get_facebook_page_latest"
-    description = (
-        "Get the latest posts from a Facebook page/profile. Requires being logged in (see "
-        "login_to_social_platform). Facebook's page structure is the most heavily obfuscated "
-        "of the three platforms here, so this is the most likely to need fixing over time."
-    )
-    parameters: List[ToolParameter] = [
-        ToolParameter(name="page_name", type="string", description="Facebook page/profile name or username as it appears in its URL."),
-    ]
-
-    def __init__(self, manager: Optional[SocialLoginManager] = None):
-        self.manager = manager or _default_manager()
-
-    async def run(self, page_name: str, **kwargs) -> ToolResult:
-        try:
-            items = await fetch_latest_for_platform("facebook", page_name, manager=self.manager)
-            return ToolResult(success=True, output={"posts": items, "count": len(items)})
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))

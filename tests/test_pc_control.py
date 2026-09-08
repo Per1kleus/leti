@@ -26,7 +26,7 @@ for _name in ("pyautogui", "pygetwindow"):
             sys.modules[_name] = _stub
 
 from core.safety_guard import _humanize_tool_call  # noqa: E402
-from tools.os_control import LaunchAppTool, OpenUrlTool, _resolve_launch  # noqa: E402
+from tools.os_control import LaunchAppTool, _resolve_launch, _web_target  # noqa: E402
 
 
 # --- Launching -----------------------------------------------------------------
@@ -74,21 +74,61 @@ def test_executable_on_path_is_run_directly():
 
 
 # --- Opening a URL in the user's own browser -----------------------------------
+# launch_app absorbed the separate open_url tool: "open Spotify" and "open YouTube"
+# are one request as far as the user is concerned. What has to survive the merge is
+# that a web page still reaches the user's own browser, and that nothing that merely
+# looks web-shaped is promoted to a URL.
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("url", [
+@pytest.mark.parametrize("value", [
+    "youtube.com",
+    "https://docs.python.org",
+    "http://localhost:8000/x",
+    "news.ycombinator.com/best",
+])
+def test_web_addresses_are_recognised_as_pages(value):
+    assert _web_target(value, []) is not None
+
+
+@pytest.mark.parametrize("value", [
     "file:///etc/passwd",       # hands the local filesystem to the browser
     "FILE:/etc/passwd",         # scheme match is case-insensitive
     "javascript:alert(1)",      # runs in whatever page is focused
     "data:text/html,<script>",
     "ftp://example.com",
 ])
-async def test_open_url_rejects_non_web_schemes(url):
+def test_non_web_schemes_are_never_promoted_to_a_url(value):
     """A '://' test isn't enough - 'javascript:alert(1)' has no slashes, so it
-    would fall through and get prefixed with https://."""
-    result = await OpenUrlTool().run(url=url)
-    assert result.success is False
-    assert "Only http" in result.error
+    would fall through and get prefixed with https:// and handed to the browser."""
+    assert _web_target(value, []) is None
+
+
+@pytest.mark.parametrize("value", ["report.pdf", "python3.11", "firefox", "notes.md"])
+def test_programs_and_filenames_are_not_mistaken_for_websites(value):
+    assert _web_target(value, []) is None
+
+
+def test_an_existing_local_file_wins_over_a_domain_reading(tmp_path, monkeypatch):
+    """Someone may really have a file called 'notes.io'."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.io").write_text("x")
+    assert _web_target("notes.io", []) is None
+
+
+def test_a_url_passed_to_an_app_is_a_program_launch():
+    """'open YouTube in Firefox' starts Firefox - a program - however web-shaped
+    its argument is."""
+    assert _web_target("firefox", ["https://youtube.com"]) is None
+
+
+@pytest.mark.asyncio
+async def test_a_web_page_goes_to_the_default_browser_not_the_shell(monkeypatch):
+    import webbrowser
+
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    result = await LaunchAppTool().run(app_name="youtube.com")
+    assert result.success, result.error
+    assert opened == ["https://youtube.com"]
 
 
 # --- What the user is actually agreeing to -------------------------------------
@@ -122,8 +162,29 @@ def test_action_classes_match_the_intended_posture():
     # Opening an app starts an arbitrary program -> in a class that confirms.
     assert tools["launch_app"]["action"] in DEFAULT_CONFIRMATION_CLASSES
     # Browsing is meant to be free: none of these are in a confirming class.
-    for tool in ("web_search", "open_url", "browser_navigate", "browser_read_page"):
+    for tool in ("web_search", "browser_read_page"):
         assert tools[tool]["action"] not in DEFAULT_CONFIRMATION_CLASSES, tool
+    # ...including the page-opening half of launch_app, which is why the merge
+    # needed per-call cases rather than one class for the whole tool.
+    by_case = tools["launch_app"]["action_by_case"]
+    assert by_case["web_page"] not in DEFAULT_CONFIRMATION_CLASSES
+    assert by_case["program"] in DEFAULT_CONFIRMATION_CLASSES
+
+
+def test_the_guard_uses_the_case_the_tool_reports():
+    """The point of the merge: one tool, two consequences, still classified apart."""
+    from core.safety_guard import RiskTier, SafetyGuard
+
+    guard = SafetyGuard()
+    tool = LaunchAppTool()
+
+    page = {"app_name": "youtube.com"}
+    program = {"app_name": "firefox", "arguments": ["https://youtube.com"]}
+
+    assert guard.get_tier("launch_app", tool.action_case(page)) is RiskTier.EXECUTE
+    assert guard.get_tier("launch_app", tool.action_case(program)) is RiskTier.MODIFY
+    # No case at all falls back to the tool's plain action, the cautious one.
+    assert guard.get_tier("launch_app") is RiskTier.MODIFY
 
 
 def test_appdata_block_does_not_cover_installed_applications():

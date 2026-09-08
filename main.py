@@ -27,7 +27,6 @@ from tools.base import ToolRegistry
 from tools.browser import (
     BrowserClickTool,
     BrowserFillFormTool,
-    BrowserNavigateTool,
     BrowserReadPageTool,
     BrowserSession,
     set_shared_session,
@@ -40,7 +39,6 @@ from tools.os_control import (
     KeyboardTypeTool,
     LaunchAppTool,
     MouseClickTool,
-    OpenUrlTool,
 )
 from tools.coding import (
     RunCodeTool,
@@ -51,12 +49,11 @@ from tools.coding import (
 from tools.shell_runner import ShellRunnerTool
 from tools.vision import ReadScreenTool
 from tools.web_search import ResearchTopicTool, WebSearchTool
-from tools.network_security import ScanLocalPortsTool, FirewallStatusTool, LanDeviceListTool
+from tools.network_security import InspectNetworkConnectionsTool, FirewallStatusTool, LanDeviceListTool
 from tools.system_defense import (
     EnableFirewallTool,
     DetectBruteForceTool,
     CheckPersistenceTool,
-    ListSuspiciousProcessesTool,
     KillProcessTool,
 )
 from tools.backup_restore import CreateSecuritySnapshotTool, CheckIntegrityTool, RestoreFromSnapshotTool
@@ -79,7 +76,7 @@ from tools.contacts import (
 )
 from tools.venture_scout import ScoutFindTrendsTool, ScoutStressTestTool
 from tools.meeting_scheduler import ScheduleMeetingTool, CreateVideoMeetingLinkTool, SendMeetingInviteEmailTool
-from tools.system_health import GetSystemSpecsTool, RunHealthCheckTool, CheckForUpdatesTool, ApplySystemUpdatesTool
+from tools.system_health import SystemReportTool, ApplySystemUpdatesTool
 from tools.personality import (
     GetPersonalitySettingsTool,
     SetPersonalityTool,
@@ -94,10 +91,8 @@ from tools.user_profile import (
     ClearUserProfileTool,
 )
 from tools.social_media import (
-    GetSubredditPostsTool,
-    SearchRedditTool,
-    GetYouTubeChannelLatestTool,
-    SearchYouTubeTrendingTool,
+    GetSocialContentTool,
+    SearchSocialTool,
     AddSocialWatchTool,
     ListSocialWatchesTool,
     RemoveSocialWatchTool,
@@ -107,9 +102,6 @@ from tools.social_login import (
     SocialLoginManager,
     LoginToSocialPlatformTool,
     LogoutSocialPlatformTool,
-    GetInstagramUserLatestTool,
-    GetTikTokUserLatestTool,
-    GetFacebookPageLatestTool,
 )
 from tools.weather import GetWeatherTool
 from tools.todo_list import AddTodoItemTool, ListTodoItemsTool, CompleteTodoItemTool, DeleteTodoItemTool
@@ -190,7 +182,6 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(DeleteFileTool())
     registry.register(MoveFileTool())
     registry.register(LaunchAppTool())
-    registry.register(OpenUrlTool())
     registry.register(CloseAppTool())
     registry.register(FocusWindowTool())
     registry.register(MouseClickTool())
@@ -204,19 +195,17 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(RunTestsTool())
     registry.register(InstallDependencyTool())
     registry.register(InspectProjectTool())
-    registry.register(BrowserNavigateTool(browser_session))
     registry.register(BrowserReadPageTool(browser_session))
     registry.register(BrowserClickTool(browser_session))
     registry.register(BrowserFillFormTool(browser_session))
 
     # Cybersecurity: network diagnostics, active defense, integrity/backup.
-    registry.register(ScanLocalPortsTool())
+    registry.register(InspectNetworkConnectionsTool())
     registry.register(FirewallStatusTool())
     registry.register(LanDeviceListTool())
     registry.register(EnableFirewallTool())
     registry.register(DetectBruteForceTool())
     registry.register(CheckPersistenceTool())
-    registry.register(ListSuspiciousProcessesTool())
     registry.register(KillProcessTool())
     registry.register(CreateSecuritySnapshotTool())
     registry.register(CheckIntegrityTool())
@@ -251,9 +240,7 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(SendMeetingInviteEmailTool())
 
     # System specs, health/performance monitoring, and OS updates.
-    registry.register(GetSystemSpecsTool())
-    registry.register(RunHealthCheckTool())
-    registry.register(CheckForUpdatesTool())
+    registry.register(SystemReportTool())
     registry.register(ApplySystemUpdatesTool())
 
     # Personalization: personality dials + structured, editable user profile.
@@ -267,21 +254,17 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ForgetUserFactTool())
     registry.register(ClearUserProfileTool())
 
-    # Social media: YouTube + Reddit (official, no login), watches, and
-    # Instagram/TikTok/Facebook (session-cookie login via a dedicated browser manager).
-    registry.register(GetSubredditPostsTool())
-    registry.register(SearchRedditTool())
-    registry.register(GetYouTubeChannelLatestTool())
-    registry.register(SearchYouTubeTrendingTool())
+    # Social media: one content tool across every platform (YouTube, Reddit,
+    # Instagram/TikTok/Facebook, any web page), one search tool, and the watch list.
+    # Logging in to the cookie-based platforms is separate, in social_login.
+    registry.register(GetSocialContentTool())
+    registry.register(SearchSocialTool())
     registry.register(AddSocialWatchTool())
     registry.register(ListSocialWatchesTool())
     registry.register(RemoveSocialWatchTool())
     registry.register(CheckSocialWatchesTool())
     registry.register(LoginToSocialPlatformTool(social_login_manager))
     registry.register(LogoutSocialPlatformTool(social_login_manager))
-    registry.register(GetInstagramUserLatestTool(social_login_manager))
-    registry.register(GetTikTokUserLatestTool(social_login_manager))
-    registry.register(GetFacebookPageLatestTool(social_login_manager))
 
     # Dashboard data sources: weather + to-do list (also usable conversationally).
     registry.register(GetWeatherTool())

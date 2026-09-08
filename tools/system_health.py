@@ -1,6 +1,12 @@
 """
 System specs, health/performance monitoring, and OS update management.
 
+specs, health and pending updates are one tool with sections rather than three,
+because they were never really separate: health already collected the disk and
+battery figures specs reported, and already called the update check internally.
+Three tools meant asking twice for the same numbers and getting two answers that
+could disagree.
+
 This is a sibling to tools/system_defense.py and tools/network_security.py
 rather than an addition to either: those two are specifically about
 *security* (attack surface, intrusion detection, firewall). This module is
@@ -9,7 +15,7 @@ different concern that happens to also live under "system". Where the two
 domains overlap (e.g. a health check surfacing a problem an existing
 security tool already knows how to fix), this module points at that tool
 by name rather than re-implementing it - see the `related_tool` field on
-each issue in run_health_check's output.
+each issue in system_report's health section.
 
 Update automation is real but scoped: apply_system_updates runs the
 platform's actual update mechanism (apt/dnf/pacman, softwareupdate, or
@@ -79,64 +85,57 @@ def _bytes_to_gb(n: int) -> float:
 
 # --- Specs ---------------------------------------------------------------------
 
-class GetSystemSpecsTool(BaseTool):
-    name = "get_system_specs"
-    description = "Print the machine's hardware and OS specs: CPU, RAM, disks, OS version, uptime, battery."
-    parameters: List[ToolParameter] = []
+async def _collect_specs() -> Dict[str, Any]:
+    """Static hardware and OS facts - what this machine IS."""
+    import psutil
 
-    async def run(self, **kwargs) -> ToolResult:
-        try:
-            import psutil
+    cpu_freq = psutil.cpu_freq()
+    vm = psutil.virtual_memory()
 
-            cpu_freq = psutil.cpu_freq()
-            vm = psutil.virtual_memory()
+    disks = []
+    for part, usage in _real_disk_partitions():
+        disks.append({
+            "mountpoint": part.mountpoint,
+            "filesystem": part.fstype,
+            "total_gb": _bytes_to_gb(usage.total),
+            "used_gb": _bytes_to_gb(usage.used),
+            "free_gb": _bytes_to_gb(usage.free),
+            "percent_used": usage.percent,
+        })
 
-            disks = []
-            for part, usage in _real_disk_partitions():
-                disks.append({
-                    "mountpoint": part.mountpoint,
-                    "filesystem": part.fstype,
-                    "total_gb": _bytes_to_gb(usage.total),
-                    "used_gb": _bytes_to_gb(usage.used),
-                    "free_gb": _bytes_to_gb(usage.free),
-                    "percent_used": usage.percent,
-                })
+    battery = None
+    try:
+        b = psutil.sensors_battery()
+        if b:
+            battery = {"percent": b.percent, "plugged_in": b.power_plugged}
+    except Exception:
+        pass
 
-            battery = None
-            try:
-                b = psutil.sensors_battery()
-                if b:
-                    battery = {"percent": b.percent, "plugged_in": b.power_plugged}
-            except Exception:
-                pass
+    gpu_info = "not detected (no vendor-specific GPU query implemented for this platform)"
+    try:
+        nvidia = await _run(["nvidia-smi", "--query-gpu=name,memory.total",
+                             "--format=csv,noheader"], timeout=5)
+        if nvidia.returncode == 0 and nvidia.stdout.strip():
+            gpu_info = nvidia.stdout.strip()
+    except Exception:
+        pass
 
-            uptime_seconds = time.time() - psutil.boot_time()
+    return {
+        "os": f"{platform.system()} {platform.release()} ({platform.version()})",
+        "architecture": platform.machine(),
+        "cpu": {
+            "model": platform.processor() or "unknown",
+            "physical_cores": psutil.cpu_count(logical=False),
+            "logical_cores": psutil.cpu_count(logical=True),
+            "max_frequency_mhz": cpu_freq.max if cpu_freq else None,
+        },
+        "memory_total_gb": _bytes_to_gb(vm.total),
+        "disks": disks,
+        "gpu": gpu_info,
+        "battery": battery,
+        "uptime_hours": round((time.time() - psutil.boot_time()) / 3600, 1),
+    }
 
-            gpu_info = "not detected (no vendor-specific GPU query implemented for this platform)"
-            try:
-                nvidia = await _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], timeout=5)
-                if nvidia.returncode == 0 and nvidia.stdout.strip():
-                    gpu_info = nvidia.stdout.strip()
-            except Exception:
-                pass
-
-            return ToolResult(success=True, output={
-                "os": f"{platform.system()} {platform.release()} ({platform.version()})",
-                "architecture": platform.machine(),
-                "cpu": {
-                    "model": platform.processor() or "unknown",
-                    "physical_cores": psutil.cpu_count(logical=False),
-                    "logical_cores": psutil.cpu_count(logical=True),
-                    "max_frequency_mhz": cpu_freq.max if cpu_freq else None,
-                },
-                "memory_total_gb": _bytes_to_gb(vm.total),
-                "disks": disks,
-                "gpu": gpu_info,
-                "battery": battery,
-                "uptime_hours": round(uptime_seconds / 3600, 1),
-            })
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
 
 
 # --- Health check ----------------------------------------------------------------
@@ -169,18 +168,48 @@ def _top_processes(limit: int = 3) -> Dict[str, List[Dict[str, Any]]]:
     return {"top_cpu": by_cpu, "top_memory": by_mem}
 
 
-class RunHealthCheckTool(BaseTool):
-    name = "run_health_check"
+class SystemReportTool(BaseTool):
+    name = "system_report"
     description = (
-        "Run a full system health/performance check (CPU, memory, swap, disk, temperature, "
-        "battery, pending OS updates) and return metrics plus a list of issues with suggested "
-        "fixes. Some issues reference an existing tool (e.g. kill_process, close_app, "
-        "apply_system_updates) that can resolve them - present those to the user and ask before "
-        "calling anything risky/destructive."
+        "Report on this machine. Choose which sections you need:\n"
+        "  specs   - what the machine IS: CPU, RAM, disks, GPU, OS, uptime, battery\n"
+        "  health  - how it's DOING right now: CPU/memory/swap/disk pressure, temperature, "
+        "and a list of issues with suggested fixes\n"
+        "  updates - pending OS/package updates\n"
+        "Defaults to health, which is the usual question. Ask for specs when someone wants "
+        "to know what hardware they have, and for all three when diagnosing something.\n"
+        "Some issues name a tool that can resolve them (kill_process, close_app, "
+        "apply_system_updates) - describe the fix in plain terms and ask before calling it."
     )
-    parameters: List[ToolParameter] = []
+    parameters: List[ToolParameter] = [
+        ToolParameter(
+            name="sections", type="array", items_type="string", required=False,
+            description="Any of: specs, health, updates. Default ['health'].",
+        ),
+    ]
 
-    async def run(self, **kwargs) -> ToolResult:
+    async def run(self, sections: Optional[List[str]] = None, **kwargs) -> ToolResult:
+        wanted = [str(x).lower() for x in (sections or ["health"])]
+        if "all" in wanted:
+            wanted = ["specs", "health", "updates"]
+        unknown = [w for w in wanted if w not in ("specs", "health", "updates")]
+        if unknown:
+            return ToolResult(success=False, error=(
+                f"Unknown section(s): {unknown}. Use specs, health and/or updates."
+            ))
+
+        report: Dict[str, Any] = {"sections": wanted}
+        if "specs" in wanted:
+            try:
+                report["specs"] = await _collect_specs()
+            except Exception as e:
+                report["specs"] = {"error": str(e)}
+        if "updates" in wanted and "health" not in wanted:
+            # health already collects updates; don't run the package manager twice.
+            report["updates"] = await _check_updates_impl()
+        if "health" not in wanted:
+            return ToolResult(success=True, output=report)
+
         try:
             import psutil
 
@@ -343,14 +372,6 @@ async def _check_updates_impl() -> Dict[str, Any]:
     except Exception as e:
         return {"platform": "unknown", "pending_count": 0, "note": f"Update check failed: {e}"}
 
-
-class CheckForUpdatesTool(BaseTool):
-    name = "check_for_updates"
-    description = "List pending OS/package updates without installing anything. Read-only."
-    parameters: List[ToolParameter] = []
-
-    async def run(self, **kwargs) -> ToolResult:
-        return ToolResult(success=True, output=await _check_updates_impl())
 
 
 class ApplySystemUpdatesTool(BaseTool):

@@ -5,6 +5,17 @@ Executes shell commands with strict guardrails:
   - Commands run with a timeout, captured stdout/stderr, and no shell chaining
     of destructive redirects beyond what the forbidden-pattern list catches.
   - Runs in the user's home directory unless a working_dir is given.
+
+Kept separate from run_code rather than folded into it, though run_code's bash
+mode can execute the same text. They answer different questions: this runs one
+command line the way a terminal would, in the user's home directory, and returns
+what it printed; run_code runs a named language's runtime over a snippet or a file
+in a project directory, with stdin, a chosen interpreter and an exit code, and is
+how you check whether code works. Merging them would mean one tool whose contract
+changes completely depending on a `language` argument. What they must not have is
+two different safety postures, and they don't: SafetyGuard matches the forbidden
+shell patterns against `code` as well as `command`, so the same snippet is refused
+whichever tool is asked to run it.
 """
 from __future__ import annotations
 

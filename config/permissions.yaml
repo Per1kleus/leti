@@ -28,18 +28,24 @@ tools:
   move_file:
     action: modify
 
-  # `modify` rather than `execute` on purpose: this starts an arbitrary program,
-  # which can then do arbitrary things. "Open my browser" is harmless, "launch
-  # /tmp/x" is not, and nothing here can tell them apart - so it asks, and the
-  # confirmation is what makes it safe for the tool to be broadly capable (apps,
-  # files, URLs, arguments).
+  # `modify` rather than `execute` on purpose: launching starts an arbitrary
+  # program, which can then do arbitrary things. "Open my browser" is harmless,
+  # "launch /tmp/x" is not, and nothing here can tell them apart - so it asks, and
+  # the confirmation is what makes it safe for the tool to be broadly capable
+  # (apps, files, arguments).
+  #
+  # The one case that is not a program launch is a web address, which launch_app
+  # hands to the user's own browser. That runs nothing on this machine, and it's
+  # something people ask for many times a day - a prompt they see that often is a
+  # prompt they stop reading, which costs more than it buys. So the tool reports
+  # which case each call is (LaunchAppTool.action_case) and the two are priced
+  # separately here. The tool names the situation; this file decides what it costs.
+  # blocked_domains below applies to the page either way.
   launch_app:
     action: modify
-
-  # Hands an http(s) URL to the user's own default browser. Other schemes are
-  # rejected by the tool, and blocked_domains below still applies.
-  open_url:
-    action: execute
+    action_by_case:
+      web_page: execute
+      program: modify
 
   close_app:
     action: modify
@@ -64,11 +70,8 @@ tools:
   run_shell_command:
     action: critical
 
-  browser_navigate:
-    action: execute
-
-  # Read-only: returns the visible text of a page so Leti can answer from what it
-  # says rather than from a search snippet.
+  # Goes to a page and returns its visible text - the navigate step and the read
+  # step are the same call.
   browser_read_page:
     action: execute
 
@@ -98,16 +101,14 @@ tools:
     action: external
 
   # --- Cybersecurity: network diagnostics (read-only) ---
-  scan_local_ports:
+  # Listening + established sockets, with the owning process for each.
+  inspect_network_connections:
     action: execute
 
   check_firewall_status:
     action: execute
 
   list_lan_devices:
-    action: execute
-
-  list_suspicious_processes:
     action: execute
 
   check_startup_persistence:
@@ -192,13 +193,8 @@ tools:
     action: external
 
   # --- System health / performance / updates ---
-  get_system_specs:
-    action: execute
-
-  run_health_check:
-    action: execute
-
-  check_for_updates:
+  # Hardware specs, live health metrics and pending updates, by section.
+  system_report:
     action: execute
 
   apply_system_updates:
@@ -234,18 +230,6 @@ tools:
     action: critical
 
   # --- Social media: YouTube + Reddit (official, read-only), watches ---
-  get_subreddit_posts:
-    action: execute
-
-  search_reddit:
-    action: execute
-
-  get_youtube_channel_latest:
-    action: execute
-
-  search_youtube_trending:
-    action: execute
-
   add_social_watch:
     action: execute
 
@@ -258,20 +242,19 @@ tools:
   check_social_watches:
     action: execute
 
+  # One tool for "what has this account/subreddit/page posted", across every
+  # platform, and one for searching a platform by topic.
+  get_social_content:
+    action: execute
+
+  search_social:
+    action: execute
+
   # --- Social media: session-based login (Instagram/TikTok/Facebook) ---
   login_to_social_platform:
     action: external
 
   logout_social_platform:
-    action: execute
-
-  get_instagram_user_latest:
-    action: execute
-
-  get_tiktok_user_latest:
-    action: execute
-
-  get_facebook_page_latest:
     action: execute
 
   # --- Dashboard data sources ---

@@ -77,10 +77,9 @@ def _humanize_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
         # "launch firefox" alone doesn't tell the user they're approving opening a
         # particular page. What they confirm should be what happens.
         "launch_app": lambda a: (
-            f"open {_get('app_name', 'name', 'window_title', default='(unspecified)')}"
+            f"open {_get('app_name', 'name', 'window_title', 'url', default='(unspecified)')}"
             + (f" with {' '.join(str(x) for x in a['arguments'])}" if a.get("arguments") else "")
         ),
-        "open_url": lambda a: f"open {_get('url')} in your default browser",
     }
 
     fn = humanizers.get(tool_name)
@@ -268,16 +267,25 @@ class SafetyGuard:
     # ------------------------------------------------------------------ #
     # Classification
     # ------------------------------------------------------------------ #
-    def get_tier(self, tool_name: str) -> RiskTier:
-        """The action class configured for a tool.
+    def get_tier(self, tool_name: str, case: Optional[str] = None) -> RiskTier:
+        """The action class configured for a tool, for this particular call.
 
         An unregistered tool is treated as CRITICAL: a tool nobody classified is
         one nobody thought about, and the safe reading of that is the cautious one.
+
+        `case` comes from the tool's own BaseTool.action_case() and matters only for
+        the few tools that cover acts of genuinely different weight - launch_app
+        opening a web page versus launch_app starting a program. The class for each
+        case is still read from permissions.yaml (`action_by_case:`), so the tool
+        says which situation this is and this file says what that situation costs.
+        A case nobody configured falls back to the tool's plain `action:`.
         """
         tool_cfg = self.permissions.get("tools", {}).get(tool_name)
         if not tool_cfg:
             return RiskTier.CRITICAL
         raw = tool_cfg.get("action", tool_cfg.get("tier", "critical"))
+        if case:
+            raw = (tool_cfg.get("action_by_case") or {}).get(str(case), raw)
         try:
             return RiskTier.from_config(raw)
         except ValueError:
@@ -394,14 +402,30 @@ class SafetyGuard:
                 return matched
         return None
 
+    # Arguments that end up being executed by a shell. `code` is here because
+    # run_code takes a bash snippet, which is the same act as run_shell_command's
+    # `command` under a different parameter name - checking only `command` meant
+    # "rm -rf /" was refused as a command and run as a one-line bash program. The
+    # patterns are matched against non-shell code too: `rm -rf /` inside a Python
+    # string is either about to be passed to os.system or is a false positive worth
+    # one explanation, and the cautious reading is the right one at a hard block.
+    _EXECUTED_TEXT_KEYS = ("command", "cmd", "code")
+
+    # Arguments that name somewhere on the web. launch_app is here because it
+    # absorbed open_url: the page it opens arrives as `app_name`, and a blocklist
+    # that only reads `url` would have stopped applying the moment the tools merged.
+    _URL_KEYS = ("url", "app_name")
+
     def check_hard_block(self, tool_name: str, arguments: Dict[str, Any]) -> Optional[str]:
         """Returns a reason string if the call must be blocked unconditionally, else None."""
-        command = arguments.get("command") or arguments.get("cmd")
-        if command:
-            matched = self._matches_forbidden_shell_pattern(str(command))
+        for key in self._EXECUTED_TEXT_KEYS:
+            text = arguments.get(key)
+            if not text:
+                continue
+            matched = self._matches_forbidden_shell_pattern(str(text))
             if matched:
                 return f"Command matches forbidden pattern: '{matched}'"
-            matched = self._command_touches_protected_path(str(command))
+            matched = self._command_touches_protected_path(str(text))
             if matched:
                 return f"Command references protected location '{matched}'"
 
@@ -411,11 +435,15 @@ class SafetyGuard:
                 if matched:
                     return f"Path '{arguments[key]}' touches protected location '{matched}'"
 
-        url = arguments.get("url")
-        if url:
-            for blocked in self.permissions.get("blocked_domains", []):
-                if blocked in url:
-                    return f"URL matches blocked domain: '{blocked}'"
+        blocked_domains = self.permissions.get("blocked_domains", [])
+        if blocked_domains:
+            for key in self._URL_KEYS:
+                value = arguments.get(key)
+                if not value:
+                    continue
+                for blocked in blocked_domains:
+                    if blocked in str(value):
+                        return f"URL matches blocked domain: '{blocked}'"
 
         return None
 
@@ -423,7 +451,8 @@ class SafetyGuard:
     # Main entry point used by the orchestrator / tool executor
     # ------------------------------------------------------------------ #
     async def authorize(
-        self, tool_name: str, arguments: Dict[str, Any], preapproved: bool = False
+        self, tool_name: str, arguments: Dict[str, Any], preapproved: bool = False,
+        case: Optional[str] = None,
     ) -> "Authorization":
         """
         Raises PermissionDenied or ConfirmationDenied if the call should not proceed.
@@ -437,8 +466,11 @@ class SafetyGuard:
         confirmation prompt for an otherwise-permitted RISKY call. The caller is told via
         `.used_preapproval` when it was spent, so a single spoken "go ahead" authorizes a
         single action rather than every action for the rest of the turn.
+
+        `case`: for a tool that covers acts of different weight, which one this call
+        is - see get_tier() and BaseTool.action_case().
         """
-        tier = self.get_tier(tool_name)
+        tier = self.get_tier(tool_name, case)
 
         block_reason = self.check_hard_block(tool_name, arguments)
         if block_reason:
@@ -563,8 +595,9 @@ class SafetyGuard:
             f.flush()
             os.fsync(f.fileno())   # an audit record that a crash can lose isn't one
 
-    async def audit_result(self, tool_name: str, arguments: Dict[str, Any], success: bool, detail: str = "") -> None:
+    async def audit_result(self, tool_name: str, arguments: Dict[str, Any], success: bool,
+                           detail: str = "", case: Optional[str] = None) -> None:
         """Call after execution to log the outcome, separate from the authorization decision."""
-        tier = self.get_tier(tool_name)
+        tier = self.get_tier(tool_name, case)
         decision = "executed" if success else "error"
         await self._audit(tool_name, arguments, tier, decision, detail)

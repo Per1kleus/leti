@@ -42,6 +42,22 @@ class BaseTool(abc.ABC):
         the orchestrator/safety guard handles authorization before calling this."""
         raise NotImplementedError
 
+    def action_case(self, arguments: Dict[str, Any]) -> Optional[str]:
+        """Which *kind* of call this is, for tools whose consequence varies by argument.
+
+        A tool that does one thing returns None and is classified purely by its
+        `action:` in permissions.yaml. A tool that legitimately covers two acts of
+        different weight - launch_app opening a web page in the browser is not the
+        same as launch_app starting an arbitrary program - names the case here.
+
+        This deliberately reports a case, not a risk class: permissions.yaml still
+        decides what each case is worth (`action_by_case:`), so the answer to "what
+        needs confirming" stays in the one file the user edits, and a tool cannot
+        lower its own gate by returning a laxer class. An unrecognised case falls
+        back to the tool's plain `action:`.
+        """
+        return None
+
     def to_ollama_schema(self) -> Dict[str, Any]:
         """Converts this tool's definition into Ollama's function-calling tool schema."""
         properties = {}

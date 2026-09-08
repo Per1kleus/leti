@@ -29,7 +29,7 @@ from typing import Any, Set
 
 from core.orchestrator import Orchestrator
 from core.safety_guard import SafetyGuard
-from tools.system_health import RunHealthCheckTool
+from tools.system_health import SystemReportTool
 from tools.todo_list import add_todo, delete_todo, load_todos, toggle_todo
 from tools.weather import get_current_weather
 
@@ -81,8 +81,9 @@ class LetiAPI:
 
     async def a_get_system_stats(self) -> dict:
         try:
-            result = await RunHealthCheckTool().run()
-            metrics = result.output.get("metrics", {}) if result.success else {}
+            result = await SystemReportTool().run(sections=["health"])
+            health = result.output.get("health", {}) if result.success else {}
+            metrics = health.get("metrics", {})
             disks = metrics.get("disks") or []
             return {
                 "cpu": round(metrics.get("cpu_percent", 0)),

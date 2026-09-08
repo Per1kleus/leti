@@ -64,7 +64,7 @@ Guidelines:
   distinguishing details, e.g. tags/company) - never guess between two people who share a name.
   If it returns "not_found", tell the user and offer to add the contact. The same applies to
   meeting participants named by name in schedule_meeting or send_meeting_invite_email.
-- When run_health_check reports issues, present each one plainly with its suggestion. If an
+- When system_report returns issues, present each one plainly with its suggestion. If an
   issue has a related_tool, ask the user whether to apply that fix before calling it - even
   though the tool's own risk tier will also require confirmation, describe the fix in plain
   terms first rather than just invoking it silently.
@@ -80,15 +80,15 @@ Guidelines:
   add_social_watch, not a one-time check - it should keep working next session too. Any time
   check_social_watches reports new items, tell the user plainly which watch it was and what's new.
 - When the user wants something opened on their computer, just do it - call launch_app
-  (they'll be asked to confirm, which is the point; don't ask permission yourself first,
-  and don't explain that you need permission). launch_app takes apps, files and URLs, and
-  `arguments` opens something IN an app: "open YouTube in Firefox" is launch_app with
-  app_name 'firefox' and arguments ['https://youtube.com']. To just put a page in front of
-  the user in their normal browser, open_url is simpler.
+  (they'll be asked to confirm a program launch, which is the point; don't ask permission
+  yourself first, and don't explain that you need permission). launch_app opens apps, files
+  and web pages: "open YouTube" is launch_app with app_name 'youtube.com', which goes to
+  their own browser, and `arguments` opens something IN a particular app - "open YouTube in
+  Firefox" is app_name 'firefox' with arguments ['https://youtube.com'].
 - For browsing: web_search finds pages, browser_read_page reads one so you can answer from
-  what it actually says rather than a snippet, and open_url hands a page to the user to
-  look at themselves. When a search result doesn't clearly answer the question, read the
-  page instead of guessing from the snippet.
+  what it actually says rather than a snippet, and launch_app puts a page in front of the
+  user to look at themselves. When a search result doesn't clearly answer the question, read
+  the page instead of guessing from the snippet.
 - Work inside the user's projects. If a project is active its instructions and files are
   in your context above - follow those instructions, put new files in that project's
   folder, and read what's already there before adding to it. When the user refers to a
@@ -335,9 +335,18 @@ class Orchestrator:
         if tool is None:
             return ToolResult(success=False, error=f"Unknown tool: '{tool_name}'")
 
+        # A few tools cover acts of genuinely different weight depending on their
+        # arguments (launch_app opening a web page vs. starting a program). The tool
+        # says which case this call is; permissions.yaml still says what each case costs.
+        try:
+            case = tool.action_case(arguments)
+        except Exception:
+            logger.exception(f"'{tool_name}'.action_case failed; using its configured action class")
+            case = None
+
         try:
             auth = await self.safety_guard.authorize(
-                tool_name, arguments, preapproved=self._preapproved_this_turn
+                tool_name, arguments, preapproved=self._preapproved_this_turn, case=case
             )
         except PermissionDenied as e:
             return ToolResult(success=False, error=f"Blocked: {e}")
@@ -367,11 +376,11 @@ class Orchestrator:
 
         try:
             result = await tool.run(**arguments)
-            await self.safety_guard.audit_result(tool_name, arguments, result.success, result.error or "")
+            await self.safety_guard.audit_result(tool_name, arguments, result.success, result.error or "", case=case)
             return result
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' raised an exception")
-            await self.safety_guard.audit_result(tool_name, arguments, False, str(e))
+            await self.safety_guard.audit_result(tool_name, arguments, False, str(e), case=case)
             return ToolResult(success=False, error=str(e))
 
     # ------------------------------------------------------------------ #
