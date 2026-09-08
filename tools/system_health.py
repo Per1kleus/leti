@@ -314,7 +314,7 @@ class SystemReportTool(BaseTool):
             severity_rank = {"critical": 0, "warning": 1, "info": 2}
             issues.sort(key=lambda i: severity_rank.get(i["severity"], 3))
 
-            return ToolResult(success=True, output={
+            report["health"] = {
                 "metrics": {
                     "cpu_percent": cpu_percent,
                     "memory_percent": vm.percent,
@@ -326,7 +326,13 @@ class SystemReportTool(BaseTool):
                 },
                 "issues": issues,
                 "summary": "All systems nominal." if not issues else f"{len(issues)} issue(s) found.",
-            })
+            }
+            # health runs the update check anyway (a pending-updates count is one of
+            # the things it reports), so asking for both sections costs one run of the
+            # package manager, not two - that sharing is why these are one tool.
+            if "updates" in wanted:
+                report["updates"] = updates
+            return ToolResult(success=True, output=report)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 

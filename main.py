@@ -427,11 +427,19 @@ async def run_text_mode(orchestrator: Orchestrator) -> None:
 
 
 async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, continuous: bool) -> None:
-    from audio.stt import WhisperTranscriber
-    from audio.tts import Pyttsx3TTS
+    from audio import load_voice_stack
 
-    transcriber = WhisperTranscriber()
-    tts = Pyttsx3TTS()
+    tts, transcriber, voice_error = load_voice_stack()
+    if voice_error:
+        # Unlike GUI mode, there's nothing to fall back to here - voice IS the mode
+        # that was asked for. But "no microphone" and "espeak isn't installed" are
+        # ordinary situations with obvious fixes, and a traceback names neither.
+        print(f"\nVoice mode needs a working microphone and speaker, and this machine "
+              f"couldn't provide one:\n  {voice_error}\n\n"
+              f"On Linux, text-to-speech needs espeak (`sudo apt install espeak`).\n"
+              f"To use Leti without voice, run:  python main.py --mode text\n"
+              f"                            or:  python main.py --mode gui\n")
+        return
 
     # Route risky/destructive confirmations through voice instead of terminal typing -
     # see make_voice_confirmation_callback for how it interprets a spoken yes/no.

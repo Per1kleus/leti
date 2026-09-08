@@ -52,6 +52,10 @@ class LetiAPI:
         self.orchestrator = orchestrator
         self.loop = loop
         self.ws_clients: Set[Any] = set()  # every connected client: desktop window + any phones/browsers
+        # Set while a confirmation is waiting for a typed yes/no - see
+        # make_text_confirmation_callback. The next message the user sends answers
+        # the question instead of starting a new turn.
+        self._pending_confirmation: Any = None
 
     def push(self, fn_name: str, *args: Any) -> None:
         """Broadcasts a call to a named JS function (e.g. appendLetiReply) to every
@@ -73,6 +77,14 @@ class LetiAPI:
     # ---- Async: real work, awaited directly by gui/server.py ----
 
     async def a_send_text_message(self, text: str) -> None:
+        # A confirmation in flight owns the next thing the user types: they were
+        # asked a yes/no question and answered it, and treating that answer as a
+        # fresh request would both lose the answer and act on "yes" as a prompt.
+        pending = self._pending_confirmation
+        if pending is not None and not pending.done():
+            self.push("appendUserMessage", text)
+            pending.set_result(text)
+            return
         try:
             await self.orchestrator.handle_user_input(text, voice_mode=False)
         except Exception as e:
@@ -161,6 +173,11 @@ def _make_gui_speak_callback(api: LetiAPI, tts):
 
     async def _speak(text: str) -> None:
         api.push("appendLetiReply", text)
+        if tts is None:
+            # Text-only: the reply is already on screen, and pretending to speak
+            # would leave the orb stuck in its speaking animation.
+            api.push("focusChatInput")
+            return
         api.push("setHudState", "speaking")
         await tts.speak(text)
         api.push("setHudState", "idle")
@@ -233,8 +250,7 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     keep working) while the web server and, if available, a native window run.
     Blocks until the app is closed (window close, or Ctrl+C in headless/browser-only
     mode when pywebview isn't installed)."""
-    from audio.tts import Pyttsx3TTS
-    from audio.stt import WhisperTranscriber
+    from audio import load_voice_stack
     from gui.server import LetiWebServer
 
     def _run_background_loop():
@@ -255,19 +271,29 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     # loaded once and reused for both voice input and confirmation prompts -
     # loading it twice was also just wasted time and memory.
     print("Loading voice models (Whisper + TTS) - this happens once per launch...")
-    tts = Pyttsx3TTS()
-    transcriber = WhisperTranscriber()
-    print("Voice models ready.")
+    tts, transcriber, voice_error = load_voice_stack()
+    if voice_error:
+        # Deliberately not fatal. The HUD is fully usable by typing, and the server
+        # below is what serves it - a machine with no microphone, no speakers, or
+        # no espeak installed should get a working text interface and an honest
+        # note about what's missing, not a traceback instead of an application.
+        print(f"Voice is unavailable, continuing in text-only mode: {voice_error}")
+        logger.warning(f"Voice unavailable, text-only: {voice_error}")
+    else:
+        print("Voice models ready.")
 
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
     orchestrator.visual_callback = _make_gui_visual_callback(api)
 
-    # Route risky/destructive confirmations through voice, same as CLI voice mode -
-    # there's no phone-side confirmation UI (yet), so a risky/destructive action
-    # requested from a phone still confirms via this machine's own voice/mic. Worth
-    # knowing if you're driving Leti remotely and not standing next to the desktop.
-    from core.confirmation import make_voice_confirmation_callback
-    safety_guard.set_confirmation_callback(make_voice_confirmation_callback(tts, transcriber))
+    # Confirmations go through voice when there IS voice - hands-free is the point
+    # of GUI mode, and that's how CLI voice mode behaves. Without a working mic they
+    # go to the chat window instead: the alternative was a user sitting in front of
+    # a working interface, unable to approve the action they had just asked for.
+    from core.confirmation import make_text_confirmation_callback, make_voice_confirmation_callback
+    if tts and transcriber:
+        safety_guard.set_confirmation_callback(make_voice_confirmation_callback(tts, transcriber))
+    else:
+        safety_guard.set_confirmation_callback(make_text_confirmation_callback(api))
 
     server = LetiWebServer(api)
     server_ready = threading.Event()
@@ -275,12 +301,14 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     async def _start_server_and_voice():
         await server.start()
         server_ready.set()
+        if transcriber is None:
+            return  # text-only: there is no voice loop to run
         try:
             await _run_voice_loop(orchestrator, api, continuous_voice, transcriber)
         except Exception:
-            # A voice/mic failure (e.g. no audio input device available) shouldn't
-            # take the whole app down - the server above is already up and fully
-            # usable via text regardless of what happens to voice.
+            # A voice/mic failure (e.g. the audio device disappearing mid-session)
+            # shouldn't take the whole app down - the server above is already up and
+            # fully usable via text regardless of what happens to voice.
             logger.exception("Voice pipeline stopped unexpectedly - text chat is unaffected.")
 
     asyncio.run_coroutine_threadsafe(_start_server_and_voice(), loop)

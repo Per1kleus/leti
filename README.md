@@ -18,7 +18,9 @@ searches and pages you explicitly ask it to visit.
 - **Screen vision** via `llama3.2-vision` — ask Leti what's on your screen.
 - **Voice pipeline** — wake word (openWakeWord), speech-to-text
   (OpenAI Whisper), text-to-speech (pyttsx3, using your OS's native voice
-  engine), with interruptible playback.
+  engine), with interruptible playback. Optional in practice: on a machine with
+  no microphone, no speaker or no espeak, GUI mode says so once and runs
+  text-only rather than refusing to start (see below).
 - **Memory** — short-term conversation buffer + long-term semantic recall
   (ChromaDB) so Leti remembers preferences and facts across sessions.
 - **System control** — launch/close apps, focus windows, mouse/keyboard
@@ -172,6 +174,12 @@ searches and pages you explicitly ask it to visit.
    - Debian/Ubuntu/Linux: `sudo apt install espeak` (pyttsx3 drives espeak)
    - macOS: no extra install — uses the built-in `NSSpeechSynthesizer`
    - Windows: no extra install — uses the built-in SAPI5 engine
+
+   None of this is required to *run* Leti. `--mode text` never touches audio;
+   `--mode gui` prints why voice is unavailable and continues text-only, and
+   asks for confirmations in the chat window instead of out loud. Only
+   `--mode voice` and `--mode continuous` need a working mic and speaker, and
+   they now say which piece is missing instead of raising a traceback.
 
    To see available voices on your machine and pick one for
    `config/settings.yaml` (`tts.voice_id`):
@@ -363,6 +371,13 @@ Playwright browser from there.
 Window control (`close_app`, `focus_window`) works on Windows and macOS;
 pygetwindow doesn't implement it on Linux, where the tools now say so plainly
 instead of surfacing a bare exception.
+
+None of the desktop-control tools are loaded at import time, because on Linux
+`import pyautogui` opens an X11 connection and raises `KeyError: 'DISPLAY'` where
+there's no display. That used to take the whole application down — including
+`--mode text` over SSH, and the cron entry that runs `--mode run-scheduled`,
+which cron starts with no `DISPLAY` no matter how many screens the machine has.
+Now only the four tools that actually need a screen fail, with an explanation.
 
 - `config/permissions.yaml` — per-tool action classes, forbidden shell patterns,
   and protected filesystem paths. A few tools cover acts of different weight and

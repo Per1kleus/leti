@@ -29,12 +29,38 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pyautogui
-import pygetwindow as gw
-
 from tools.base import BaseTool, ToolParameter, ToolResult
 
-pyautogui.FAILSAFE = True  # moving mouse to a screen corner aborts pyautogui actions
+# pyautogui and pygetwindow are imported where they're used, not here.
+#
+# Importing pyautogui on Linux constructs an X11 connection at import time, so on
+# a machine with no display it raises KeyError: 'DISPLAY' before anything runs.
+# At module scope that took the whole application down: `main.py --mode text` on a
+# headless box, an SSH session with no X forwarding, and - the one that actually
+# bites - the cron entry that runs `main.py --mode run-scheduled`, which cron
+# starts with no DISPLAY in its environment. None of those need a mouse.
+#
+# So the cost of a missing display is now paid by the four tools that genuinely
+# need one, as a legible error, instead of by everything.
+_pyautogui = None
+
+
+def _mouse_keyboard():
+    """pyautogui, or an explanation of why this machine can't drive a mouse."""
+    global _pyautogui
+    if _pyautogui is None:
+        import pyautogui
+
+        pyautogui.FAILSAFE = True  # moving the mouse to a screen corner aborts an action
+        _pyautogui = pyautogui
+    return _pyautogui
+
+
+_NO_DISPLAY = (
+    "This machine has no graphical display available, so Leti can't drive the mouse or "
+    "keyboard. That's normal over SSH, on a headless server, or for a task started by "
+    "the system scheduler. Everything that doesn't need a screen still works."
+)
 
 _WINDOW_CONTROL_UNSUPPORTED = (
     "Window control isn't available on this system. pygetwindow implements it on "
@@ -52,9 +78,14 @@ def _matching_windows(window_title: str):
     platform simply doesn't support this.
     """
     try:
+        import pygetwindow as gw
+
         return [w for w in gw.getAllWindows() if window_title.lower() in w.title.lower()], None
     except NotImplementedError:
         return [], _WINDOW_CONTROL_UNSUPPORTED
+    except (ImportError, KeyError) as e:
+        # KeyError('DISPLAY') is how the X11 backend reports "no display" at import.
+        return [], f"{_NO_DISPLAY} ({type(e).__name__}: {e})"
     except Exception as e:
         return [], f"Couldn't list windows: {e}"
 
@@ -346,6 +377,10 @@ class MouseClickTool(BaseTool):
 
     async def run(self, x: float, y: float, button: str = "left", double: bool = False, **kwargs) -> ToolResult:
         try:
+            pyautogui = _mouse_keyboard()
+        except (ImportError, KeyError) as e:
+            return ToolResult(success=False, error=f"{_NO_DISPLAY} ({type(e).__name__}: {e})")
+        try:
             loop = asyncio.get_event_loop()
             if double:
                 await loop.run_in_executor(None, lambda: pyautogui.doubleClick(x, y, button=button))
@@ -366,6 +401,10 @@ class KeyboardTypeTool(BaseTool):
 
     async def run(self, text: str, interval: float = 0.02, **kwargs) -> ToolResult:
         try:
+            pyautogui = _mouse_keyboard()
+        except (ImportError, KeyError) as e:
+            return ToolResult(success=False, error=f"{_NO_DISPLAY} ({type(e).__name__}: {e})")
+        try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: pyautogui.write(text, interval=interval))
             return ToolResult(success=True, output=f"Typed {len(text)} characters.")
@@ -384,6 +423,10 @@ class KeyboardHotkeyTool(BaseTool):
     ]
 
     async def run(self, keys: list, **kwargs) -> ToolResult:
+        try:
+            pyautogui = _mouse_keyboard()
+        except (ImportError, KeyError) as e:
+            return ToolResult(success=False, error=f"{_NO_DISPLAY} ({type(e).__name__}: {e})")
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: pyautogui.hotkey(*keys))

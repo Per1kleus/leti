@@ -335,6 +335,21 @@ async def test_system_report_names_the_sections_it_does_not_know():
 
 
 @pytest.mark.asyncio
+async def test_asking_for_several_sections_returns_all_of_them():
+    """The health branch used to return its own flat {metrics, issues, summary} and
+    throw the sectioned report away with it - so specs vanished when health was also
+    asked for, and the dashboard, which reads output['health']['metrics'], silently
+    showed 0% for everything."""
+    pytest.importorskip("psutil")
+    from tools.system_health import SystemReportTool
+
+    result = await SystemReportTool().run(sections=["specs", "health", "updates"])
+    assert result.success, result.error
+    assert {"specs", "health", "updates"} <= set(result.output)
+    assert "metrics" in result.output["health"]
+
+
+@pytest.mark.asyncio
 async def test_the_dashboard_reads_the_shape_system_report_returns():
     """gui/api.py digs into output['health']['metrics'] - a merge that moved those
     keys would leave the dashboard silently reporting 0% for everything."""
