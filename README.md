@@ -168,7 +168,10 @@ searches and pages you explicitly ask it to visit.
    ollama pull nomic-embed-text
    ```
    Swap these for smaller/larger variants depending on your hardware — any
-   Ollama model that supports tool calling works for the reasoning model.
+   Ollama model that supports tool calling works for the reasoning model. **Which
+   one you can afford is set by VRAM, and the binding constraint is the context
+   window rather than the weights** — see *Fitting your GPU* below before
+   assuming a bigger model is better here.
 
 3. **Python 3.11+**
 
@@ -210,6 +213,67 @@ searches and pages you explicitly ask it to visit.
    - Debian/Ubuntu: `sudo apt install portaudio19-dev`
    - macOS: `brew install portaudio`
    - Windows: prebuilt wheels usually work out of the box.
+
+---
+
+## Fitting your GPU
+
+Leti sends **every tool schema on every call**, and again on every iteration of
+the tool-calling loop. That is not a small overhead: 103 tools serialise to
+63,410 characters, roughly **16,000–18,000 tokens**, before the system prompt,
+personality, user profile, recalled memories, conversation buffer, or any tool
+results. `ollama.num_ctx` is 24576 to leave room for the rest.
+
+This matters because Ollama does not error when a request exceeds `num_ctx` — it
+**truncates**. Tools fall off the end and the model behaves as if they were never
+registered, which is indistinguishable from a model that is simply bad at its
+job. Leti logs a warning at startup if `num_ctx` stops being big enough, so the
+next time this happens it says so.
+
+The consequence is that a big context window costs VRAM whether or not a given
+turn uses it, and that is what decides your model:
+
+| VRAM | Reasoning model | Roughly |
+|---|---|---|
+| 8 GB | `qwen2.5:7b` | 4.4 GiB weights + 1.3 GiB KV — fits |
+| 12 GB | `qwen2.5:7b` (the default) | ~6.1 GiB, ~4 GiB spare |
+| 16 GB+ | `qwen2.5:14b` | 8.4 GiB weights + 4.5 GiB KV — the better tool-picker |
+
+On a 12 GB card the 14B needs ~11.4 GiB even with a quantised KV cache, against
+the ~10.5–11 GiB actually free once the desktop compositor has taken its share.
+It does not crash — Ollama moves layers to the CPU — but an eight-iteration tool
+turn then takes minutes. 7B is the honest default there.
+
+Two Ollama environment variables roughly halve the KV cache cost, which is worth
+setting on any card:
+
+```
+OLLAMA_FLASH_ATTENTION=1
+OLLAMA_KV_CACHE_TYPE=q8_0
+```
+
+They are read by the Ollama **server**, not by Leti, so set them where `ollama
+serve` starts and restart it. On Windows: *Settings → System → About → Advanced
+system settings → Environment Variables*, then restart Ollama from the tray.
+
+**Vision costs a model swap.** `llama3.2-vision` is ~7.9 GB and will not share a
+12 GB card with the reasoning model, so each screen-vision call evicts one and
+reloads it afterwards — a few seconds each way. That is expected, not a fault.
+
+### Windows notes
+
+- **TTS and audio need nothing extra.** pyttsx3 uses the built-in SAPI5 engine,
+  and pyaudio ships prebuilt wheels. `espeak` is a Linux-only prerequisite.
+- **Whisper on the GPU.** `stt.device` defaults to `auto`: it uses CUDA when
+  torch reports a working CUDA build and the CPU when it doesn't. Plain
+  `pip install openai-whisper` installs the **CPU-only** torch on Windows, so
+  until you reinstall torch from PyTorch's CUDA index this will correctly, and
+  quietly, stay on the CPU. Setting `device: "cuda"` by hand no longer crashes
+  when it can't be honoured — it warns and falls back.
+- **The interface window is Edge WebView2**, which is Chromium. The page detects
+  that and enables a compositing hint worth about a third of its CPU; the same
+  hint is withheld on Linux and macOS, where the native window is WebKit and it
+  measured *worse*. Nothing about how it looks changes either way.
 
 ---
 

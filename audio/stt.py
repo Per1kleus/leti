@@ -27,6 +27,40 @@ CHANNELS = 1
 FORMAT = pyaudio.paInt16
 
 
+def _resolve_device(requested: str) -> str:
+    """Which device whisper should actually load on.
+
+    A machine with a CUDA GPU is very often running a CPU-only build of torch -
+    that is what `pip install openai-whisper` gives you on Windows unless you
+    install from PyTorch's CUDA index. Asking whisper for "cuda" there raised at
+    startup and took voice mode down with it, on the machines most likely to have
+    set it. So the choice is checked rather than trusted: "auto" uses the GPU when
+    there is one, and an explicit "cuda" that cannot be honoured degrades to the
+    CPU with a line saying why instead of crashing.
+    """
+    requested = (requested or "auto").strip().lower()
+    if requested == "cpu":
+        return "cpu"
+
+    try:
+        import torch
+
+        available = torch.cuda.is_available()
+    except Exception as e:                       # no torch, or a broken install
+        logger.warning(f"Couldn't ask torch about CUDA ({e}); using the CPU.")
+        return "cpu"
+
+    if available:
+        return "cuda"
+    if requested == "cuda":
+        logger.warning(
+            "stt.device is 'cuda' but torch reports no usable CUDA device - using the CPU. "
+            "If this machine does have an NVIDIA GPU, the torch that got installed is the "
+            "CPU-only build; reinstall it from PyTorch's CUDA index to use it."
+        )
+    return "cpu"
+
+
 class WhisperTranscriber:
     @property
     def settings(self) -> Dict[str, Any]:
@@ -35,10 +69,13 @@ class WhisperTranscriber:
 
     def __init__(self):
         model_size = self.settings.get("model_size", "base.en")
-        device = self.settings.get("device", "cpu")
+        device = _resolve_device(self.settings.get("device", "auto"))
         logger.info(f"Loading whisper model '{model_size}' on {device}...")
         self.model = whisper.load_model(model_size, device=device)
-        self.fp16 = self.settings.get("fp16", False)
+        fp16 = self.settings.get("fp16", "auto")
+        # Half precision only exists on the GPU; asking for it on the CPU makes
+        # whisper warn on every single transcription and fall back anyway.
+        self.fp16 = (device == "cuda") if fp16 == "auto" else bool(fp16) and device == "cuda"
         self._pa = pyaudio.PyAudio()
 
         # The microphone chosen during first-run setup, or None for the system

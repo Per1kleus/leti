@@ -323,7 +323,34 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.
     registry.register(SearchImagesTool())
     registry.register(CreateSketchTool())
+    _warn_if_context_is_too_small(registry)
     return registry
+
+
+def _warn_if_context_is_too_small(registry: ToolRegistry) -> None:
+    """Say so when the tool list has outgrown the context window.
+
+    Ollama does not error when a request exceeds num_ctx - it truncates it. Tools
+    silently fall off the end and the model behaves as though they were never
+    registered, which is indistinguishable from a model that is simply bad at its
+    job. That happened once already: the tool count grew past a num_ctx that had
+    been sized for it, and nothing anywhere said so. This is the thing that says
+    so - once, at startup, naming the two numbers.
+    """
+    settings = get_settings().get("ollama", {})
+    num_ctx = int(settings.get("num_ctx", 16384))
+    tool_tokens = registry.approx_schema_tokens()
+    # The rest of a turn - system prompt, personality, profile, recalled memories,
+    # the rolling buffer, and every tool result appended during the loop.
+    headroom = 6000
+    if tool_tokens + headroom > num_ctx:
+        logger.warning(
+            f"{len(registry.names())} tools serialise to roughly {tool_tokens:,} tokens, and "
+            f"ollama.num_ctx is {num_ctx:,}. Ollama truncates rather than erroring, so tools "
+            f"will go missing and Leti will look like it has forgotten them. Raise num_ctx to "
+            f"at least {tool_tokens + headroom:,} in config/settings.yaml, or use a model with "
+            "the VRAM headroom for it - see the notes there."
+        )
 
 
 async def _run_settings_editor_cli() -> None:

@@ -103,3 +103,16 @@ class ToolRegistry:
 
     def names(self) -> List[str]:
         return list(self._tools.keys())
+
+    def approx_schema_tokens(self) -> int:
+        """Roughly how much of the context window the tool list occupies.
+
+        Every schema is sent on every call and on every iteration of the
+        tool-calling loop, so this is a fixed toll on num_ctx before the system
+        prompt, memory or the conversation get any. Four characters per token is
+        the usual rule of thumb and errs low for JSON, which is denser - that is
+        the right direction for a check whose job is to warn early.
+        """
+        import json
+
+        return len(json.dumps(self.all_schemas())) // 4

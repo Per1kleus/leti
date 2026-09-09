@@ -318,19 +318,19 @@ def test_the_overlays_are_promoted_only_where_that_was_measured_to_help():
             f"{pseudo} is promoted unconditionally, which regresses the native window")
 
 
-def test_the_native_windows_are_told_apart_before_the_first_paint():
-    """A class added after the page is running re-layers something already being
-    composited. Both native windows say what they are in their URL (gui/desktop.py),
-    so the decision is made in the pre-paint block at the top of the file - not
-    guessed at from a timer waiting to see whether pywebview shows up."""
+def test_the_promotion_is_decided_by_the_engine_not_the_window():
+    """Blink gains from the promotion and WebKit loses by it, so the engine is what
+    the decision has to key off. Keying it off "is this a native window" was right
+    only on Linux, where that window happens to be WebKit: on Windows it is Edge
+    WebView2, which is Blink, and the rule withheld the saving from exactly the
+    machines it would have helped. overflow-anchor separates the two (Blink and
+    Gecko support it, WebKit does not), and it is checked in the pre-paint block so
+    no already-composited page gets re-layered."""
     pre = CODE.split("<style>")[0]
     assert "promote-overlays" in pre, "the decision is being made after the first paint"
-    assert "desktop" in pre and "puck" in pre
-    main = re.search(r"if\(!\((.*?)\)\)\{\s*document\.documentElement"
-                     r"\.classList\.add\('promote-overlays'\)", pre, re.S)
-    assert main, "the promotion is no longer withheld from the native windows"
-    assert "desktop" in main.group(1) and "puck" in main.group(1), (
-        "one of the two native windows would still be promoted")
+    assert "overflow-anchor" in pre, "the promotion is not keyed off the engine"
+    assert "desktop=1" not in CODE, (
+        "the promotion is keyed off the window again, which is wrong on Windows")
 
 
 def test_the_pre_paint_block_leaks_no_globals():

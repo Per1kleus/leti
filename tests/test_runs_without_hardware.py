@@ -99,7 +99,11 @@ def test_voice_stack_reports_why_it_is_unavailable_instead_of_raising():
     # agree - half a voice pipeline is worse than none.
     assert (tts is None) == (transcriber is None)
     if tts is None:
-        assert error and ":" in error
+        # A sentence saying what is missing and what to do about it. Not "a string
+        # with a colon in it": declining the microphone at the first-run prompt is
+        # an ordinary state, and its message is a plain sentence - asserting on
+        # punctuation failed on every machine where someone had said no.
+        assert error and len(error.split()) >= 5, error
     else:
         assert error is None
 
@@ -286,21 +290,6 @@ def test_losing_the_window_does_not_take_the_interface_with_it():
     assert "_serve_headless" in after, "a failed webview.start() has no fallback"
 
 
-def test_both_native_windows_say_so_in_their_url():
-    """The page renders one compositing hint differently for a native window than
-    for a browser, because the two engines measured opposite ways on it. That has to
-    be known before the first paint, so it travels in the URL rather than waiting on
-    pywebview to inject its bridge - see .promote-overlays in gui/hud.html."""
-    import inspect
-
-    import gui.desktop
-
-    main = inspect.getsource(gui.desktop.DesktopWindows.create_main)
-    assert "?desktop=1" in main, "the main window is indistinguishable from a browser"
-    puck = inspect.getsource(gui.desktop.DesktopWindows._create_puck)
-    assert "?puck=1" in puck
-
-
 # --- Desktop first, browser only as the fallback ----------------------------------
 
 def test_the_desktop_window_is_attempted_before_any_browser():
@@ -356,3 +345,82 @@ def test_every_no_window_path_hands_over_the_url():
     source = inspect.getsource(gui.api.run_gui_mode)
     for match in re.finditer(r"_serve_headless\((.*?)\)\n", source, re.S):
         assert "url=" in match.group(1), f"a fallback with no url: {match.group(1)[:60]}"
+
+
+# --- Fitting the machine it runs on -----------------------------------------------
+
+def test_the_context_window_holds_the_tool_list():
+    """Ollama truncates rather than erroring when a request exceeds num_ctx, so a
+    tool list that has outgrown the window makes tools silently vanish and looks
+    exactly like a model that has forgotten them. That is not hypothetical - it is
+    what happened when the count grew past a num_ctx sized for an earlier one."""
+    from unittest.mock import MagicMock
+
+    import main
+    from core.config_loader import get_settings
+
+    registry = main.build_tool_registry(MagicMock(), MagicMock(), MagicMock())
+    tool_tokens = registry.approx_schema_tokens()
+    num_ctx = int(get_settings()["ollama"]["num_ctx"])
+    assert num_ctx >= tool_tokens + 6000, (
+        f"{len(registry.names())} tools need ~{tool_tokens} tokens but num_ctx is "
+        f"{num_ctx}; there is no room left for the prompt or the conversation"
+    )
+
+
+def test_a_context_window_that_stops_fitting_says_so(caplog):
+    """The check above only protects this repository. This one is what tells the
+    person running it, on the day they add the tool that tips it over."""
+    import logging
+    from unittest.mock import MagicMock
+
+    import main
+
+    registry = main.build_tool_registry(MagicMock(), MagicMock(), MagicMock())
+    with caplog.at_level(logging.WARNING):
+        main._warn_if_context_is_too_small(registry)
+    assert not caplog.records, "warned when the window is in fact big enough"
+
+    tiny = MagicMock()
+    tiny.approx_schema_tokens.return_value = 999_999
+    tiny.names.return_value = ["a"]
+    with caplog.at_level(logging.WARNING):
+        main._warn_if_context_is_too_small(tiny)
+    assert any("num_ctx" in r.message for r in caplog.records), (
+        "a context window too small for the tools passed without a word"
+    )
+
+
+def test_asking_for_cuda_without_cuda_falls_back_instead_of_raising(monkeypatch):
+    """A CUDA GPU with a CPU-only torch is the normal outcome of `pip install
+    openai-whisper` on Windows, and it is exactly the machine whose owner sets
+    device: cuda. Raising there took voice mode down at startup.
+
+    whisper and pyaudio are stubbed only so the module imports on a machine that
+    has neither - the function under test touches nothing from either.
+    """
+    import sys
+    import types
+
+    for heavy in ("whisper", "pyaudio", "numpy"):
+        if heavy not in sys.modules:
+            stub = types.ModuleType(heavy)
+            stub.paInt16 = 8            # the one constant read at import time
+            monkeypatch.setitem(sys.modules, heavy, stub)
+    monkeypatch.delitem(sys.modules, "audio.stt", raising=False)
+    from audio.stt import _resolve_device
+
+    fake = types.ModuleType("torch")
+    fake.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    assert _resolve_device("cuda") == "cpu", "an unhonourable cuda must degrade, not raise"
+    assert _resolve_device("auto") == "cpu"
+
+    fake.cuda = types.SimpleNamespace(is_available=lambda: True)
+    assert _resolve_device("auto") == "cuda"
+    assert _resolve_device("cpu") == "cpu", "an explicit cpu is still honoured"
+
+    # A torch whose cuda call blows up is the same answer, not a traceback.
+    fake.cuda = types.SimpleNamespace(
+        is_available=lambda: (_ for _ in ()).throw(RuntimeError("driver mismatch")))
+    assert _resolve_device("auto") == "cpu"

@@ -30,12 +30,17 @@
   if(params.get('puck') === '1'){
     document.documentElement.classList.add('puck-window');
   }
-  // Both native windows say so in their URL (gui/desktop.py). Anything else is a
-  // browser or a phone, where promoting the page's two full-viewport overlays to
-  // their own layers measured a third off the page's CPU - and where the native
-  // window's renderer measured worse for it. Decided here, before the first paint,
-  // because a class added later would re-layer a page that is already running.
-  if(!(params.get('desktop') === '1' || params.get('puck') === '1')){
+  // Promoting the page's two full-viewport overlays to their own layers measured a
+  // third off the page's CPU in Blink and a seventh ONTO it in WebKit, so what
+  // decides this is the engine, not the window. An earlier version keyed it off
+  // the URL - native window means don't promote - which was right only because the
+  // native window happens to be WebKit on Linux. On Windows it is Edge WebView2,
+  // which is Blink, and that rule withheld the saving from exactly the machines
+  // that would benefit; on macOS it is WebKit again. overflow-anchor is the test:
+  // Blink and Gecko have it, WebKit does not. Verified in both engines rather than
+  // assumed. Decided here, before the first paint, because a class added later
+  // would re-layer a page that is already being composited.
+  if(window.CSS && CSS.supports && CSS.supports('overflow-anchor', 'auto')){
     document.documentElement.classList.add('promote-overlays');
   }
   }
@@ -95,14 +100,13 @@
   }
 
   /* Promoting the two overlays above is worth a third of the page's CPU in Blink
-     (38% of a core down to 25%) and costs a seventh of it again in the WebKitGTK
-     build behind the native window (215% up to 242%), which composites layers on
-     the CPU rather than handing them to the compositor. So it is applied where it
-     was measured to help and left off where it was measured to hurt, rather than
-     picked for one and inflicted on the other. The class goes on for browsers and
-     phones; the native windows identify themselves in their URL (see
-     gui/desktop.py) so this is decided before the first paint, not guessed at from
-     a timer. Nothing about how either looks changes either way. */
+     (38% of a core down to 25%) and costs a seventh of it again in WebKit (215% up
+     to 242%), which composites layers on the CPU rather than handing them to the
+     compositor. So it is applied per ENGINE, where it was measured to help, and
+     left off where it was measured to hurt - which covers the native window on
+     Windows (Edge WebView2, Blink) and on Linux and macOS (WebKit) without either
+     needing to be special-cased. See the pre-paint block at the top of the file
+     for the test. Nothing about how either looks changes either way. */
   .promote-overlays #leti-root::before,
   .promote-overlays #leti-root::after{ will-change:transform; }
 
