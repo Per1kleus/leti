@@ -623,6 +623,12 @@ async def main(args) -> None:
 
     await run_console_setup()
 
+    # And, also once, which model this computer can actually run. Declining leaves
+    # every model setting exactly as it is. See core/model_setup.py.
+    from core.model_setup import run_console_setup as run_model_setup
+
+    await run_model_setup()
+
     try:
         if args.mode == "text":
             await run_text_mode(orchestrator)

@@ -213,6 +213,13 @@ class LetiWebServer:
                 value = await self.api.a_check_audio(*args)
             elif method == "save_audio_setup":
                 value = await self.api.a_save_audio_setup(*args)
+            elif method == "get_model_setup":
+                value = await self.api.a_get_model_setup()
+            elif method == "apply_model_setup":
+                # Downloading a model takes as long as it takes; the card waits on
+                # this call rather than polling, and localhost has nothing in
+                # between to time it out.
+                value = await self.api.a_apply_model_setup(*args)
             elif method in SYNC_METHODS:
                 value = getattr(self.api, method)(*args)
             else:

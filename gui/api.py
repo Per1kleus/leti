@@ -46,7 +46,8 @@ SYNC_METHODS = {
     "get_audio_setup", "set_window_mode",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
-                 "check_audio", "save_audio_setup"}
+                 "check_audio", "save_audio_setup",
+                 "get_model_setup", "apply_model_setup"}
 
 
 class LetiAPI:
@@ -164,6 +165,36 @@ class LetiAPI:
             # it's permitted: accepting mid-session still has to load Whisper.
             "voice_active": self.voice_active,
         }
+
+    async def a_get_model_setup(self) -> dict:
+        """Detected hardware and the recommended model. Drives the first-run card.
+
+        Read-only: nothing is downloaded and nothing is configured by asking.
+        A failure here is reported to the card, which then offers to keep the
+        current models - it must never stop the interface from loading.
+        """
+        from core import model_setup
+
+        try:
+            return await model_setup.gather()
+        except Exception as e:
+            logger.warning(f"Model setup check failed: {e}")
+            return {"configured": model_setup.is_configured(), "error": str(e),
+                    "hardware": {"ok": False, "error": str(e)},
+                    "recommendation": {"current": model_setup.current_model(),
+                                       "recommended": None, "confident": False,
+                                       "reasons": [], "tradeoffs": [], "considered": []}}
+
+    async def a_apply_model_setup(self, choice: str, model: str = "") -> dict:
+        """Act on the user's answer. The only method here that writes anything."""
+        from core import model_setup
+
+        try:
+            return await model_setup.apply_choice(choice, model or None)
+        except Exception as e:
+            logger.exception("Applying the model choice failed")
+            return {"ok": False, "choice": choice, "model": model, "error": str(e),
+                    "note": "Your existing model configuration has not been changed."}
 
     async def a_check_audio(self, what: str, device_index=None) -> dict:
         """Run one hardware check. Blocking audio I/O, so it goes to a thread -

@@ -984,6 +984,14 @@
     </div>
   </div>
 
+  <div class="settings-overlay" id="modelOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="modelClose">&times;</div>
+      <div class="settings-panel-title">Choosing a model for this computer</div>
+      <div id="modelContent"></div>
+    </div>
+  </div>
+
   <div class="settings-overlay" id="audioOverlay">
     <div class="settings-panel">
       <div class="settings-close" id="audioClose">&times;</div>
@@ -2116,6 +2124,133 @@
   // page, and a first-run card that opens there is a dialogue nobody can read let
   // alone answer. The full window asks - and if the interface is collapsed inside
   // a browser tab, it reopens itself first rather than talking to a corner.
+  // ---------- First launch: which model this computer can run ----------
+  // Shown once, before the audio card, and only until it has been answered. It
+  // downloads and configures nothing by being opened: both of its buttons are an
+  // explicit answer, and one of them is "change nothing".
+  const modelOverlay = document.getElementById('modelOverlay');
+  const modelContent = document.getElementById('modelContent');
+  let modelBusy = false;
+
+  function closeModelCard(){
+    if(modelBusy) return;                 // never mid-download
+    modelOverlay.classList.remove('open');
+  }
+  document.getElementById('modelClose').onclick = closeModelCard;
+  modelOverlay.addEventListener('click', e => { if(e.target === modelOverlay) closeModelCard(); });
+
+  function renderModelCard(state){
+    const hw = state.hardware || {};
+    const rec = state.recommendation || {};
+    const cpu = hw.cpu || {};
+    let html = '';
+
+    if(!hw.ok){
+      html += '<div class="settings-error">Couldn\u2019t read this computer\u2019s hardware' +
+              (hw.error ? ': ' + hw.error : '') + '. Nothing is being recommended \u2014 ' +
+              'keeping the current models is the safe answer.</div>';
+    } else {
+      html += '<div class="audio-intro">What Leti found on this computer:</div>';
+      html += '<div class="kv-row"><span class="k">Operating system</span><span class="v">' +
+              (hw.os || 'unknown') + '</span></div>';
+      html += '<div class="kv-row"><span class="k">Processor</span><span class="v">' +
+              (cpu.model || 'unknown') + '</span></div>';
+      html += '<div class="kv-row"><span class="k">Cores</span><span class="v">' +
+              (cpu.physical_cores || '?') + ' / ' + (cpu.logical_cores || '?') + ' threads</span></div>';
+      html += '<div class="kv-row"><span class="k">Memory</span><span class="v">' +
+              (hw.ram_gib != null ? hw.ram_gib + ' GiB' : 'unknown') + '</span></div>';
+      html += '<div class="kv-row"><span class="k">Graphics</span><span class="v' +
+              (hw.gpu ? '' : ' warn') + '">' +
+              (hw.gpu ? hw.gpu.name + ' \u00b7 ' + hw.gpu.vram_gib + ' GiB VRAM'
+                      : 'none detected') + '</span></div>';
+      if(hw.free_disk_gib != null){
+        html += '<div class="kv-row"><span class="k">Free disk</span><span class="v">' +
+                hw.free_disk_gib + ' GiB</span></div>';
+      }
+    }
+
+    html += '<div class="audio-intro" style="margin-top:14px">Models</div>';
+    html += '<div class="kv-row"><span class="k">Configured now</span><span class="v">' +
+            (rec.current || 'unknown') + '</span></div>';
+    if(rec.recommended){
+      html += '<div class="kv-row"><span class="k">Recommended</span><span class="v' +
+              (rec.confident ? '' : ' warn') + '">' + rec.recommended +
+              (rec.already_installed ? ' \u00b7 already downloaded' : '') + '</span></div>';
+      const est = rec.estimate || {};
+      if(est.total_gib != null){
+        html += '<div class="kv-row"><span class="k">Expected VRAM use</span><span class="v">~' +
+                est.total_gib + ' GiB (' + est.weights_gib + ' weights + ~' + est.kv_gib +
+                ' KV cache at ' + (rec.num_ctx || 0).toLocaleString() + ' tokens)</span></div>';
+      }
+    } else {
+      html += '<div class="kv-row"><span class="k">Recommended</span>' +
+              '<span class="v warn">nothing \u2014 too little is known</span></div>';
+    }
+
+    (rec.reasons || []).forEach(r => {
+      html += '<div class="audio-detail" style="margin-top:8px">' + r + '</div>';
+    });
+    (rec.tradeoffs || []).forEach(t => {
+      html += '<div class="audio-detail" style="margin-top:8px">Note: ' + t + '</div>';
+    });
+
+    const canApply = !!rec.recommended && rec.recommended !== rec.current;
+    html += '<div class="settings-actions">' +
+            '<button class="settings-btn" id="modelKeep">Leti was designed for the current models we have now</button>' +
+            (canApply
+              ? '<button class="settings-btn primary" id="modelApply">' +
+                (rec.already_installed ? 'Use ' : 'Download and use ') + rec.recommended + '</button>'
+              : '') +
+            '</div><div class="audio-detail" id="modelNote"></div>';
+
+    modelContent.innerHTML = html;
+
+    document.getElementById('modelKeep').onclick = () => applyModelChoice('keep_current', '');
+    const apply = document.getElementById('modelApply');
+    if(apply) apply.onclick = () => applyModelChoice('recommended', rec.recommended);
+  }
+
+  async function applyModelChoice(choice, model){
+    if(modelBusy) return;
+    modelBusy = true;
+    const note = document.getElementById('modelNote');
+    const buttons = modelContent.querySelectorAll('button');
+    buttons.forEach(b => { b.disabled = true; });
+    note.textContent = choice === 'recommended'
+      ? 'Downloading ' + model + '\u2026 this can take several minutes.'
+      : 'Saving\u2026';
+    let result;
+    try { result = await callApi('apply_model_setup', choice, model); }
+    catch(e){ result = { ok: false, error: e.message,
+                         note: 'Your existing model configuration has not been changed.' }; }
+    modelBusy = false;
+    if(result && result.ok){
+      note.textContent = result.note || 'Done.';
+      setTimeout(() => modelOverlay.classList.remove('open'), 1200);
+      return;
+    }
+    // A failure re-enables the buttons: the choice is still open, and the
+    // configuration is still whatever it was. Say that second part - knowing the
+    // download failed is not the same as knowing nothing was broken by it.
+    buttons.forEach(b => { b.disabled = false; });
+    const reassurance = (result && result.note)
+      || 'Your existing model configuration has not been changed.';
+    const detail = (result && result.error) || '';
+    note.innerHTML = '<span class="settings-error">' + reassurance + '</span>' +
+      (detail ? '<div class="audio-detail" style="margin-top:6px">' + detail + '</div>' : '');
+  }
+
+  (async function askAboutModelsOnFirstRun(){
+    if(IS_PUCK_WINDOW) return;
+    let state;
+    try { state = await callApi('get_model_setup'); }
+    catch(e){ return; }                   // never block the interface on this
+    if(!state || state.configured) return;
+    if(minimized) await restore();
+    modelOverlay.classList.add('open');
+    renderModelCard(state);
+  })();
+
   (async function askAudioOnFirstRun(){
     if(IS_PUCK_WINDOW) return;
     try {
