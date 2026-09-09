@@ -30,6 +30,12 @@ function New-LetiShortcut {
     $shortcut.WorkingDirectory = $ProjectDir
     $shortcut.IconLocation     = "$IconPath,0"
     $shortcut.Description      = "Launch Leti's interface"
+    # 7 = start minimised. The .bat has to run in a console (it sets up the venv
+    # and drives ollama pull), but a normal application does not show one, so the
+    # console is sent straight to the taskbar and Leti's own window is the only
+    # thing on screen. Only the shortcut's window style changes; what it launches
+    # and how is untouched, so this cannot affect whether Leti starts.
+    $shortcut.WindowStyle      = 7
     $shortcut.Save()
     Write-Host "Created: $LinkPath"
 }

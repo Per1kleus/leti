@@ -59,6 +59,32 @@ def display_available() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+# Windows groups taskbar buttons, pins and jump lists by "Application User Model
+# ID", and a process that never sets one inherits the host executable's - which
+# for Leti is python.exe. The visible symptom is the taskbar showing a Python
+# icon, filed under Python, and pinning the wrong thing: the operating system
+# does not believe Leti is an application in its own right. This is what tells it
+# otherwise. Windows-only and best-effort; everywhere else the desktop file or
+# app bundle already does the same job.
+APP_ID = "Leti.Assistant"
+
+
+def claim_application_identity() -> bool:
+    """Tell Windows this process is Leti. True if the identity was set."""
+    if not sys.platform.startswith("win"):
+        return False
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        return True
+    except Exception as e:
+        # An older Windows, or a locked-down one. The window still opens; it just
+        # shares a taskbar group with Python.
+        logger.info(f"Couldn't set the Windows application id ({e}).")
+        return False
+
+
 class DesktopWindows:
     """Owns the native windows. One instance per run; None when there is no GUI."""
 
@@ -72,11 +98,58 @@ class DesktopWindows:
     # ---- creation ------------------------------------------------------------
 
     def create_main(self, icon_path: Optional[Path] = None):
+        claim_application_identity()
         self.main = self._webview.create_window(
             "Leti", f"{self._base_url}/", width=1180, height=760,
             background_color="#050b14",
         )
+        # The titlebar's own minimise button means the same thing as the one in
+        # the page: shrink to the puck, not vanish into the taskbar. Without this
+        # the application had two different minimises depending on which control
+        # you happened to use. Best-effort like everything else here - an older
+        # pywebview without this event leaves the titlebar button doing its
+        # ordinary thing, which is a lesser interface, not a broken one.
+        try:
+            self.main.events.minimized += self._on_native_minimize
+        except Exception as e:
+            logger.info(f"This pywebview can't report window minimising ({e}); "
+                        "the titlebar button will minimise to the taskbar instead.")
+        # Closing the main window has to end the application, and once the puck
+        # exists it does not: webview.start() returns when the LAST window closes,
+        # and a hidden puck is still a window. Measured - the main window shut, and
+        # the process was still running six seconds later with nothing on screen,
+        # holding the port, the loaded model and the microphone. Whoever closed
+        # Leti would have had to find it in a task manager.
+        try:
+            self.main.events.closed += self._on_main_closed
+        except Exception as e:
+            logger.warning(f"Couldn't watch for the main window closing ({e}); "
+                           "if a puck was opened this run, closing Leti may leave "
+                           "the process running.")
         return self.main
+
+    def _on_main_closed(self, *_args) -> None:
+        """The main window was closed. Take the puck with it."""
+        with self._lock:
+            puck, self.puck = self.puck, None
+        if puck is None:
+            return
+        try:
+            puck.destroy()
+        except Exception:
+            logger.exception("Couldn't close the puck window; Leti may not exit.")
+
+    def _on_native_minimize(self, *_args) -> None:
+        """The titlebar minimise button was used. Swap to the puck.
+
+        Reached from the toolkit's own thread, so it does what the page's minimise
+        control does and nothing more; show_puck already holds the lock that keeps
+        the two paths from racing each other.
+        """
+        try:
+            self.show_puck()
+        except Exception:
+            logger.exception("Couldn't shrink to the puck after a native minimise.")
 
     def _create_puck(self):
         """The puck window. Made once, then hidden and shown.
@@ -152,6 +225,14 @@ class DesktopWindows:
             try:
                 if self.main is not None:
                     self.main.show()
+                    # Restoring matters when the puck was reached through the
+                    # titlebar's minimise button: the window was iconified before
+                    # it was hidden, and showing it again brings it back still
+                    # iconified. Harmless when it was never minimised.
+                    try:
+                        self.main.restore()
+                    except Exception:
+                        pass
                 if self.puck is not None:
                     self.puck.hide()
                 return True
