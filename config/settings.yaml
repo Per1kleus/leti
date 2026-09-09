@@ -84,6 +84,17 @@ vision:
   downscale_width: 1280            # resize before sending to vision model
   keep_screenshots: 20             # older captures are deleted after each new one
 
+# Which tools each request is shown. Every tool stays registered, executable and
+# authorised exactly as before - this only decides which schemas are sent to the
+# model, because sending all 103 of them costs roughly 16,000 tokens of a 24,576
+# token window on every single call. See core/tool_router.py.
+#
+# Set this to false to go back to sending the complete tool list on every request.
+# Nothing else changes with it: routing already falls back to the full set on its
+# own whenever it is uncertain, finds no match, or hits an error.
+tool_routing:
+  enabled: true
+
 safety:
   # Which classes of action stop and ask you first. Tools are classified by what
   # they do in config/permissions.yaml: read, execute, modify, external, critical.

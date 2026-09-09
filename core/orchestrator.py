@@ -23,6 +23,7 @@ from core.config_loader import get_settings
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
+from core.tool_router import last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
 from memory.vector_store import VectorMemory
 from tools.base import ToolRegistry, ToolResult
@@ -387,7 +388,18 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     async def _tool_calling_loop(self, messages: List[Dict[str, Any]]) -> str:
         max_iterations = self.settings.get("max_tool_iterations", 8)
-        tool_schemas = self.tool_registry.all_schemas()
+        # Which tools this request is shown - see core/tool_router.py. Chosen ONCE
+        # per turn, not per iteration: the loop's whole point is that the prompt
+        # grows by a tool result each time round, and a tool list that changed
+        # underneath it would throw away the model server's cached prefix on every
+        # pass. Routing never raises and its worst case is the full registry, which
+        # is exactly what this line used to be.
+        routing = select_tools_for(last_user_message(messages), self.tool_registry)
+        tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
+        logger.info(
+            f"Tools for this turn: {routing.count}/{len(self.tool_registry.names())}"
+            f"{' (full fallback)' if routing.full_fallback else ''} - {routing.reason}"
+        )
 
         for iteration in range(max_iterations):
             response = await self.llm_client.chat(messages, tools=tool_schemas)

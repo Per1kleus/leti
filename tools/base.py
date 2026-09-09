@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass
@@ -100,6 +100,20 @@ class ToolRegistry:
 
     def all_schemas(self) -> List[Dict[str, Any]]:
         return [t.to_ollama_schema() for t in self._tools.values()]
+
+    def schemas_for(self, names: Iterable[str]) -> List[Dict[str, Any]]:
+        """Schemas for just these tools, in a stable order.
+
+        Which tools a request is shown is core/tool_router.py's decision; this
+        only serves it. Sorted so that the same selection produces a
+        byte-identical prompt every time, which is what lets the model server
+        reuse its cached prefix instead of re-reading the whole tool list.
+
+        An unknown name is skipped rather than raising: the registry stays the
+        source of truth about what exists.
+        """
+        wanted = [n for n in sorted(set(names)) if n in self._tools]
+        return [self._tools[n].to_ollama_schema() for n in wanted]
 
     def names(self) -> List[str]:
         return list(self._tools.keys())
