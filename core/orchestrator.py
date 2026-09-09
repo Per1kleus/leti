@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -132,6 +133,104 @@ Guidelines:
   diagram-shaped explanations (a process, a decision flow, a sequence) - not as a substitute for
   a normal explanation, and not for every technical answer.
 """
+
+
+# --------------------------------------------------------------------------- #
+# Tool-call normalisation
+#
+# Ollama hands back a tool call as {"function": {"name": ..., "arguments": {...}}}
+# and that is what the execution path below consumes. Templates vary in how they
+# represent the SAME call, though, and the two variants seen in practice are
+# arguments arriving as a JSON string rather than an object, and a call landing in
+# the message text because the template failed to lift it out. Neither is a
+# different call - only a different spelling of one.
+#
+# These normalise the spelling and nothing else. They never repair a call, never
+# guess a tool, and never invent an argument: anything that does not resolve
+# cleanly is handed back as unusable so the caller can fail it through the error
+# path it already has. There is no branching on which model is configured.
+# --------------------------------------------------------------------------- #
+
+_TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+_JSON_FENCE = re.compile(r"\A```(?:json)?\s*(\{.*\})\s*```\Z", re.S)
+
+
+def _normalize_arguments(raw: Any) -> Optional[Dict[str, Any]]:
+    """One call's arguments as a mapping, or None if they are not one.
+
+    None means unusable, and is deliberately distinct from {} - a tool that takes
+    no arguments is a legitimate call, a tool whose arguments could not be read is
+    not. Callers must not treat the two the same.
+    """
+    if not raw:
+        # What the previous `fn.get("arguments", {}) or {}` did: absent, null and
+        # empty all mean a call with no arguments.
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _call_from_object(blob: str, find_tool: Callable[[str], Any],
+                      require_arguments: bool) -> Optional[Dict[str, Any]]:
+    """One JSON blob turned into a tool call, or None if it is not clearly one."""
+    try:
+        obj = json.loads(blob)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if require_arguments and "arguments" not in obj:
+        return None
+    name = obj.get("name")
+    # An exact match against a registered tool, never a resemblance to one.
+    if not isinstance(name, str) or find_tool(name) is None:
+        return None
+    arguments = _normalize_arguments(obj.get("arguments"))
+    if arguments is None:
+        return None
+    return {"function": {"name": name, "arguments": arguments}}
+
+
+def _recover_tool_calls_from_text(content: Any,
+                                  find_tool: Callable[[str], Any]) -> List[Dict[str, Any]]:
+    """Tool calls a template left in the message text. Almost always empty.
+
+    This is the conservative half of the parser, and it is meant to stay that way:
+    an assistant that says "I can use the weather tool for that" is talking, not
+    calling, and must keep being treated as talking. Recovery therefore needs
+    machine-readable evidence of an intended invocation, not a mention:
+
+      - a <tool_call>...</tool_call> block, whose delimiters are the evidence, or
+      - a message that is ENTIRELY one JSON object carrying both a name and an
+        arguments key. A JSON object quoted inside a sentence is the model
+        describing a call, not making one, so it does not qualify.
+
+    In both cases the name must match a registered tool exactly and the arguments
+    must resolve to a mapping. Nothing here scores, ranks or guesses.
+    """
+    if not isinstance(content, str) or "{" not in content:
+        return []
+
+    tagged = _TOOL_CALL_TAG.findall(content)
+    if tagged:
+        calls = [_call_from_object(blob, find_tool, require_arguments=False) for blob in tagged]
+        return [call for call in calls if call is not None]
+
+    stripped = content.strip()
+    fenced = _JSON_FENCE.match(stripped)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        call = _call_from_object(stripped, find_tool, require_arguments=True)
+        return [call] if call is not None else []
+    return []
 
 
 class Orchestrator:
@@ -296,6 +395,18 @@ class Orchestrator:
             tool_calls = message.get("tool_calls")
 
             if not tool_calls:
+                # A call the template failed to lift out of the text is still a
+                # call; returning it verbatim would report the request as answered
+                # without ever running anything. Empty for ordinary prose.
+                tool_calls = _recover_tool_calls_from_text(
+                    message.get("content"), self.tool_registry.get
+                )
+                if tool_calls:
+                    logger.info(
+                        f"Recovered {len(tool_calls)} tool call(s) from message text: "
+                        f"{[c['function']['name'] for c in tool_calls]}"
+                    )
+            if not tool_calls:
                 return message.get("content", "").strip() or "I don't have a response for that."
 
             messages.append(message)
@@ -327,13 +438,29 @@ class Orchestrator:
         return "I made several attempts but couldn't complete that within my step limit. Want me to keep going?"
 
     async def _execute_tool_call(self, call: Dict[str, Any]) -> ToolResult:
-        fn = call.get("function", {})
-        tool_name = fn.get("name", "")
-        arguments = fn.get("arguments", {}) or {}
+        # Read defensively: a malformed call is a failed tool result, never an
+        # exception that ends the turn.
+        fn = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(fn, dict):
+            fn = {}
+        raw_name = fn.get("name")
+        tool_name = raw_name if isinstance(raw_name, str) else ""
+        arguments = _normalize_arguments(fn.get("arguments"))
 
         tool = self.tool_registry.get(tool_name)
         if tool is None:
             return ToolResult(success=False, error=f"Unknown tool: '{tool_name}'")
+
+        if arguments is None:
+            # Unreadable arguments. Running the tool anyway would mean inventing
+            # what the user asked for, so the model is told what was wrong instead.
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Malformed arguments for '{tool_name}': expected a JSON object, got "
+                    f"{type(fn.get('arguments')).__name__}. Call it again with an object."
+                ),
+            )
 
         # A few tools cover acts of genuinely different weight depending on their
         # arguments (launch_app opening a web page vs. starting a program). The tool
