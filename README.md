@@ -378,7 +378,14 @@ Everything on it is wired to something real — the panels are readouts, not sce
   the browser's whole frame pipeline going for as long as the page is open.
   Anything that pulses is driven from the same animation clock instead. The two
   idle rates are constants at the top of that loop if you want to trade smoothness
-  against CPU differently.
+  against CPU differently. Two compositing hints do the rest, both measured rather
+  than assumed: the status dot has a layer of its own, so the opacity the loop
+  writes every frame composites instead of repainting the panel under it; and the
+  page's two full-viewport overlays get one only in a browser, because the same
+  hint that takes a third off the page's CPU in Blink adds a seventh to it in the
+  WebKitGTK build behind the native window. Neither changes how anything looks —
+  the windows say which they are in their URL so the choice is made before the
+  first paint.
 - **The core** reacts to real audio: your own voice via the browser's mic (if
   permitted) while the backend is listening, and a synthetic-but-correctly-timed
   pattern while Leti's TTS is speaking (pyttsx3 plays directly to the OS audio device,

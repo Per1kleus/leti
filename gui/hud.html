@@ -22,8 +22,22 @@
   // Before anything is painted: the always-on-top puck window is transparent, and
   // a round puck on an opaque page is a circle inside a square of colour. Marking
   // the document here rather than from the main script avoids a flash of it.
-  if(new URLSearchParams(location.search).get('puck') === '1'){
+  // Scoped to this block: a bare top-level const here would share the global
+  // lexical scope with the main script below, where a name collision is a
+  // SyntaxError that kills the whole page rather than a shadowed variable.
+  {
+  const params = new URLSearchParams(location.search);
+  if(params.get('puck') === '1'){
     document.documentElement.classList.add('puck-window');
+  }
+  // Both native windows say so in their URL (gui/desktop.py). Anything else is a
+  // browser or a phone, where promoting the page's two full-viewport overlays to
+  // their own layers measured a third off the page's CPU - and where the native
+  // window's renderer measured worse for it. Decided here, before the first paint,
+  // because a class added later would re-layer a page that is already running.
+  if(!(params.get('desktop') === '1' || params.get('puck') === '1')){
+    document.documentElement.classList.add('promote-overlays');
+  }
   }
 </script>
 
@@ -62,12 +76,10 @@
   /* Faint engineering grid, and a vignette so the edges fall away rather than
      ending on a hard rectangle. Both are pointer-events:none so nothing under
      them stops being clickable. */
-  /* These two cover the whole viewport and paint OVER the radar, so before they
-     were promoted, every animated frame of the radar re-rasterised a 1400x900
-     grid and a full-screen radial gradient along with it. That was the single
-     largest cost in the interface - measured at 100% of a core, down to 63% from
-     this line alone. will-change gives each its own layer: rasterised once, then
-     only composited. Nothing about how they look changes. */
+  /* These two cover the whole viewport and paint OVER the radar, so every animated
+     frame of the radar drags a 1400x900 grid and a full-screen radial gradient
+     through rasterisation with it. Giving them each a layer of their own fixes
+     that - but only on some engines, so see .promote-overlays below. */
   #leti-root::before{
     content:'';
     position:absolute; inset:0; z-index:0; pointer-events:none;
@@ -81,6 +93,18 @@
     position:absolute; inset:0; z-index:0; pointer-events:none;
     background:radial-gradient(ellipse 80% 70% at 50% 50%, transparent 45%, rgba(3,8,15,0.85) 100%);
   }
+
+  /* Promoting the two overlays above is worth a third of the page's CPU in Blink
+     (38% of a core down to 25%) and costs a seventh of it again in the WebKitGTK
+     build behind the native window (215% up to 242%), which composites layers on
+     the CPU rather than handing them to the compositor. So it is applied where it
+     was measured to help and left off where it was measured to hurt, rather than
+     picked for one and inflicted on the other. The class goes on for browsers and
+     phones; the native windows identify themselves in their URL (see
+     gui/desktop.py) so this is decided before the first paint, not guessed at from
+     a timer. Nothing about how either looks changes either way. */
+  .promote-overlays #leti-root::before,
+  .promote-overlays #leti-root::after{ will-change:transform; }
 
   /* ---------- Top bar ---------- */
   .topbar{
@@ -124,6 +148,12 @@
   .status-dot{
     width:7px; height:7px; border-radius:50%; background:var(--cyan);
     box-shadow:0 0 8px var(--cyan);
+    /* The loop writes this dot's opacity on every frame. Without a layer of its
+       own, each write repaints the dot, its glow and the panel behind them; with
+       one, the same write is a compositor operation and paints nothing. Measured
+       in the desktop window's renderer: 214.7% of a core down to 203.3%, which is
+       the whole cost of the write. Nothing about how it looks changes. */
+    will-change:opacity;
   }
   .status-dot.warn{ background:var(--amber); box-shadow:0 0 8px var(--amber); }
   .topbar-right{ display:flex; align-items:center; gap:10px; }

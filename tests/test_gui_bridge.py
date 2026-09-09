@@ -292,6 +292,57 @@ def test_there_are_no_perpetual_css_animations():
     assert "statusDot.style.opacity" in CODE
 
 
+def test_the_status_dot_has_a_layer_of_its_own():
+    """The loop writes this dot's opacity on every drawn frame. Without a layer,
+    each write repaints the dot, its 8px glow and the panel behind them; with one,
+    the same write composites and paints nothing. Measured in the desktop window's
+    renderer at 214.7% of a core down to 203.3% - the whole cost of the write."""
+    dot = re.search(r"\.status-dot\{(.*?)\}", CODE, re.S)
+    assert dot, ".status-dot moved; this test needs updating"
+    assert "will-change:opacity" in dot.group(1).replace(" ", "")
+
+
+def test_the_overlays_are_promoted_only_where_that_was_measured_to_help():
+    """Giving the two full-viewport overlays their own layers takes a third off the
+    page's CPU in Blink and ADDS a seventh in the WebKitGTK build behind the native
+    window, which composites layers on the CPU. So it is a class, applied to the
+    browsers and phones it helps and withheld from the windows it hurts - not a
+    blanket declaration picked for one engine and inflicted on the other."""
+    assert ".promote-overlays #leti-root::before" in CODE
+    assert ".promote-overlays #leti-root::after" in CODE
+    # The bare pseudo-elements must NOT carry it themselves.
+    for pseudo in ("#leti-root::before", "#leti-root::after"):
+        rule = re.search(re.escape("\n  " + pseudo + "{") + r"(.*?)\}", CODE, re.S)
+        assert rule, f"{pseudo} moved; this test needs updating"
+        assert "will-change" not in rule.group(1), (
+            f"{pseudo} is promoted unconditionally, which regresses the native window")
+
+
+def test_the_native_windows_are_told_apart_before_the_first_paint():
+    """A class added after the page is running re-layers something already being
+    composited. Both native windows say what they are in their URL (gui/desktop.py),
+    so the decision is made in the pre-paint block at the top of the file - not
+    guessed at from a timer waiting to see whether pywebview shows up."""
+    pre = CODE.split("<style>")[0]
+    assert "promote-overlays" in pre, "the decision is being made after the first paint"
+    assert "desktop" in pre and "puck" in pre
+    main = re.search(r"if\(!\((.*?)\)\)\{\s*document\.documentElement"
+                     r"\.classList\.add\('promote-overlays'\)", pre, re.S)
+    assert main, "the promotion is no longer withheld from the native windows"
+    assert "desktop" in main.group(1) and "puck" in main.group(1), (
+        "one of the two native windows would still be promoted")
+
+
+def test_the_pre_paint_block_leaks_no_globals():
+    """Top-level `const` in a classic script shares the global lexical scope with
+    the main script below, where a collision is a SyntaxError that takes the whole
+    page down rather than shadowing a variable."""
+    pre = CODE.split("<style>")[0]
+    block = pre[pre.index("URLSearchParams") - 400:]
+    assert re.search(r"\{\s*const params = new URLSearchParams", block), (
+        "the pre-paint block's declarations are no longer scoped to a block")
+
+
 # --- Minimised mode ---------------------------------------------------------------
 
 def test_minimising_is_a_class_not_a_teardown():

@@ -286,6 +286,21 @@ def test_losing_the_window_does_not_take_the_interface_with_it():
     assert "_serve_headless" in after, "a failed webview.start() has no fallback"
 
 
+def test_both_native_windows_say_so_in_their_url():
+    """The page renders one compositing hint differently for a native window than
+    for a browser, because the two engines measured opposite ways on it. That has to
+    be known before the first paint, so it travels in the URL rather than waiting on
+    pywebview to inject its bridge - see .promote-overlays in gui/hud.html."""
+    import inspect
+
+    import gui.desktop
+
+    main = inspect.getsource(gui.desktop.DesktopWindows.create_main)
+    assert "?desktop=1" in main, "the main window is indistinguishable from a browser"
+    puck = inspect.getsource(gui.desktop.DesktopWindows._create_puck)
+    assert "?puck=1" in puck
+
+
 # --- Desktop first, browser only as the fallback ----------------------------------
 
 def test_the_desktop_window_is_attempted_before_any_browser():

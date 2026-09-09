@@ -8,7 +8,10 @@ actually means takes a second native window, which is what this module owns:
     full  - the ordinary application window, 1180x760, framed, in the taskbar
     puck  - 190x190, frameless, always-on-top, dragged by its own surface
 
-Both load the SAME page from the same local server; the puck adds `?puck=1`, and
+Both load the SAME page from the same local server; the main window adds
+`?desktop=1` and the puck `?puck=1`, which is how the page knows before its first
+paint that it is inside a native window rather than a browser - it renders one
+compositing hint differently for each (see .promote-overlays in gui/hud.html). And
 gui/hud.html renders itself collapsed when it sees that. So there is one
 interface, one renderer and one websocket session per window - the puck is not a
 second, smaller app that has to be kept in step with the first.
@@ -73,7 +76,7 @@ class DesktopWindows:
 
     def create_main(self, icon_path: Optional[Path] = None):
         self.main = self._webview.create_window(
-            "Leti", f"{self._base_url}/", width=1180, height=760,
+            "Leti", f"{self._base_url}/?desktop=1", width=1180, height=760,
             background_color="#050b14",
         )
         return self.main
