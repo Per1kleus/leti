@@ -106,7 +106,8 @@ def _replace(task: Dict[str, Any]) -> None:
 # Creating and describing
 # --------------------------------------------------------------------------- #
 
-def create_task(objective: str, steps: List[str], name: str = "") -> Dict[str, Any]:
+def create_task(objective: str, steps: List[str], name: str = "",
+                project: str = "") -> Dict[str, Any]:
     """A new task, queued. Steps are the plan; nothing runs until start()."""
     if not str(objective or "").strip():
         raise ValueError("A task needs an objective.")
@@ -121,6 +122,9 @@ def create_task(objective: str, steps: List[str], name: str = "") -> Dict[str, A
         "id": uuid.uuid4().hex[:12],
         "name": (name or objective)[:80],
         "objective": objective,
+        # Which project this belongs to, so reopening one shows what was already
+        # done for it. A name, not a copy of the project.
+        "project": project or None,
         "status": QUEUED,
         "current_step": 0,
         "steps": [{"n": i + 1, "instruction": text, "status": "pending",
@@ -165,6 +169,7 @@ def describe(task: Dict[str, Any]) -> Dict[str, Any]:
         "steps_done": p["steps_done"],
         "steps_total": p["steps_total"],
         "current": p["current_instruction"],
+        "project": task.get("project"),
         "blocked_reason": task.get("blocked_reason"),
         "error": task.get("error"),
         "result": task.get("result"),

@@ -117,7 +117,23 @@ def own_files(directory: Path) -> List[Path]:
     return files
 
 
-def list_projects() -> List[Dict[str, Any]]:
+def set_archived(name: str, archived: bool) -> Dict[str, Any]:
+    """Archive or restore a project.
+
+    Archiving is not deleting: the folder and everything in it stay exactly where
+    they are, the project simply stops showing up in the everyday list and stops
+    being offered as context. Finished work that might still be needed should not
+    have to be thrown away to get out of the way.
+    """
+    manifest = load_manifest(name)
+    manifest["archived"] = bool(archived)
+    save_manifest(name, manifest)
+    if archived and get_active_project() == name:
+        set_active_project(None)
+    return manifest
+
+
+def list_projects(include_archived: bool = False) -> List[Dict[str, Any]]:
     """Every project, as "Parent/Child" paths, shallowest first."""
     root = projects_root()
     found = []
@@ -127,10 +143,14 @@ def list_projects() -> List[Dict[str, Any]]:
             manifest = json.loads(manifest_path.read_text())
         except json.JSONDecodeError:
             manifest = {}
+        archived = bool(manifest.get("archived"))
+        if archived and not include_archived:
+            continue
         found.append({
             "name": str(rel).replace("\\", "/"),
             "description": manifest.get("description", ""),
             "updated_at": manifest.get("updated_at"),
+            "archived": archived,
             "file_count": len(own_files(manifest_path.parent)),
         })
     return sorted(found, key=lambda p: (p["name"].count("/"), p["name"].lower()))
@@ -164,7 +184,7 @@ def resolve_project(name: Optional[str]) -> Optional[str]:
     return get_active_project()
 
 
-def project_context(name: str, max_files: int = 40) -> str:
+def project_context(name: str, max_files: int = 40, request: str = "") -> str:
     """A project's instructions and contents, as text for the system prompt.
 
     This is what makes "continue the MATLAB project" mean something: the model
@@ -188,15 +208,45 @@ def project_context(name: str, max_files: int = 40) -> str:
 
     files = sorted(own_files(directory), key=lambda p: p.stat().st_mtime, reverse=True)
     if files:
-        lines.append(f"\nFiles in this project ({len(files)}, most recently changed first):")
-        for path in files[:max_files]:
+        # Naming every file on every turn is how project context turns into the
+        # thing dynamic tool routing exists to avoid. When the request mentions
+        # particular files those come first and the list is short; otherwise the
+        # most recently touched ones stand in for "what we were doing".
+        shown, budget = _relevant_files(files, directory, request, max_files)
+        lines.append(f"\nFiles in this project ({len(files)} total"
+                     + (", most relevant to this request first):" if request
+                        else ", most recently changed first):"))
+        for path in shown:
             size = path.stat().st_size
             lines.append(f"- {path.relative_to(directory)} ({size:,} bytes)")
-        if len(files) > max_files:
-            lines.append(f"- ... and {len(files) - max_files} more")
+        if len(files) > len(shown):
+            lines.append(f"- ... and {len(files) - len(shown)} more "
+                         "(ask for a listing if you need them)")
     else:
         lines.append("\nThis project has no files yet.")
     return "\n".join(lines)
+
+
+def _relevant_files(files, directory, request: str, max_files: int):
+    """The files worth naming for this request, and how many that is.
+
+    References, never contents: a project may point at large files and copying
+    them into the prompt would be the opposite of useful.
+    """
+    import re as _re
+
+    if not request:
+        return files[:max_files], max_files
+    words = {w for w in _re.findall(r"[a-z0-9_.]+", request.lower()) if len(w) > 2}
+    if not words:
+        return files[:12], 12
+    named, others = [], []
+    for path in files:
+        text = str(path.relative_to(directory)).lower()
+        (named if any(w in text for w in words) else others).append(path)
+    # A short recent tail keeps "carry on where we left off" working even when the
+    # request names nothing.
+    return (named + others[:6])[:max_files], max_files
 
 
 # --- Tools ---------------------------------------------------------------------
@@ -374,6 +424,36 @@ class GetProjectContextTool(BaseTool):
             "project": target,
             "folder": str(project_dir(target)),
             "context": project_context(target),
+        })
+
+
+class ArchiveProjectTool(BaseTool):
+    name = "archive_project"
+    description = (
+        "Put a finished project out of the way, or bring one back. Archiving keeps every "
+        "file exactly where it is and only stops the project appearing in the everyday "
+        "list and being offered as context - use it instead of delete_project when the "
+        "work is done but might still be wanted."
+    )
+    parameters = [
+        ToolParameter(name="name", type="string", description="The project."),
+        ToolParameter(name="restore", type="boolean", required=False,
+                      description="True to bring an archived project back."),
+    ]
+
+    async def run(self, name: str, restore: bool = False, **kwargs) -> ToolResult:
+        resolved = resolve_project(name)
+        if resolved is None:
+            return ToolResult(success=False, error=f"No project called '{name}'.")
+        try:
+            set_archived(resolved, not restore)
+        except KeyError:
+            return ToolResult(success=False, error=f"No project called '{name}'.")
+        return ToolResult(success=True, output={
+            "project": resolved,
+            "archived": not restore,
+            "note": (f"'{resolved}' is back in the list." if restore else
+                     f"'{resolved}' is archived. Nothing was deleted."),
         })
 
 

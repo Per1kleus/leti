@@ -57,8 +57,10 @@ def test_the_new_tools_are_registered_like_any_other(registry):
 
 
 def test_nothing_that_existed_before_was_removed(registry):
-    """111 = the 103 that were there plus these eight. Nothing was traded away."""
-    assert len(registry.names()) == 111
+    """Nothing is traded away when something is added. The count only goes up:
+    103 originally, 111 with the task and workflow tools, 119 with watches and the
+    controlled GUI mode."""
+    assert len(registry.names()) >= 119, f"the registry lost tools: {len(registry.names())}"
     for existing in ("read_file", "send_email", "run_shell_command", "web_search",
                      "create_scheduled_task", "read_screen", "kill_process"):
         assert registry.get(existing) is not None, f"{existing} disappeared"

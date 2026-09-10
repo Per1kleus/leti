@@ -331,6 +331,40 @@ tools:
   run_workflow:
     action: execute
 
+  # --- Watches ---
+  # A watch only ever OBSERVES. Whatever it decides to do about what it saw goes
+  # back through the orchestrator as a task, and is authorised there call by call -
+  # detecting an email arriving is not permission to reply to it.
+  create_watch:
+    action: modify
+
+  list_watches:
+    action: read
+
+  manage_watch:
+    action: modify
+
+  check_watches:
+    action: read
+
+  # --- Controlled GUI mode ---
+  # These three decide the approach, check the screen and close a session. None of
+  # them moves the mouse or types: that is mouse_click, keyboard_type and
+  # focus_window, which keep their own action classes below. Driving the GUI is
+  # therefore governed by the same rules as the equivalent tool, which is what
+  # stops it becoming a way around them.
+  choose_computer_approach:
+    action: read
+
+  verify_screen:
+    action: read
+
+  end_computer_session:
+    action: read
+
+  archive_project:
+    action: modify
+
   # --- Business intelligence ---
   business_dashboard:
     action: read

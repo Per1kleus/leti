@@ -47,13 +47,17 @@ ollama:
   # warning at startup if this number stops being big enough again, so the next
   # time it happens it says so instead of looking like a stupid model.
   #
-  # 24576 leaves ~7,000 tokens for the system prompt, personality, user profile,
-  # recalled memories, the rolling conversation buffer and accumulated tool
-  # results. Don't go below ~20480 while the tool list is this size. Raising it
+  # Raised from 24576 to 28672 when the tool count went 103 -> 119 (watches and
+  # the controlled GUI mode): 119 schemas are ~18,900 tokens, and 24576 no longer
+  # left enough behind them. This leaves ~9,700 for the system prompt,
+  # personality, user profile, recalled memories, the rolling conversation buffer
+  # and accumulated tool results. Don't go below ~24576 while the list is this
+  # size. On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
+  # (1.31 -> 1.53 GiB), which still leaves roughly 4 GiB spare. Raising it
   # costs VRAM for the KV cache whether or not a turn uses it - see the model
   # note above, and README's Windows section for halving that cost with
   # OLLAMA_KV_CACHE_TYPE.
-  num_ctx: 24576
+  num_ctx: 28672
   max_tool_iterations: 8          # cap on chained tool calls per user turn
 
 stt:

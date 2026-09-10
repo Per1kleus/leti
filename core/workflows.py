@@ -79,7 +79,7 @@ def get_workflow(workflow_id: str) -> Optional[Dict[str, Any]]:
 def build(name: str, steps: List[Any], trigger: str = TRIGGER_MANUAL,
           schedule: Optional[Dict[str, Any]] = None,
           conditions: Optional[List[str]] = None,
-          description: str = "") -> Dict[str, Any]:
+          description: str = "", project: str = "") -> Dict[str, Any]:
     """A workflow record. Draft until it is validated and activated."""
     normalised = []
     for i, step in enumerate(steps or []):
@@ -104,6 +104,7 @@ def build(name: str, steps: List[Any], trigger: str = TRIGGER_MANUAL,
         "id": uuid.uuid4().hex[:12],
         "name": (name or "workflow")[:80],
         "description": description,
+        "project": project or None,
         "trigger": trigger,
         "schedule": schedule or {},
         "conditions": [str(c) for c in (conditions or [])],
@@ -413,6 +414,7 @@ def describe(workflow: Dict[str, Any]) -> Dict[str, Any]:
         "name": workflow.get("name"),
         "when": describe_trigger(workflow),
         "steps": len(workflow.get("steps") or []),
+        "project": workflow.get("project"),
         "enabled": bool(workflow.get("enabled")),
         "activated": bool(workflow.get("activated")),
         "next_run": next_run,

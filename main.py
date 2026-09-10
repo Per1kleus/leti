@@ -106,6 +106,7 @@ from tools.social_login import (
 from tools.weather import GetWeatherTool
 from tools.todo_list import AddTodoItemTool, ListTodoItemsTool, CompleteTodoItemTool, DeleteTodoItemTool
 from tools.projects import (
+    ArchiveProjectTool,
     CreateProjectTool,
     ListProjectsTool,
     OpenProjectTool,
@@ -151,6 +152,11 @@ from tools.autonomous import (
     StartAutonomousTaskTool,
 )
 from tools.autonomous import set_runner as set_task_runner
+from tools.computer_use import (
+    ChooseComputerApproachTool,
+    EndComputerSessionTool,
+    VerifyScreenTool,
+)
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 from tools.workflow_tools import (
@@ -160,6 +166,13 @@ from tools.workflow_tools import (
     ManageWorkflowTool,
     RunWorkflowTool,
 )
+from tools.watch_tools import (
+    CheckWatchesTool,
+    CreateWatchTool,
+    ListWatchesTool,
+    ManageWatchTool,
+)
+from tools.watch_tools import set_runner as set_watch_runner
 from tools.workflow_tools import set_context as set_workflow_context
 
 logging.basicConfig(
@@ -350,6 +363,20 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ListWorkflowsTool())
     registry.register(ManageWorkflowTool())
     registry.register(RunWorkflowTool())
+
+    # Watching something and acting when it changes, on the existing scheduler.
+    registry.register(CreateWatchTool())
+    registry.register(ListWatchesTool())
+    registry.register(ManageWatchTool())
+    registry.register(CheckWatchesTool())
+
+    # The controlled GUI mode. These choose the layer and verify the screen; the
+    # clicking is still mouse_click, keyboard_type and the rest.
+    registry.register(ChooseComputerApproachTool())
+    registry.register(VerifyScreenTool())
+    registry.register(EndComputerSessionTool())
+
+    registry.register(ArchiveProjectTool())
 
     _warn_if_context_is_too_small(registry)
     return registry
@@ -605,6 +632,7 @@ async def build_app(start_scheduler: bool = True):
     task_runner = TaskRunner(orchestrator, safety_guard=safety_guard, notify=notify_failure)
     set_task_runner(task_runner)
     set_workflow_context(registry=tool_registry, runner=task_runner)
+    set_watch_runner(task_runner)
 
     # A task that was mid-step when Leti last closed is marked paused rather than
     # resumed: nothing can know whether that step's side effects happened.

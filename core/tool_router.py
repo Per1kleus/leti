@@ -69,6 +69,7 @@ at back be because been before being below between both but by can could did do
 does doing done down during each either else even every few for from further get
 gets give go going had has have having he her here hers him his how i if in into
 is it its itself just let like make many may me might more most much must my need
+new old
 needs no nor not now of off on once one only or other others ought our out over
 own per please put same say see she should since so some something such take tell
 than that the their them then there these they thing things this those though
@@ -87,7 +88,7 @@ _WORD = re.compile(r"[a-z0-9]+")
 CATEGORIES: Dict[str, List[str]] = {
     "files":         ["tools.file_manager", "tools.backup_restore"],
     "system":        ["tools.os_control", "tools.shell_runner", "tools.system_health",
-                      "tools.vision"],
+                      "tools.vision", "tools.computer_use"],
     "security":      ["tools.system_defense", "tools.network_security",
                       "tools.backup_restore"],
     "web":           ["tools.web_search", "tools.browser", "tools.image_search",
@@ -95,7 +96,11 @@ CATEGORIES: Dict[str, List[str]] = {
     "communication": ["tools.email_client", "tools.contacts", "tools.meeting_scheduler"],
     "scheduling":    ["tools.scheduler", "tools.meeting_scheduler", "tools.todo_list",
                       "tools.workflow_tools"],
-    "automation":    ["tools.autonomous", "tools.workflow_tools", "tools.scheduler"],
+    "automation":    ["tools.autonomous", "tools.workflow_tools", "tools.scheduler",
+                      "tools.watch_tools"],
+    "monitoring":    ["tools.watch_tools", "tools.system_health", "tools.network_security"],
+    "gui_control":   ["tools.computer_use", "tools.os_control", "tools.vision",
+                      "tools.browser"],
     "social":        ["tools.social_media", "tools.social_login"],
     "development":   ["tools.coding", "tools.projects"],
     "data":          ["tools.data_analysis", "tools.engineering"],

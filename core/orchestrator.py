@@ -340,7 +340,10 @@ class Orchestrator:
         try:
             active = get_active_project()
             if active:
-                messages.append({"role": "system", "content": project_context(active)})
+                # The request is passed so the file list can be about this turn
+                # rather than the whole folder every time.
+                messages.append({"role": "system",
+                                 "content": project_context(active, request=user_text)})
         except Exception as e:
             logger.warning(f"Failed to load project context (continuing without it): {e}")
 
