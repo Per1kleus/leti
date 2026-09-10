@@ -144,8 +144,23 @@ from tools.scheduler import (
     SchedulerRunner,
     set_runner,
 )
+from core.task_manager import TaskRunner, recover_interrupted
+from tools.autonomous import (
+    ControlAutonomousTaskTool,
+    ListAutonomousTasksTool,
+    StartAutonomousTaskTool,
+)
+from tools.autonomous import set_runner as set_task_runner
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
+from tools.workflow_tools import (
+    ActivateWorkflowTool,
+    CreateWorkflowTool,
+    ListWorkflowsTool,
+    ManageWorkflowTool,
+    RunWorkflowTool,
+)
+from tools.workflow_tools import set_context as set_workflow_context
 
 logging.basicConfig(
     level=logging.INFO,
@@ -323,6 +338,19 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     # the orchestrator's visual_callback (see core/orchestrator.py) when present.
     registry.register(SearchImagesTool())
     registry.register(CreateSketchTool())
+
+    # Long-running objectives and standing routines. These only manage state; the
+    # steps they run go back through this same orchestrator, so tool routing and
+    # the safety guard apply to them exactly as to a typed request.
+    registry.register(StartAutonomousTaskTool())
+    registry.register(ListAutonomousTasksTool())
+    registry.register(ControlAutonomousTaskTool())
+    registry.register(CreateWorkflowTool())
+    registry.register(ActivateWorkflowTool())
+    registry.register(ListWorkflowsTool())
+    registry.register(ManageWorkflowTool())
+    registry.register(RunWorkflowTool())
+
     _warn_if_context_is_too_small(registry)
     return registry
 
@@ -570,6 +598,18 @@ async def build_app(start_scheduler: bool = True):
     set_runner(scheduler)
     if start_scheduler:
         scheduler.start()
+
+    # Long-running tasks run their steps through the same orchestrator, and report
+    # through the same notification path the scheduler already uses. The runner
+    # itself has no loop and no timer: it is idle until a task is started.
+    task_runner = TaskRunner(orchestrator, safety_guard=safety_guard, notify=notify_failure)
+    set_task_runner(task_runner)
+    set_workflow_context(registry=tool_registry, runner=task_runner)
+
+    # A task that was mid-step when Leti last closed is marked paused rather than
+    # resumed: nothing can know whether that step's side effects happened.
+    for interrupted in recover_interrupted():
+        logger.info(f"Task '{interrupted['name']}' was interrupted by a restart; it is paused.")
 
     return llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler
 

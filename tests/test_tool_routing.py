@@ -33,7 +33,10 @@ def registry():
 def test_every_tool_is_still_registered_and_reachable(registry):
     """The router narrows what is SHOWN. Nothing leaves the registry."""
     names = registry.names()
-    assert len(names) == 103, f"the registry changed size: {len(names)}"
+    # A count, so that a tool quietly disappearing is a failing test rather than a
+    # capability nobody notices is gone. It went 103 -> 111 when the autonomous
+    # task and workflow tools were added; it must never go DOWN.
+    assert len(names) >= 111, f"the registry lost tools: {len(names)}"
     for name in names:
         assert registry.get(name) is not None
         assert callable(getattr(registry.get(name), "run", None))

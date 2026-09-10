@@ -297,6 +297,40 @@ tools:
   system_scheduling:
     action: external
 
+  # --- Long-running tasks and workflows ---
+  # These manage state; they never run a tool themselves. Every step they set off
+  # goes back through the orchestrator, so the tools it reaches are authorised
+  # here exactly as they would be for a typed request. That is why starting one is
+  # only a `modify`: it is a plan being written down, not the plan being carried
+  # out, and the carrying out is gated call by call.
+  start_autonomous_task:
+    action: modify
+
+  list_autonomous_tasks:
+    action: read
+
+  control_autonomous_task:
+    action: modify
+
+  # Creating a workflow writes a draft and shows the user a preview. Nothing about
+  # it runs, and nothing is scheduled, until activate_workflow.
+  create_workflow:
+    action: modify
+
+  # Activation is the standing instruction taking effect - after this it can run
+  # while the user is away, which is the same weight as create_scheduled_task.
+  activate_workflow:
+    action: modify
+
+  list_workflows:
+    action: read
+
+  manage_workflow:
+    action: modify
+
+  run_workflow:
+    action: execute
+
   # --- Business intelligence ---
   business_dashboard:
     action: read
