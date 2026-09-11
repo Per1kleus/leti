@@ -44,6 +44,7 @@ SYNC_METHODS = {
     "get_todos", "add_todo_item", "toggle_todo_item", "delete_todo_item", "get_session_messages",
     "list_settings_sections", "get_settings_section", "update_settings_section", "clear_settings_section",
     "get_audio_setup", "set_window_mode",
+    "get_personality", "set_personality", "get_activity",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
@@ -312,6 +313,38 @@ class LetiAPI:
         except KeyError:
             return False
 
+    # ---- Personality. The panel is a view onto tools/personality.py's six dials
+    # and its own store; there is no second set of values and no second file. ----
+
+    def get_personality(self) -> dict:
+        from tools import personality
+
+        return {
+            "dials": personality.PARAM_NAMES,
+            "values": personality.load_values(),
+            "defaults": dict(personality.DEFAULT_PERSONALITY),
+            # Each preset is just six numbers, so the panel can show what one would
+            # change before it is applied rather than after.
+            "presets": personality.UI_PRESETS,
+        }
+
+    def set_personality(self, values: dict) -> dict:
+        """Save the dials. A preset is applied by sending its six values, which is
+        exactly what applying a preset means - see tools/personality.UI_PRESETS."""
+        from tools import personality
+
+        saved = personality.save_values(values or {})
+        return {"values": saved, "description": personality.describe_personality(saved)}
+
+    # ---- The activity feed behind the RT-LOG. Live entries are PUSHED as they
+    # happen (see run_gui_mode); this is only the tail, read once by a client that
+    # connected after some of it had already scrolled past. ----
+
+    def get_activity(self) -> list:
+        from core import diagnostics
+
+        return diagnostics.recent_activity()
+
 
 def _serve_headless(note: str = "", url: str = "") -> None:
     """The browser fallback: open the interface in the default browser, then serve.
@@ -480,11 +513,39 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
     orchestrator.visual_callback = _make_gui_visual_callback(api)
 
+    # The interface's core and its RT-LOG read the state machine that already
+    # exists, through the listener hook that already exists. Nothing new decides
+    # what state Leti is in; this only forwards the transitions the orchestrator
+    # makes anyway, which is why "thinking" and "executing" can be shown at all -
+    # before this, only the reply and voice paths ever said anything.
+    from core import diagnostics
+
+    orchestrator.on_state_change(lambda state: api.push("setHudState", state.value))
+    diagnostics.on_activity(lambda entry: api.push("letiActivity", entry))
+
     # Confirmations go through voice when there IS voice - hands-free is the point
     # of GUI mode, and that's how CLI voice mode behaves. Without a working mic they
     # go to the chat window instead: the alternative was a user sitting in front of
     # a working interface, unable to approve the action they had just asked for.
     from core.confirmation import make_text_confirmation_callback, make_voice_confirmation_callback
+
+    def _logged(callback):
+        """The same confirmation callback, with the RT-LOG told it is waiting.
+
+        Wrapped here rather than inside SafetyGuard or core/confirmation.py: being
+        asked is a fact about this turn that the interface wants to show, and it is
+        not SafetyGuard's business to know an interface exists. The decision, the
+        timeout and the fail-closed behaviour are entirely unchanged - this adds a
+        log line on the way in and passes the answer straight back out.
+        """
+        async def _wrapped(prompt: str) -> bool:
+            diagnostics.record_activity("approval", "Waiting for your approval")
+            answer = await callback(prompt)
+            diagnostics.record_activity(
+                "approval", "Approved" if answer else "Declined")
+            return answer
+
+        return _wrapped
 
     def _use_voice(tts_engine, stt_engine) -> None:
         """Point the reply and confirmation paths at voice, or back at text.
@@ -497,9 +558,10 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         orchestrator.speak_callback = _make_gui_speak_callback(api, tts_engine)
         if tts_engine and stt_engine:
             safety_guard.set_confirmation_callback(
-                make_voice_confirmation_callback(tts_engine, stt_engine))
+                _logged(make_voice_confirmation_callback(tts_engine, stt_engine)))
         else:
-            safety_guard.set_confirmation_callback(make_text_confirmation_callback(api))
+            safety_guard.set_confirmation_callback(
+                _logged(make_text_confirmation_callback(api)))
 
     _use_voice(tts, transcriber)
 

@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
@@ -267,6 +268,16 @@
     font-family:var(--mono); font-size:10px; letter-spacing:1.4px;
     color:var(--ice-dim); text-transform:uppercase; margin-top:4px;
   }
+  /* Time and date, where someone glancing at the machine would look for them. */
+  .clock-row{ margin-bottom:14px; }
+  .clock-time{
+    font-family:var(--mono); font-size:30px; letter-spacing:3px;
+    color:var(--ice); line-height:1;
+  }
+  .clock-date{
+    font-family:var(--mono); font-size:10px; letter-spacing:1.8px;
+    color:var(--ice-dim); text-transform:uppercase; margin-top:6px;
+  }
 
   /* ---------- Stat bars ---------- */
   .stat-row{ margin-bottom:13px; }
@@ -328,7 +339,7 @@
     min-height:0; position:relative;
   }
   .radar{
-    position:relative; flex:1; width:100%;
+    position:relative; flex:1 1 0; width:100%; max-height:560px;
     display:flex; align-items:center; justify-content:center; min-height:0;
     /* The radar is the one thing on this page that redraws continuously. Without
        this, each redraw invalidated a region the browser had to reconcile against
@@ -339,22 +350,67 @@
     contain:paint;
     isolation:isolate;
   }
-  .radar svg{ width:min(100%, 560px); height:100%; max-height:560px; overflow:visible; }
+  /* One square box holding the SVG, the readout and the badge. Without it the
+     readout is positioned against the .radar box while the artwork is positioned
+     against the SVG inside it, and the two stop agreeing the moment the column is
+     taller than the drawing. */
+  .radar-stage{
+    position:relative; height:100%; aspect-ratio:1; max-width:min(100%, 560px);
+  }
+  .radar svg{ width:100%; height:100%; overflow:visible; }
+  /* Below the mark, not over it. The mark is the identity; this is the caption. */
   .radar-core{
-    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    position:absolute; left:50%; top:86%; transform:translate(-50%,-50%);
     text-align:center; pointer-events:none;
   }
   .radar-core .state{
-    font-family:var(--mono); font-size:12px; letter-spacing:3px;
+    font-family:var(--mono); font-size:11px; letter-spacing:3px;
     text-transform:uppercase; line-height:1.5;
   }
   .radar-core .state.idle{ color:var(--cyan); }
   .radar-core .state.listening{ color:var(--cyan); text-shadow:0 0 12px var(--cyan); }
   .radar-core .state.speaking{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
+  .radar-core .state.thinking,
+  .radar-core .state.executing{ color:var(--cyan); text-shadow:0 0 10px rgba(79,227,255,0.55); }
+  .radar-core .state.waiting{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
+  .radar-core .state.completed{ color:var(--cyan); }
+  .radar-core .state.error{ color:#ff7a6b; text-shadow:0 0 12px rgba(255,122,107,0.6); }
   .radar-core .core-label{
-    font-family:var(--mono); font-size:9px; letter-spacing:2.4px;
+    font-family:var(--mono); font-size:8.5px; letter-spacing:2.2px;
     color:var(--ice-dim); text-transform:uppercase; margin-top:3px;
   }
+
+  /* ---------- The mark: a calligraphic L at the centre ----------
+     Drawn as strokes INSIDE the radar's own SVG rather than as an element over
+     it, and not set in a webfont. Two reasons, both measured elsewhere in this
+     file. A separate element laid over the radar sits inside the one box on this
+     page that repaints continuously, so every frame of the core would drag it
+     through rasterisation too; as part of the same drawing it is simply a few
+     more vectors in a paint that was happening anyway. And a font would put the
+     one element the whole screen is built around behind a network request.
+
+     Two weights, the way a pen makes them: a thick downstroke and hairline
+     flourishes, with a wide, very faint copy of the stem for depth. There is no
+     filter and no animation - what changes with Leti's state is stroke colour and
+     opacity, which are transitions that run once and then stop. */
+  .mark-halo{ stroke:var(--cyan); opacity:0.10; transition:stroke .5s ease, opacity .5s ease; }
+  .mark-stem{ stroke:var(--cyan); opacity:0.95; transition:stroke .5s ease, opacity .5s ease; }
+  .mark-hair{ stroke:var(--cyan); opacity:0.62; transition:stroke .5s ease, opacity .5s ease; }
+  #leti-root[data-state="speaking"] .mark-halo,
+  #leti-root[data-state="speaking"] .mark-stem,
+  #leti-root[data-state="speaking"] .mark-hair{ stroke:var(--amber); }
+  #leti-root[data-state="speaking"] .mark-halo{ opacity:0.16; }
+  #leti-root[data-state="listening"] .mark-halo{ opacity:0.20; }
+  #leti-root[data-state="thinking"] .mark-halo,
+  #leti-root[data-state="executing"] .mark-halo{ opacity:0.16; }
+  #leti-root[data-state="waiting"] .mark-halo,
+  #leti-root[data-state="waiting"] .mark-stem,
+  #leti-root[data-state="waiting"] .mark-hair{ stroke:var(--amber); }
+  #leti-root[data-state="error"] .mark-halo,
+  #leti-root[data-state="error"] .mark-stem,
+  #leti-root[data-state="error"] .mark-hair{ stroke:#ff7a6b; }
+  /* 190px of window is not a place for a 90-unit letterform beside a wordmark. */
+  #leti-root.minimized #letiMark{ display:none; }
 
   /* ---------- Centre: waveform + command pill ---------- */
   .command-area{
@@ -378,6 +434,7 @@
     box-shadow:0 0 22px rgba(79,227,255,0.3);
   }
   .command-pill svg{ width:15px; height:15px; flex-shrink:0; }
+  .pill-row{ display:flex; align-items:center; gap:10px; }
   .hud-note{
     font-size:11px; color:var(--ice-dim); text-align:center; max-width:440px;
     line-height:1.5; padding:0 12px;
@@ -395,8 +452,18 @@
               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:62%; }
   .kv-row .v.off{ color:var(--ice-dim); }
   .kv-row .v.warn{ color:var(--amber); }
+  .kv-row .v.plain{ text-transform:none; }
 
-  .control-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px; }
+  /* Five, and exactly five: the interface's own controls. Anything that acts on
+     the WINDOW rather than on Leti (audio setup, minimise, diagnostics, the raw
+     settings file editor) stays in the top bar where it was. */
+  .control-grid{ display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:2px; }
+  .control-cell .glyph{ font-size:17px; line-height:1; }
+  .control-legend{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.2px; color:var(--ice-dim);
+    text-transform:uppercase; text-align:center; margin-top:9px; min-height:12px;
+    transition:color .15s;
+  }
   .control-cell{
     aspect-ratio:1; display:flex; align-items:center; justify-content:center;
     border:1px solid var(--panel-border); background:rgba(4,12,20,0.55);
@@ -466,6 +533,7 @@
     position:fixed; inset:0; right:auto; bottom:auto;
     width:100%; height:100%;
   }
+  html.puck-window .artifact-layer{ display:none !important; }
   /* pywebview moves the window when a drag starts on an element carrying this
      class; without it a frameless window can only be moved by turning on
      easy_drag, which swallows the click that reopens the interface. */
@@ -500,7 +568,14 @@
   #leti-root.minimized > .terminal-bar,
   #leti-root.minimized .col.left,
   #leti-root.minimized .col.right,
+  #leti-root.minimized .artifact-layer,
+  #leti-root.minimized .chat-strip,
   #leti-root.minimized .command-area{ display:none; }
+  /* The transcript moved under the core, so hiding the right column no longer
+     hides it - and the readout goes back to the middle of the circle once the
+     mark it was captioning is gone. */
+  #leti-root.minimized .radar-core{ top:50%; }
+  #leti-root.minimized .radar-stage{ width:100%; height:100%; max-height:none; aspect-ratio:auto; }
   #leti-root.minimized .stage{ display:block; padding:0; overflow:visible; }
   #leti-root.minimized .radar{
     position:fixed; right:22px; bottom:22px; z-index:50;
@@ -653,6 +728,176 @@
   .audio-detail{ font-size:12px; color:var(--ice-dim); margin-top:8px; line-height:1.5; }
   .audio-detail.bad{ color:var(--amber); }
 
+  /* ---------- RT-LOG: what Leti is doing, in words ----------
+     Not a console. Every line comes from a transition something else already
+     made - the agent state machine, the tool router, the task manager, a watch -
+     and arrives pushed, so an idle Leti produces no lines and costs no timer.
+     Bounded to RT_LOG_MAX rows; the oldest is removed as the newest arrives. */
+  .rt-panel{ flex:1; min-height:0; }
+  .rt-inner{
+    overflow-y:auto; flex:1; min-height:0;
+    font-family:var(--mono); font-size:10.5px; line-height:1.7;
+    scrollbar-width:thin; scrollbar-color:var(--cyan-dim) transparent;
+  }
+  .rt-inner::-webkit-scrollbar{ width:5px; }
+  .rt-inner::-webkit-scrollbar-thumb{ background:var(--cyan-dim); }
+  .rt-row{ display:flex; gap:8px; align-items:flex-start; padding:1px 0; }
+  .rt-row .stamp{ color:var(--cyan-dim); flex-shrink:0; }
+  .rt-row .body{ min-width:0; flex:1; color:var(--ice-dim); word-break:break-word; }
+  /* The kind is namespaced (rt-state, rt-task, ...) because it arrives from the
+     backend as a string and lands in a class attribute. Unprefixed, a kind that
+     happened to match another rule in this file - "artifact" did - would style a
+     log row as whatever that rule describes. */
+  .rt-row.rt-state .body{ color:var(--cyan); }
+  .rt-row.rt-task .body, .rt-row.rt-watch .body{ color:var(--ice); }
+  .rt-row.rt-approval .body, .rt-row.rt-error .body{ color:var(--amber); }
+
+  /* ---------- The conversation, kept small on purpose ----------
+     Leti is spoken to. The transcript is the supporting view, so it sits under
+     the core as a short strip and expands to a reading size on request - the
+     same panel and the same renderer at two sizes, never a second transcript. */
+  .chat-strip{ width:100%; flex:0 0 132px; height:132px; margin-top:4px; }
+  .chat-strip .panel-head{ padding-bottom:7px; margin-bottom:8px; }
+  .head-btn{
+    display:flex; align-items:center; justify-content:center;
+    width:22px; height:22px; border:1px solid var(--panel-border); cursor:pointer;
+    color:var(--ice-dim); transition:color .15s, border-color .15s, background .15s;
+  }
+  .head-btn:hover{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .head-btn.active{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .head-btn svg{ width:13px; height:13px; }
+
+  /* ---------- Floating artifacts ----------
+     Windows inside this page, not windows from the operating system: a second
+     native window per result would be a browser process per result. The layer
+     itself is inert until something is in it - no children, no hit testing, no
+     paint - and each artifact is created on an event and destroyed when closed.
+     Nothing here runs on a clock. */
+  .artifact-layer{
+    position:fixed; inset:0; z-index:58; pointer-events:none;
+  }
+  .artifact{
+    position:absolute; pointer-events:auto;
+    display:flex; flex-direction:column;
+    background:var(--panel-solid); border:1px solid var(--panel-border);
+    box-shadow:0 18px 60px rgba(0,0,0,0.66);
+    min-width:240px; min-height:150px; max-width:96vw; max-height:92vh;
+  }
+  .artifact::before, .artifact::after{
+    content:''; position:absolute; width:9px; height:9px; pointer-events:none;
+    border:1px solid var(--cyan); opacity:0.8;
+  }
+  .artifact::before{ top:-1px; left:-1px; border-right:0; border-bottom:0; }
+  .artifact::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
+  .artifact.focused{ border-color:var(--cyan-dim); box-shadow:0 18px 60px rgba(0,0,0,0.7), 0 0 22px rgba(79,227,255,0.14); }
+  .artifact-head{
+    display:flex; align-items:center; gap:10px; flex-shrink:0;
+    padding:9px 11px; cursor:grab; user-select:none;
+    border-bottom:1px solid var(--panel-border-soft);
+    background:linear-gradient(180deg, rgba(12,30,45,0.95), rgba(8,20,31,0.9));
+  }
+  .artifact-head:active{ cursor:grabbing; }
+  .artifact-head .who{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:2.2px;
+    color:var(--cyan); text-transform:uppercase; white-space:nowrap;
+  }
+  .artifact-head .name{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:1.4px;
+    color:var(--ice-dim); text-transform:uppercase;
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .artifact-head .shut{
+    color:var(--ice-dim); cursor:pointer; font-size:17px; line-height:1; padding:0 2px;
+  }
+  .artifact-head .shut:hover{ color:var(--amber); }
+  .artifact-body{
+    flex:1; min-height:0; overflow:auto; padding:12px 13px;
+    font-size:12px; color:var(--ice); line-height:1.55;
+    scrollbar-width:thin; scrollbar-color:var(--cyan-dim) transparent;
+  }
+  .artifact-body::-webkit-scrollbar{ width:6px; height:6px; }
+  .artifact-body::-webkit-scrollbar-thumb{ background:var(--cyan-dim); }
+  .artifact-grip{
+    position:absolute; right:0; bottom:0; width:15px; height:15px;
+    cursor:nwse-resize; touch-action:none;
+    background:linear-gradient(135deg, transparent 45%, var(--cyan-dim) 45%, var(--cyan-dim) 58%, transparent 58%);
+  }
+  .artifact table{ border-collapse:collapse; width:100%; font-size:11.5px; }
+  .artifact th, .artifact td{
+    text-align:left; padding:5px 9px 5px 0; border-bottom:1px solid rgba(18,48,68,0.45);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;
+  }
+  .artifact th{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.4px;
+    color:var(--ice-dim); text-transform:uppercase;
+  }
+  .artifact .source{ padding:8px 0; border-bottom:1px solid rgba(18,48,68,0.4); }
+  .artifact .source:last-child{ border-bottom:0; }
+  .artifact .source .t{ color:var(--ice); font-size:12.5px; }
+  .artifact .source .d{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.2px;
+    color:var(--cyan-dim); text-transform:uppercase; margin-top:2px;
+  }
+  .artifact .source .s{ color:var(--ice-dim); font-size:11.5px; margin-top:4px; line-height:1.5; }
+  .artifact .doc{ white-space:pre-wrap; font-size:12px; line-height:1.62; color:var(--ice); }
+  .artifact .more{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.3px;
+    color:var(--ice-dim); text-transform:uppercase; margin-top:10px;
+  }
+  .artifact .image-grid{ grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); }
+  .artifact .diagram-box{ margin:0; border:0; background:transparent; padding:0; }
+
+  /* ---------- Personality dials ---------- */
+  .dial{ margin-bottom:14px; }
+  .dial-head{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-family:var(--mono); font-size:10px; letter-spacing:1.4px;
+    color:var(--ice-dim); text-transform:uppercase; margin-bottom:6px;
+  }
+  .dial-head .n{ color:var(--ice); }
+  .dial input[type=range]{
+    width:100%; appearance:none; -webkit-appearance:none; height:4px;
+    background:rgba(18,48,68,0.85); outline:none; cursor:pointer;
+  }
+  .dial input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:13px; height:13px; border-radius:50%;
+    background:var(--cyan); box-shadow:0 0 8px rgba(79,227,255,0.6); cursor:pointer;
+  }
+  .dial input[type=range]::-moz-range-thumb{
+    width:13px; height:13px; border:0; border-radius:50%;
+    background:var(--cyan); box-shadow:0 0 8px rgba(79,227,255,0.6); cursor:pointer;
+  }
+  .preset-row{ display:flex; flex-wrap:wrap; gap:7px; margin-bottom:16px; }
+  .preset-row .settings-btn{ flex:0 1 auto; padding:7px 13px; }
+
+  /* ---------- Connections ---------- */
+  .conn-row{
+    display:flex; align-items:center; gap:11px;
+    padding:11px 13px; border:1px solid var(--panel-border); margin-bottom:8px;
+  }
+  .conn-row .label{ flex:1; min-width:0; font-size:13px; color:var(--ice); }
+  .conn-row .status{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.4px; text-transform:uppercase;
+    white-space:nowrap;
+  }
+  .conn-row .status.on{ color:var(--cyan); }
+  .conn-row .status.off{ color:var(--ice-dim); }
+  .conn-row .act{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:1.3px; text-transform:uppercase;
+    color:var(--ice-dim); border:1px solid var(--panel-border); padding:5px 10px;
+    cursor:pointer; background:transparent; transition:all .15s;
+  }
+  .conn-row .act:hover{ color:var(--cyan); border-color:var(--cyan-dim); background:var(--cyan-ghost); }
+  .conn-row .act.danger:hover{ color:var(--amber); border-color:var(--amber); }
+  .settings-note{
+    font-size:11.5px; color:var(--ice-dim); line-height:1.55; margin:-4px 0 14px;
+  }
+  .settings-group{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:1.8px;
+    color:var(--cyan-dim); text-transform:uppercase; margin:18px 0 9px;
+  }
+  .settings-panel.wide{ width:560px; }
+
   /* ---------- Narrow screens: the phone is a first-class client ----------
      The three columns become one scrolling stack, the radar shrinks to a size
      that leaves room for the command pill, and the terminal bar stays put. */
@@ -672,8 +917,8 @@
     .col.right{ grid-area:right; }
     .col{ min-height:auto; }
     .radar{ min-height:min(42vw, 340px); }
-    .radar svg{ max-height:min(42vw, 340px); }
-    .log-panel{ height:340px; flex:none; }
+    .radar-stage{ width:min(100%, min(42vw, 340px)); }
+    .rt-panel{ height:300px; flex:none; }
   }
   @media (max-width: 820px){
     .topbar{ flex-wrap:wrap; gap:12px; padding:12px 16px; }
@@ -683,9 +928,10 @@
       grid-template-columns:minmax(0,1fr); gap:14px; padding:14px 16px 0;
       grid-template-areas:"centre" "left" "right";
     }
-    .radar svg{ max-height:min(58vw, 330px); }
     .radar{ min-height:min(60vw, 350px); }
-    .log-panel{ height:300px; }
+    .radar-stage{ width:min(100%, min(58vw, 330px)); }
+    .rt-panel{ height:260px; }
+    .chat-strip{ height:150px; }
     /* The core readout is HTML over a scaled SVG, so it does not shrink with the
        radar - at phone size it has to be told to. */
     .radar-core .state{ font-size:10px; letter-spacing:2px; }
@@ -717,8 +963,8 @@
         <div class="v"><span class="status-dot" id="statusDot"></span><span id="statusText">STARTING</span></div>
       </div>
       <div class="readout">
-        <div class="k">Local Time</div>
-        <div class="v" id="clockTime">--:--:--</div>
+        <div class="k">Model</div>
+        <div class="v" id="modelChip">-</div>
       </div>
     </div>
 
@@ -734,18 +980,12 @@
           <path d="M9 3v6H3M21 15h-6v6"/><path d="M15 9l6-6M3 21l6-6"/>
         </svg>
       </div>
-      <div class="icon-btn" id="permissionsBtn" title="Permissions - what Leti may do">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
-          <path d="M12 2l7 3v6c0 4.4-3 8.5-7 11-4-2.5-7-6.6-7-11V5l7-3z"/>
-          <path d="M9 12l2 2 4-4"/>
-        </svg>
-      </div>
       <div class="icon-btn" id="diagnosticsBtn" title="Diagnostics - how Leti is running">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>
         </svg>
       </div>
-      <div class="icon-btn" id="settingsBtn" title="Settings">
+      <div class="icon-btn" id="settingsBtn" title="All settings (the raw configuration list)">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -766,17 +1006,20 @@
         <i class="bracket-tr"></i><i class="bracket-bl"></i>
         <div class="panel-head">
           <div>
-            <div class="sys">System //</div>
+            <div class="sys">Local //</div>
             <div class="sub" aria-hidden="true">Environment</div>
           </div>
-          <div class="tag">Local Cond.</div>
+          <div class="tag">Here, now</div>
+        </div>
+        <div class="clock-row">
+          <div class="clock-time" id="clockTime">--:--:--</div>
+          <div class="clock-date" id="clockDate">-</div>
         </div>
         <div class="env-row">
           <div class="env-temp" id="weatherTemp">--<span class="unit">&deg;</span></div>
           <div class="env-meta">
             <div class="env-desc" id="weatherDesc">Loading...</div>
             <div class="env-age" id="weatherAge" hidden></div>
-            <div class="env-date" id="clockDate">-</div>
           </div>
         </div>
       </div>
@@ -820,6 +1063,12 @@
           </div>
           <div class="stat-track"><div class="stat-fill" id="diskFill" style="width:0%"></div></div>
         </div>
+        <!-- Read ONCE, at startup, from the hardware check the first-launch model
+             card already runs - not on the five-second poll above. A graphics card
+             does not change while Leti is open, and asking costs a subprocess. -->
+        <div class="kv-row"><span class="k">GPU</span><span class="v off" id="gpuVal">-</span></div>
+        <div class="kv-row"><span class="k">VRAM</span><span class="v off" id="vramVal">-</span></div>
+        <div class="kv-row"><span class="k">Model</span><span class="v off plain" id="modelVal">-</span></div>
       </div>
 
       <div class="panel task-panel">
@@ -842,6 +1091,7 @@
     <!-- ---------- Centre: radar + command ---------- -->
     <div class="col centre">
       <div class="radar">
+       <div class="radar-stage">
         <svg viewBox="0 0 400 400" aria-hidden="true">
           <!-- Outer dashed ring, turning slowly. Rotated from the same animation
                clock as everything else below - see the comment on tickFrame(). -->
@@ -879,10 +1129,21 @@
                to cut through it. -->
           <circle cx="200" cy="200" r="82" fill="url(#coreBacking)"/>
           <path id="orbPath" fill="rgba(79,227,255,0.09)" stroke="var(--cyan)" stroke-width="1.8"/>
+          <!-- The mark. Drawn over the core so the audio-reactive ring moves
+               behind it. See the .mark-* rules for why it lives in this SVG. -->
+          <g id="letiMark" fill="none" stroke-linecap="round" stroke-linejoin="round"
+             transform="translate(91 118.4) scale(0.865)">
+            <path class="mark-halo" stroke-width="16"
+                  d="M128 36 C116 78, 104 126, 104 156 C106 176, 130 186, 154 176 C170 169, 182 156, 188 144"/>
+            <path class="mark-hair" stroke-width="2"
+                  d="M128 36 C130 18, 112 10, 96 22 C74 38, 76 78, 104 96 C130 112, 150 96, 148 78"/>
+            <path class="mark-stem" stroke-width="6.5"
+                  d="M128 36 C116 78, 104 126, 104 156 C106 176, 130 186, 154 176 C170 169, 182 156, 188 144"/>
+          </g>
           <!-- Bracket frame around the core readout. -->
-          <g fill="none" stroke="var(--cyan)" stroke-width="1.4" opacity="0.8">
-            <path d="M164 178 v-10 h10"/><path d="M236 178 v-10 h-10"/>
-            <path d="M164 222 v10 h10"/><path d="M236 222 v10 h-10"/>
+          <g fill="none" stroke="var(--cyan)" stroke-width="1.4" opacity="0.7">
+            <path d="M122 138 v-20 h20"/><path d="M278 138 v-20 h-20"/>
+            <path d="M122 262 v20 h20"/><path d="M278 262 v20 h-20"/>
           </g>
           <defs>
             <radialGradient id="coreBacking">
@@ -899,9 +1160,10 @@
         <div class="radar-core">
           <div class="puck-name">LETI</div>
           <div class="state idle" id="stateLabel">IDLE</div>
-          <div class="core-label">Core Active</div>
+          <div class="core-label">Say "Hey Leti"</div>
         </div>
         <div class="puck-badge" id="puckBadge" hidden>0</div>
+       </div>
       </div>
 
       <div class="command-area">
@@ -909,70 +1171,106 @@
           <path id="waveformPath" fill="none" stroke="var(--cyan)" stroke-width="3"
                 stroke-linecap="round" opacity="0.85"/>
         </svg>
-        <button class="command-pill" id="micBtn">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
-          </svg>
-          <span id="micBtnLabel">Awaiting Command...</span>
-        </button>
-        <div class="hud-note" id="hudNote">Type below, or enable the microphone to make the core react to live audio.</div>
-      </div>
-    </div>
-
-    <!-- ---------- Right: voice status, session log ---------- -->
-    <div class="col right">
-      <div class="panel">
-        <i class="bracket-tr"></i><i class="bracket-bl"></i>
-        <div class="panel-head">
-          <div>
-            <div class="sys">System //</div>
-            <div class="sub" aria-hidden="true">Voice Pipeline</div>
-          </div>
-          <div class="tag">Audio I/O</div>
-        </div>
-        <div class="kv-row"><span class="k">Microphone</span><span class="v off" id="voiceMic">Checking</span></div>
-        <div class="kv-row"><span class="k">Speakers</span><span class="v off" id="voiceSpk">Checking</span></div>
-        <div class="kv-row"><span class="k">Input Device</span><span class="v off" id="voiceDevice">-</span></div>
-        <div class="control-grid">
-          <div class="control-cell" id="simBtn" title="Preview the speaking animation">
+        <div class="pill-row">
+          <button class="command-pill" id="micBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
+            </svg>
+            <span id="micBtnLabel">Awaiting Command...</span>
+          </button>
+          <div class="head-btn" id="simBtn" title="Preview the speaking animation">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <path d="M2 12h3l2-7 4 14 3-9 2 4h6"/>
             </svg>
           </div>
-          <div class="control-cell" id="audioSetupBtn" title="Microphone &amp; speaker setup">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/>
-              <path d="M1 14h6M9 8h6M17 16h6"/>
-            </svg>
-          </div>
-          <div class="control-cell" id="historyBtn" title="Expand the session log">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-          </div>
-          <div class="control-cell" id="settingsCellBtn" title="Settings">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>
-            </svg>
-          </div>
         </div>
+        <div class="hud-note" id="hudNote">Leti listens for her name. Typing below works too.</div>
       </div>
 
-      <div class="panel log-panel" id="sessionPanel">
+      <!-- The transcript: supporting, not dominant. Same panel and same renderer
+           as the expanded view - see #leti-root.log-expanded .log-panel. -->
+      <div class="panel log-panel chat-strip" id="sessionPanel">
         <i class="bracket-tr"></i><i class="bracket-bl"></i>
         <div class="panel-head">
           <div>
-            <div class="sys">System //</div>
-            <div class="sub" aria-hidden="true">Session Log</div>
+            <div class="sys">Session //</div>
           </div>
-          <div class="tag">RT-Log</div>
+          <div class="head-btn" id="historyBtn" title="Expand the conversation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+            </svg>
+          </div>
         </div>
         <div class="session-panel-inner" id="sessionPanelInner">
           <div class="session-panel-title">Current Session</div>
           <div class="msg system" id="emptyHint"><span class="stamp">[--:--:--]</span><span class="body">Awaiting user input ...</span></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ---------- Right: the five controls, and what Leti is doing ---------- -->
+    <div class="col right">
+      <div class="panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">Control //</div>
+            <div class="sub" aria-hidden="true">Console</div>
+          </div>
+          <div class="tag">Leti</div>
+        </div>
+        <div class="control-grid">
+          <div class="control-cell" id="connectionsBtn" data-legend="Connections"
+               title="Connections - email, calendar, and the rest">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="10" width="16" height="10" rx="2"/>
+              <path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="aiSettingsBtn" data-legend="AI"
+               title="AI settings - models, context, routing">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="8" y="8" width="8" height="8" rx="1"/>
+              <path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="voiceSettingsBtn" data-legend="Voice"
+               title="Voice settings - microphone, wake word, speech">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="personalityBtn" data-legend="Manner"
+               title="Personality - how Leti speaks to you">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 18V9a3 3 0 0 1 6 0v9"/>
+              <path d="M5 13a7 7 0 0 1 14 0"/>
+              <path d="M7 18v1a2 2 0 0 0 2 2M17 18v1a2 2 0 0 1-2 2"/>
+            </svg>
+          </div>
+          <div class="control-cell" id="permissionsBtn" data-legend="Permits"
+               title="Permissions - what Leti may do on its own">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2l7 3v6c0 4.4-3 8.5-7 11-4-2.5-7-6.6-7-11V5l7-3z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </div>
+        </div>
+        <div class="control-legend" id="controlLegend">&nbsp;</div>
+      </div>
+
+      <div class="panel rt-panel">
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">Activity //</div>
+            <div class="sub" aria-hidden="true">Real Time</div>
+          </div>
+          <div class="tag">RT-Log</div>
+        </div>
+        <div class="rt-inner" id="rtLogInner"></div>
       </div>
     </div>
   </div>
@@ -983,6 +1281,10 @@
     <input type="text" class="chat-input" id="chatInput" placeholder="Type to Leti..." autocomplete="off" />
     <button class="send-btn" id="sendBtn">Send</button>
   </div>
+
+  <!-- Floating artifacts live here. Empty until Leti has something worth
+       showing, and emptied again as each one is closed. -->
+  <div class="artifact-layer" id="artifactLayer"></div>
 
   <div class="lightbox" id="lightbox">
     <img id="lightboxImg" src="" alt="" />
@@ -996,7 +1298,7 @@
   </div>
 
   <div class="settings-overlay" id="permissionsOverlay">
-    <div class="settings-panel">
+    <div class="settings-panel wide">
       <div class="settings-close" id="permissionsClose">&times;</div>
       <div class="settings-panel-title">What Leti may do</div>
       <div id="permissionsContent"></div>
@@ -1016,6 +1318,38 @@
       <div class="settings-close" id="modelClose">&times;</div>
       <div class="settings-panel-title">Choosing a model for this computer</div>
       <div id="modelContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="connectionsOverlay">
+    <div class="settings-panel wide">
+      <div class="settings-close" id="connectionsClose">&times;</div>
+      <div class="settings-panel-title">Connections</div>
+      <div id="connectionsContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="aiOverlay">
+    <div class="settings-panel wide">
+      <div class="settings-close" id="aiClose">&times;</div>
+      <div class="settings-panel-title">AI settings</div>
+      <div id="aiContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="voiceOverlay">
+    <div class="settings-panel wide">
+      <div class="settings-close" id="voiceClose">&times;</div>
+      <div class="settings-panel-title">Voice</div>
+      <div id="voiceContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="personalityOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="personalityClose">&times;</div>
+      <div class="settings-panel-title">Personality</div>
+      <div id="personalityContent"></div>
     </div>
   </div>
 
@@ -1039,6 +1373,7 @@
   // Functions the backend is allowed to invoke via a 'push' message.
   const PUSH_HANDLERS = new Set([
     'appendLetiReply', 'appendUserMessage', 'setHudState', 'focusChatInput', 'showVisual',
+    'letiActivity',
   ]);
 
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1563,19 +1898,39 @@
     if(document.hidden) stopAnimation(); else startAnimation();
   });
 
-  const PILL_LABEL = {
-    idle: 'Awaiting Command...',
-    listening: 'Listening...',
-    speaking: 'Responding...',
+  // Two different things used to share one name. `mode` is what the ANIMATION is
+  // doing - idle, following a microphone, or following speech - and it is what
+  // decides the redraw rate, so it has exactly three values and always will.
+  // What Leti is doing is a longer list, and every extra entry here is a label
+  // and a colour, not a fourth way to draw the core. That distinction is what
+  // lets "thinking", "executing" and "waiting for approval" appear on screen
+  // without any of them costing a frame more than sitting idle does.
+  const STATES = {
+    idle:      { anim:'idle',      label:'IDLE',       pill:'Awaiting Command...' },
+    listening: { anim:'listening', label:'LISTENING',  pill:'Listening...' },
+    thinking:  { anim:'idle',      label:'THINKING',   pill:'Thinking...' },
+    executing: { anim:'idle',      label:'EXECUTING',  pill:'Working on it...' },
+    speaking:  { anim:'speaking',  label:'SPEAKING',   pill:'Responding...' },
+    waiting:   { anim:'idle',      label:'YOUR TURN',  pill:'Waiting for you...' },
+    completed: { anim:'idle',      label:'COMPLETE',   pill:'Done' },
+    error:     { anim:'idle',      label:'ERROR',      pill:'Something went wrong' },
   };
+  let displayState = 'idle';
 
-  function setMode(newMode){
-    if(!PILL_LABEL[newMode]) newMode = 'idle';
+  function setMode(newState){
+    const spec = STATES[newState] || STATES.idle;
+    if(!STATES[newState]) newState = 'idle';
+    displayState = newState;
+    const newMode = spec.anim;
     mode = newMode;
-    stateLabel.textContent = newMode.toUpperCase();
-    stateLabel.className = 'state ' + newMode;
-    micBtnLabel.textContent = PILL_LABEL[newMode];
-    micBtn.classList.toggle('active', newMode !== 'idle');
+    stateLabel.textContent = spec.label;
+    stateLabel.className = 'state ' + newState;
+    // One attribute write per transition drives every colour the mark, the
+    // readout and the glow take - all of them plain CSS transitions that run
+    // once and then stop.
+    root.setAttribute('data-state', newState);
+    micBtnLabel.textContent = spec.pill;
+    micBtn.classList.toggle('active', newState !== 'idle');
     // Coming out of idle, don't wait out the idle timer before going full rate.
     if(running && newMode !== 'idle' && idleTimer){
       clearTimeout(idleTimer);
@@ -1587,7 +1942,7 @@
   }
 
   micBtn.onclick = async () => {
-    if(mode === 'listening'){
+    if(displayState === 'listening'){
       setMode('idle');   // also resets the pill's label and highlight
       return;
     }
@@ -1619,11 +1974,57 @@
     }, 4000);
   };
 
-  document.getElementById('settingsCellBtn').onclick = () => openSettingsModal();
   document.getElementById('settingsBtn').onclick = () => openSettingsModal();
 
   setMode('idle');
   startAnimation();
+
+  // ---------- RT-LOG ----------
+  // What Leti is doing, in the words a person would use. Every line is PUSHED by
+  // something that was happening anyway - a state transition, a routing decision,
+  // a finished tool, a task changing status, a watch firing, a confirmation being
+  // asked for. There is no timer here and nothing is polled: an idle Leti adds no
+  // lines and costs nothing at all. The list is capped, oldest out first, so a
+  // window left open for a week holds the same fifty rows it held on day one.
+  const RT_LOG_MAX = 50;
+  const rtLogInner = document.getElementById('rtLogInner');
+
+  function rtLog(kind, text){
+    const row = document.createElement('div');
+    // Namespaced and filtered: the kind is a string from the backend, and this is
+    // the one place in this file where such a string reaches a class attribute.
+    row.className = 'rt-row rt-' + String(kind || 'note').replace(/[^a-z]/gi, '');
+    const time = document.createElement('span');
+    time.className = 'stamp';
+    time.textContent = stamp();
+    const body = document.createElement('span');
+    body.className = 'body';
+    body.textContent = text;
+    row.appendChild(time); row.appendChild(body);
+    rtLogInner.appendChild(row);
+    while(rtLogInner.childElementCount > RT_LOG_MAX) rtLogInner.removeChild(rtLogInner.firstChild);
+    rtLogInner.scrollTop = rtLogInner.scrollHeight;
+  }
+
+  // The agent state machine's own vocabulary, said plainly. A state that repeats
+  // is not logged twice - the orchestrator passes through THINKING several times
+  // in one turn, and a log that says so six times is noise, not information.
+  const STATE_LINE = {
+    idle: 'Awaiting input...',
+    listening: 'Listening...',
+    thinking: 'Thinking...',
+    executing: 'Running a tool',
+    speaking: 'Responding',
+    waiting: 'Waiting for your approval',
+    completed: 'Task completed',
+    error: 'Something went wrong',
+  };
+  let lastLoggedState = null;
+
+  window.letiActivity = function(entry){
+    if(!entry || !entry.message) return;
+    rtLog(entry.kind, entry.message);
+  };
 
   // ---------- Bottom chat input + session panel ----------
   const sessionPanel = document.getElementById('sessionPanel');
@@ -1709,6 +2110,13 @@
     messages.forEach(m => appendSessionMessage(m.role === 'assistant' ? 'leti' : 'user', m.content, true));
   }).catch(() => {});
 
+  // The tail of the activity ring, for a client that opened after some of it
+  // happened. Read once, at load; everything after this arrives pushed.
+  callApi('get_activity').then(entries => {
+    (entries || []).forEach(e => rtLog(e.kind, e.message));
+    if(!entries || !entries.length) rtLog('state', 'Awaiting input...');
+  }).catch(() => {});
+
   // ---------- Functions the server pushes calls into (see the WebSocket 'push' handler above) ----------
   window.appendLetiReply = function(text){
     appendSessionMessage('leti', text);
@@ -1716,7 +2124,16 @@
     if(minimized){ unseen += 1; renderUnseen(); }
   };
   window.appendUserMessage = function(text){ appendSessionMessage('user', text); };
-  window.setHudState = function(state){ setMode(state); };
+  window.setHudState = function(state){
+    setMode(state);
+    // The RT-LOG gets the same transition, once. Repeats are dropped: one turn
+    // passes through THINKING several times and saying so each time is noise.
+    const line = STATE_LINE[state];
+    if(line && state !== lastLoggedState){
+      lastLoggedState = state;
+      rtLog('state', line);
+    }
+  };
   window.focusChatInput = function(){ chatInput.focus(); };
 
   // ---------- Minimised mode ----------
@@ -1930,37 +2347,41 @@
     if(e.target === audioOverlay && !audioState.firstRun) audioOverlay.classList.remove('open');
   });
   document.getElementById('audioBtn').onclick = () => openAudioSetup(false);
-  document.getElementById('audioSetupBtn').onclick = () => openAudioSetup(false);
 
-  // The Voice Pipeline panel reads the same saved answer the card writes, so what
-  // it shows is the state the backend will actually use - not a separate notion
-  // of it. Refreshed after every save rather than polled.
+  // What the backend will actually use, read from the same saved answer the setup
+  // card writes - not a second notion of it. Held here so the Voice panel and the
+  // note under the core both read one value, and refreshed after a save rather
+  // than polled.
+  let voiceInfo = null;
+
+  function describeVoice(info){
+    if(!info || !info.configured) return { mic:'Not set up', cls:'warn', device:'-', speakers:'Not set up' };
+    const saved = info.setup || {};
+    const m = saved.microphone || {}, k = saved.speakers || {};
+    // "Allowed but unverified" is its own answer: the microphone opened during
+    // setup and no sound arrived. Reporting that as ON would be the same lie the
+    // level check exists to catch. And voice_active is about THIS session:
+    // permitted is not the same as running.
+    let mic = !m.allowed ? 'Off' : (m.verified ? (info.voice_active ? 'Listening' : 'Ready \u00b7 idle') : 'No signal');
+    return {
+      mic,
+      cls: !m.allowed ? 'off' : (m.verified ? '' : 'warn'),
+      device: m.device_name || (m.allowed ? 'System default' : '-'),
+      speakers: k.allowed ? 'Ready' : 'Off',
+      allowed: !!m.allowed,
+    };
+  }
+
   function refreshVoiceStatus(){
     callApi('get_audio_setup').then(info => {
-      const mic = document.getElementById('voiceMic');
-      const spk = document.getElementById('voiceSpk');
-      const dev = document.getElementById('voiceDevice');
-      if(!info.configured){
-        mic.textContent = 'Not set up'; mic.className = 'v warn';
-        spk.textContent = 'Not set up'; spk.className = 'v warn';
-        dev.textContent = '-';          dev.className = 'v off';
-        return;
-      }
-      const saved = info.setup || {};
-      const m = saved.microphone || {}, k = saved.speakers || {};
-      // "Allowed but unverified" is its own answer: the microphone opened during
-      // setup and no sound arrived. Reporting that as ON would be the same lie
-      // the level check exists to catch.
-      mic.textContent = !m.allowed ? 'Off' : (m.verified ? 'Ready' : 'No signal');
-      mic.className = 'v ' + (!m.allowed ? 'off' : (m.verified ? '' : 'warn'));
-      spk.textContent = k.allowed ? 'Ready' : 'Off';
-      spk.className = 'v ' + (k.allowed ? '' : 'off');
-      dev.textContent = m.device_name || (m.allowed ? 'System default' : '-');
-      dev.className = 'v ' + (m.allowed ? '' : 'off');
-      // voice_active is about THIS session: permitted is not the same as running.
-      if(m.allowed && !info.voice_active){
-        mic.textContent = m.verified ? 'Ready · idle' : 'No signal';
-      }
+      voiceInfo = info;
+      const seen = describeVoice(info);
+      const label = document.querySelector('.radar-core .core-label');
+      if(label) label.textContent = seen.allowed ? 'Say \u201cHey Leti\u201d' : 'Voice is off';
+      hudNote.textContent = seen.allowed
+        ? 'Speak to Leti, or type below.'
+        : 'Voice is off \u2014 open Voice settings to turn the microphone on, or type below.';
+      if(voiceOverlay.classList.contains('open')) renderVoicePanel();
     }).catch(() => {});
   }
   refreshVoiceStatus();
@@ -2171,59 +2592,120 @@
   });
 
   const LEVEL_LABEL = { allowed: 'Automatic', asks: 'Asks first', blocked: 'Not allowed' };
+  const CLASS_BLURB = {
+    read: 'Looking at things - files, the screen, the web, your calendar.',
+    execute: 'Running something that does not change anything: a command, a search, a check.',
+    modify: 'Changing this computer - writing or deleting files, changing settings.',
+    external: 'Acting in the world on your behalf - sending mail, posting, placing an order.',
+    critical: 'Things that cannot be undone. These always ask, and that cannot be switched off.',
+  };
 
+  function permRow(label, value, cls){
+    const row = document.createElement('div');
+    row.className = 'kv-row';
+    const k = document.createElement('span');
+    k.className = 'k'; k.textContent = label;
+    const v = document.createElement('span');
+    v.className = 'v ' + (cls || ''); v.textContent = value;
+    row.appendChild(k); row.appendChild(v);
+    return row;
+  }
+
+  function groupTitle(text){
+    const el = document.createElement('div');
+    el.className = 'settings-group';
+    el.textContent = text;
+    return el;
+  }
+
+  // Built as nodes, not markup: every string here (a tool name, an action, an
+  // explanation) comes from the permissions file, and this file sets text
+  // everywhere else for the same reason.
   function renderPermissions(data){
-    let html = '<div class="audio-intro">' + (data.note || '') + '</div>';
+    permissionsContent.replaceChildren();
+    const intro = document.createElement('div');
+    intro.className = 'settings-note';
+    intro.textContent = data.note || '';
+    permissionsContent.appendChild(intro);
+
     (data.categories || []).forEach(cat => {
-      html += '<div class="panel-head" style="margin-top:14px"><div>' +
-              '<div class="sys">' + cat.category + '</div></div>' +
-              '<div class="tag">' + (LEVEL_LABEL[cat.level] || cat.level) + '</div></div>';
-      html += '<div class="audio-detail">' + cat.blurb + '</div>';
+      permissionsContent.appendChild(groupTitle(cat.category + ' \u00b7 ' +
+        (LEVEL_LABEL[cat.level] || cat.level)));
+      const blurb = document.createElement('div');
+      blurb.className = 'settings-note';
+      blurb.textContent = cat.blurb || '';
+      permissionsContent.appendChild(blurb);
       (cat.actions || []).forEach(act => {
-        html += '<div class="kv-row"><span class="k">' + act.action + '</span>' +
-                '<span class="v' + (act.level === 'asks' ? ' warn' : '') + '">' +
-                (LEVEL_LABEL[act.level] || act.level) + '</span></div>';
-        html += '<div class="audio-detail" title="' + (act.tools || []).join(', ') + '">' +
-                act.explanation + ' <span style="opacity:.55">(' +
-                (act.tools || []).length + ' tool' +
-                ((act.tools || []).length === 1 ? '' : 's') + ')</span></div>';
+        const row = document.createElement('div');
+        row.className = 'conn-row';
+        const label = document.createElement('span');
+        label.className = 'label';
+        const name = document.createElement('div');
+        name.textContent = act.action;
+        const why = document.createElement('div');
+        why.className = 'settings-note';
+        why.style.margin = '3px 0 0';
+        const count = (act.tools || []).length;
+        why.textContent = act.explanation + ' (' + count + (count === 1 ? ' tool)' : ' tools)');
+        why.title = (act.tools || []).join(', ');
+        label.appendChild(name); label.appendChild(why);
+        const status = document.createElement('span');
+        status.className = 'status ' + (act.level === 'asks' ? 'off' : 'on');
+        status.textContent = LEVEL_LABEL[act.level] || act.level;
+        row.appendChild(label); row.appendChild(status);
+        permissionsContent.appendChild(row);
       });
     });
 
-    html += '<div class="panel-head" style="margin-top:16px"><div>' +
-            '<div class="sys">Confirmation</div></div></div>';
-    html += '<div class="audio-detail">Which kinds of action stop and ask you first. ' +
-            'Irreversible actions always ask.</div>';
+    permissionsContent.appendChild(groupTitle('When Leti stops to ask'));
+    const note = document.createElement('div');
+    note.className = 'settings-note';
+    note.textContent = 'These are the classes SafetyGuard checks before it runs anything. '
+      + 'This panel does not decide anything itself - it changes the one setting the '
+      + 'guard reads, so what you see here is what will actually happen.';
+    permissionsContent.appendChild(note);
+
+    const status = document.createElement('div');
+    status.className = 'settings-note';
+
     (data.all_classes || []).forEach(cls => {
       const on = (data.confirming_classes || []).indexOf(cls) >= 0;
       const locked = cls === 'critical';
-      html += '<div class="kv-row"><span class="k">' + cls + '</span>' +
-              '<span class="v' + (on ? ' warn' : '') + '">' +
-              (on ? 'asks' : 'automatic') +
-              (locked ? ' (always)' : '') + '</span></div>';
+      const row = document.createElement('div');
+      row.className = 'conn-row';
+      const label = document.createElement('span');
+      label.className = 'label';
+      const name = document.createElement('div');
+      name.textContent = cls.charAt(0).toUpperCase() + cls.slice(1);
+      const why = document.createElement('div');
+      why.className = 'settings-note';
+      why.style.margin = '3px 0 0';
+      why.textContent = CLASS_BLURB[cls] || '';
+      label.appendChild(name); label.appendChild(why);
+      const state = document.createElement('span');
+      state.className = 'status ' + (on ? 'off' : 'on');
+      state.textContent = on ? (locked ? 'Always asks' : 'Asks first') : 'Automatic';
+      row.appendChild(label); row.appendChild(state);
       if(!locked){
-        html += '<div class="audio-detail"><button class="settings-btn" ' +
-                'data-class="' + cls + '" data-confirm="' + (on ? 'false' : 'true') + '">' +
-                (on ? 'Stop asking for ' + cls : 'Ask before ' + cls) + '</button></div>';
+        const toggle = document.createElement('button');
+        toggle.className = 'act' + (on ? '' : ' danger');
+        toggle.textContent = on ? 'Stop asking' : 'Ask first';
+        toggle.onclick = async () => {
+          toggle.disabled = true;
+          status.textContent = 'Saving\u2026';
+          try {
+            await callApi('set_permission', cls, !on);
+            await openPermissions();
+          } catch(e){
+            toggle.disabled = false;
+            status.textContent = 'Could not change that: ' + e.message;
+          }
+        };
+        row.appendChild(toggle);
       }
+      permissionsContent.appendChild(row);
     });
-    html += '<div class="audio-detail" id="permissionsNote"></div>';
-    permissionsContent.innerHTML = html;
-
-    permissionsContent.querySelectorAll('button[data-class]').forEach(btn => {
-      btn.onclick = async () => {
-        const note = document.getElementById('permissionsNote');
-        btn.disabled = true;
-        note.textContent = 'Saving\u2026';
-        try {
-          await callApi('set_permission', btn.dataset.class, btn.dataset.confirm === 'true');
-          await openPermissions();
-        } catch(e){
-          btn.disabled = false;
-          note.innerHTML = '<span class="settings-error">' + e.message + '</span>';
-        }
-      };
-    });
+    permissionsContent.appendChild(status);
   }
 
   async function openPermissions(){
@@ -2454,11 +2936,40 @@
       (detail ? '<div class="audio-detail" style="margin-top:6px">' + detail + '</div>' : '');
   }
 
+  // The graphics card, its memory and the configured model, shown in the left
+  // column. Read from the hardware check the first-launch card already runs -
+  // ONE call, at startup, not on the five-second poll: a GPU does not change
+  // while Leti is open, and asking costs a subprocess. If the check can't read
+  // something, the row says so rather than showing a plausible number.
+  function showEnvironment(state){
+    const hw = (state && state.hardware) || {};
+    const rec = (state && state.recommendation) || {};
+    const gpu = document.getElementById('gpuVal');
+    const vram = document.getElementById('vramVal');
+    const model = document.getElementById('modelVal');
+    const chip = document.getElementById('modelChip');
+    if(hw.gpu && hw.gpu.name){
+      gpu.textContent = hw.gpu.name;
+      gpu.className = 'v';
+      vram.textContent = hw.gpu.vram_gib + ' GiB';
+      vram.className = 'v';
+    } else {
+      gpu.textContent = hw.ok ? 'None detected' : 'Unavailable';
+      vram.textContent = 'Unavailable';
+    }
+    if(rec.current){
+      model.textContent = rec.current;
+      model.className = 'v';
+      chip.textContent = rec.current;
+    }
+  }
+
   (async function askAboutModelsOnFirstRun(){
     if(IS_PUCK_WINDOW) return;
     let state;
     try { state = await callApi('get_model_setup'); }
     catch(e){ return; }                   // never block the interface on this
+    showEnvironment(state);
     if(!state || state.configured) return;
     if(minimized) await restore();
     modelOverlay.classList.add('open');
@@ -2515,7 +3026,17 @@
   }
 
   function renderSettingsForm(name){
+    renderSectionForm(settingsContent, name, 'Back to settings', renderSettingsList,
+                      () => settingsOverlay.classList.remove('open'));
+  }
+
+  // One form builder for every panel that edits configuration: the Connections
+  // manager, AI settings and Voice settings all render THIS, against the same
+  // core/settings_editor.py schema and the same save path. A second builder would
+  // be a second place for a secret to be echoed back by accident.
+  function renderSectionForm(container, name, backLabel, onBack, onSaved){
     callApi('get_settings_section', name).then(section => {
+      const settingsContent = container;
       if(section.error){
         // textContent, not innerHTML - the rest of this file builds nodes and sets
         // text, and this was the one place a value was interpolated into markup.
@@ -2530,8 +3051,8 @@
 
       const back = document.createElement('div');
       back.className = 'settings-back';
-      back.textContent = '‹ Back to settings';
-      back.onclick = renderSettingsList;
+      back.textContent = '\u2039 ' + backLabel;
+      back.onclick = onBack;
       settingsContent.appendChild(back);
 
       const title = document.createElement('div');
@@ -2584,7 +3105,7 @@
             }
             err.textContent = result.error;
           } else {
-            settingsOverlay.classList.remove('open');
+            onSaved();
           }
         });
       };
@@ -2593,37 +3114,13 @@
       clearBtn.className = 'settings-btn danger';
       clearBtn.textContent = 'Clear';
       clearBtn.onclick = () => {
-        callApi('clear_settings_section', name).then(() => renderSettingsList());
+        callApi('clear_settings_section', name).then(() => onBack());
       };
 
       actions.appendChild(saveBtn);
       actions.appendChild(clearBtn);
       settingsContent.appendChild(actions);
     });
-  }
-
-  function appendVisualImages(payload){
-    const hint = document.getElementById('emptyHint');
-    if(hint) hint.remove();
-    const div = document.createElement('div');
-    div.className = 'msg visual';
-    const title = document.createElement('div');
-    title.className = 'visual-title';
-    title.textContent = 'IMAGES · ' + (payload.query || '');
-    div.appendChild(title);
-    const grid = document.createElement('div');
-    grid.className = 'image-grid';
-    (payload.items || []).forEach(item => {
-      const img = document.createElement('img');
-      img.src = item.thumbnail || item.url;
-      img.alt = item.title || '';
-      img.title = item.title || '';
-      img.onclick = () => openLightbox(item.url || item.thumbnail);
-      grid.appendChild(img);
-    });
-    div.appendChild(grid);
-    sessionPanelInner.appendChild(div);
-    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
   }
 
   let mermaidReady = false;
@@ -2634,20 +3131,458 @@
     }
   } catch(e) { mermaidReady = false; }
 
-  function appendVisualDiagram(payload){
-    const hint = document.getElementById('emptyHint');
-    if(hint) hint.remove();
-    const div = document.createElement('div');
-    div.className = 'msg visual';
-    const title = document.createElement('div');
-    title.className = 'visual-title';
-    title.textContent = 'DIAGRAM' + (payload.title ? ' · ' + payload.title : '');
-    div.appendChild(title);
+  // ---------- The five controls ----------
+  // Each opens a panel over an existing capability. None of them is a new system:
+  // Connections and both settings panels edit core/settings_editor.py's schema,
+  // Personality writes tools/personality.py's six dials, and Permissions reads and
+  // writes what SafetyGuard itself enforces.
+  const controlLegend = document.getElementById('controlLegend');
+  document.querySelectorAll('.control-cell[data-legend]').forEach(cell => {
+    cell.addEventListener('pointerenter', () => { controlLegend.textContent = cell.dataset.legend; });
+    cell.addEventListener('pointerleave', () => { controlLegend.innerHTML = '&nbsp;'; });
+  });
+
+  const connectionsOverlay = document.getElementById('connectionsOverlay');
+  const connectionsContent = document.getElementById('connectionsContent');
+  const aiOverlay = document.getElementById('aiOverlay');
+  const aiContent = document.getElementById('aiContent');
+  const voiceOverlay = document.getElementById('voiceOverlay');
+  const voiceContent = document.getElementById('voiceContent');
+  const personalityOverlay = document.getElementById('personalityOverlay');
+  const personalityContent = document.getElementById('personalityContent');
+
+  function wireOverlay(overlay, closeId){
+    document.getElementById(closeId).onclick = () => closeOverlay(overlay);
+    overlay.addEventListener('click', e => { if(e.target === overlay) closeOverlay(overlay); });
+  }
+  wireOverlay(connectionsOverlay, 'connectionsClose');
+  wireOverlay(aiOverlay, 'aiClose');
+  wireOverlay(voiceOverlay, 'voiceClose');
+  wireOverlay(personalityOverlay, 'personalityClose');
+
+  // ---------- Connections ----------
+  // Which sections are connections is decided by the schema, not by a list kept
+  // here: core/settings_editor.py marks them kind:"connection". Credentials are
+  // never read back - get_section() redacts every secret to "is_set", so the only
+  // thing this can show about a saved password is that there is one.
+  function note(text){
+    const el = document.createElement('div');
+    el.className = 'settings-note';
+    el.textContent = text;
+    return el;
+  }
+
+  function openConnections(){
+    connectionsOverlay.classList.add('open');
+    renderConnections();
+  }
+
+  function renderConnections(){
+    connectionsContent.replaceChildren(note('Everything Leti can connect to. Passwords and '
+      + 'API keys are stored by the same settings file the rest of Leti reads, are never '
+      + 'shown again once saved, and Disconnect removes them.'));
+    callApi('list_settings_sections').then(sections => {
+      const connections = sections.filter(s => s.kind === 'connection');
+      connections.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'conn-row';
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = s.label;
+        const status = document.createElement('span');
+        status.className = 'status ' + (s.configured ? 'on' : 'off');
+        status.textContent = s.configured ? 'Connected' : 'Not connected';
+        row.appendChild(label);
+        row.appendChild(status);
+
+        const configure = document.createElement('button');
+        configure.className = 'act';
+        configure.textContent = s.configured ? 'Configure' : 'Connect';
+        configure.onclick = () => renderSectionForm(
+          connectionsContent, s.name, 'Back to connections', renderConnections, renderConnections);
+        row.appendChild(configure);
+
+        if(s.configured){
+          const disconnect = document.createElement('button');
+          disconnect.className = 'act danger';
+          disconnect.textContent = 'Disconnect';
+          disconnect.onclick = () => {
+            disconnect.disabled = true;
+            callApi('clear_settings_section', s.name).then(renderConnections);
+          };
+          row.appendChild(disconnect);
+        }
+        connectionsContent.appendChild(row);
+      });
+    }).catch(e => {
+      const err = document.createElement('div');
+      err.className = 'settings-error';
+      err.textContent = 'Could not read the connection list: ' + e.message;
+      connectionsContent.appendChild(err);
+    });
+  }
+  document.getElementById('connectionsBtn').onclick = openConnections;
+
+  // ---------- Grouped settings panels ----------
+  // AI and Voice are the same thing twice: the sections core/settings_editor.py
+  // tags with that kind, listed, and opened in the shared form above. Nothing is
+  // defaulted, defined or written here - a value Leti is already running with
+  // stays exactly what it was until somebody types a new one.
+  function renderSectionList(container, kind, intro, extras){
+    container.replaceChildren(note(intro));
+    if(extras) extras(container);
+    callApi('list_settings_sections').then(sections => {
+      sections.filter(s => s.kind === kind).forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'settings-section-row';
+        const label = document.createElement('span');
+        label.className = 'label';
+        label.textContent = s.label;
+        const status = document.createElement('span');
+        status.className = 'status configured';
+        status.textContent = 'Configured';
+        row.appendChild(label); row.appendChild(status);
+        row.onclick = () => renderSectionForm(container, s.name, 'Back',
+                                              () => renderSectionList(container, kind, intro, extras),
+                                              () => renderSectionList(container, kind, intro, extras));
+        container.appendChild(row);
+      });
+    }).catch(() => {
+      const err = document.createElement('div');
+      err.className = 'settings-error';
+      err.textContent = 'Could not read the settings list - not connected yet?';
+      container.appendChild(err);
+    });
+  }
+
+  const AI_INTRO = 'The models and limits Leti is running with right now. These are the '
+    + 'existing settings, shown rather than copied: leaving a field blank keeps its '
+    + 'current value. Context size and the reasoning model are what decide whether Leti '
+    + 'fits in your graphics card - see the notes in config/settings.yaml before changing '
+    + 'either.';
+
+  function openAiSettings(){
+    aiOverlay.classList.add('open');
+    renderSectionList(aiContent, 'ai', AI_INTRO, container => {
+      // Read-only, from the hardware check and the live configuration, so the
+      // numbers being edited below have something to be judged against.
+      const model = document.getElementById('modelVal').textContent;
+      const gpu = document.getElementById('gpuVal').textContent;
+      const row = document.createElement('div');
+      row.className = 'kv-row';
+      row.innerHTML = '<span class="k">Running now</span>';
+      const v = document.createElement('span');
+      v.className = 'v';
+      v.textContent = model + ' · ' + gpu;
+      row.appendChild(v);
+      container.appendChild(row);
+    });
+  }
+  document.getElementById('aiSettingsBtn').onclick = openAiSettings;
+
+  const VOICE_INTRO = 'Leti is spoken to first and typed to second. This is the microphone '
+    + 'and speech configuration she already uses - the same audio system, not a second one.';
+
+  function renderVoicePanel(){
+    renderSectionList(voiceContent, 'voice', VOICE_INTRO, container => {
+      const seen = describeVoice(voiceInfo);
+      [['Microphone', seen.mic, seen.cls], ['Speakers', seen.speakers, ''],
+       ['Input device', seen.device, '']].forEach(([k, value, cls]) => {
+        const row = document.createElement('div');
+        row.className = 'kv-row';
+        const kEl = document.createElement('span');
+        kEl.className = 'k'; kEl.textContent = k;
+        const vEl = document.createElement('span');
+        vEl.className = 'v ' + (cls || ''); vEl.textContent = value;
+        row.appendChild(kEl); row.appendChild(vEl);
+        container.appendChild(row);
+      });
+      const setup = document.createElement('button');
+      setup.className = 'settings-btn';
+      setup.style.marginTop = '12px';
+      setup.textContent = 'Microphone & speaker setup';
+      setup.onclick = () => { closeOverlay(voiceOverlay); openAudioSetup(false); };
+      container.appendChild(setup);
+    });
+  }
+
+  function openVoiceSettings(){
+    voiceOverlay.classList.add('open');
+    renderVoicePanel();
+    refreshVoiceStatus();
+  }
+  document.getElementById('voiceSettingsBtn').onclick = openVoiceSettings;
+
+  // ---------- Personality ----------
+  // Six dials and one store, both in tools/personality.py. A preset here is not a
+  // seventh thing: it is those six values, sent to the same save the tools use.
+  const DIAL_BLURB = {
+    humor: 'How often Leti reaches for a joke.',
+    sarcasm: 'Dry wit - never about something you are seriously asking for help with.',
+    formality: 'Casual and contracted, or precise and measured.',
+    warmth: 'How much of the answer is about you rather than the task.',
+    directness: 'Straight to the point, or eased into.',
+    verbosity: 'How much Leti says when a short answer would do.',
+  };
+
+  function openPersonality(){
+    personalityOverlay.classList.add('open');
+    personalityContent.replaceChildren(note('These shape TONE only. They never change what '
+      + 'Leti will or will not do, and safety explanations stay clear and serious however '
+      + 'they are set.'));
+    callApi('get_personality').then(renderPersonality).catch(e => {
+      const err = document.createElement('div');
+      err.className = 'settings-error';
+      err.textContent = 'Could not read the personality settings: ' + e.message;
+      personalityContent.appendChild(err);
+    });
+  }
+
+  function renderPersonality(data){
+    const values = Object.assign({}, data.values);
+    const inputs = {};
+
+    const presets = document.createElement('div');
+    presets.className = 'preset-row';
+    Object.keys(data.presets || {}).forEach(name => {
+      const btn = document.createElement('button');
+      btn.className = 'settings-btn';
+      btn.textContent = name;
+      btn.onclick = () => {
+        // A preset moves the sliders; it is saved by the same Save button, so
+        // nothing is written until the user has seen what it did.
+        const preset = data.presets[name];
+        data.dials.forEach(dial => {
+          values[dial] = preset[dial];
+          inputs[dial].input.value = preset[dial];
+          inputs[dial].readout.textContent = preset[dial];
+        });
+        saveNote.textContent = name + ' - press Save to apply.';
+      };
+      presets.appendChild(btn);
+    });
+    personalityContent.appendChild(presets);
+
+    data.dials.forEach(dial => {
+      const wrap = document.createElement('div');
+      wrap.className = 'dial';
+      const head = document.createElement('div');
+      head.className = 'dial-head';
+      const name = document.createElement('span');
+      name.className = 'n';
+      name.textContent = dial;
+      const readout = document.createElement('span');
+      readout.textContent = values[dial];
+      head.appendChild(name); head.appendChild(readout);
+      const input = document.createElement('input');
+      input.type = 'range'; input.min = '0'; input.max = '10'; input.step = '1';
+      input.value = values[dial];
+      input.oninput = () => {
+        values[dial] = parseInt(input.value, 10);
+        readout.textContent = input.value;
+      };
+      const blurb = document.createElement('div');
+      blurb.className = 'settings-note';
+      blurb.style.margin = '6px 0 0';
+      blurb.textContent = DIAL_BLURB[dial] || '';
+      wrap.appendChild(head); wrap.appendChild(input); wrap.appendChild(blurb);
+      personalityContent.appendChild(wrap);
+      inputs[dial] = { input, readout };
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'settings-actions';
+    const save = document.createElement('button');
+    save.className = 'settings-btn primary';
+    save.textContent = 'Save';
+    save.onclick = () => {
+      save.disabled = true;
+      saveNote.textContent = 'Saving…';
+      callApi('set_personality', values).then(() => {
+        save.disabled = false;
+        saveNote.textContent = 'Saved. Leti will use this from her next reply.';
+      }).catch(e => {
+        save.disabled = false;
+        saveNote.textContent = 'Could not save: ' + e.message;
+      });
+    };
+    const reset = document.createElement('button');
+    reset.className = 'settings-btn';
+    reset.textContent = 'Defaults';
+    reset.onclick = () => {
+      data.dials.forEach(dial => {
+        values[dial] = data.defaults[dial];
+        inputs[dial].input.value = data.defaults[dial];
+        inputs[dial].readout.textContent = data.defaults[dial];
+      });
+      saveNote.textContent = 'Back to the defaults - press Save to apply.';
+    };
+    actions.appendChild(save); actions.appendChild(reset);
+    personalityContent.appendChild(actions);
+
+    const saveNote = document.createElement('div');
+    saveNote.className = 'settings-note';
+    saveNote.style.margin = '10px 0 0';
+    personalityContent.appendChild(saveNote);
+  }
+  document.getElementById('personalityBtn').onclick = openPersonality;
+
+  // ---------- Floating artifacts ----------
+  // A result worth looking at gets a window of its own, inside this page. Not an
+  // operating-system window and not a browser: a second native window per result
+  // would be a second renderer process per result, and Leti already has exactly
+  // two windows for a reason (see gui/desktop.py).
+  //
+  // Everything here is event-driven. The layer is empty and inert until something
+  // arrives; each artifact is built on the event that produced it, costs nothing
+  // while it sits there - no timers, no loops, no polling - and is removed from
+  // the DOM entirely when closed. Dragging and resizing listen only while a
+  // pointer is actually down.
+  const artifactLayer = document.getElementById('artifactLayer');
+  const ARTIFACT_MAX = 4;        // a fifth closes the oldest rather than burying it
+  const ARTIFACT_KIND = {
+    images:   'LETI // IMAGE',
+    diagram:  'LETI // DIAGRAM',
+    table:    'LETI // ANALYSIS',
+    research: 'LETI // RESEARCH',
+    document: 'LETI // DOCUMENT',
+  };
+  let artifactZ = 1;
+  let artifactCascade = 0;
+
+  function focusArtifact(el){
+    artifactLayer.querySelectorAll('.artifact.focused').forEach(a => a.classList.remove('focused'));
+    el.classList.add('focused');
+    el.style.zIndex = ++artifactZ;
+  }
+
+  function createArtifact(kind, title, width, height){
+    while(artifactLayer.childElementCount >= ARTIFACT_MAX){
+      artifactLayer.removeChild(artifactLayer.firstElementChild);
+    }
+    const el = document.createElement('div');
+    el.className = 'artifact';
+    // Cascaded from the top right, clamped so a small window never places one
+    // off screen where it cannot be dragged back.
+    const w = Math.min(width, Math.max(260, window.innerWidth - 40));
+    const h = Math.min(height, Math.max(180, window.innerHeight - 120));
+    // Cascaded over the centre column rather than the corner: the left rail is
+    // the machine and the right one is what Leti is doing, and neither should
+    // disappear behind a result. Clamped so a small window never places one off
+    // screen where it cannot be dragged back.
+    const step = (artifactCascade++ % 4) * 38;
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+    el.style.left = Math.max(12, Math.min(window.innerWidth * 0.42 + step,
+                                          window.innerWidth - w - 12)) + 'px';
+    el.style.top = Math.min(86 + step, Math.max(12, window.innerHeight - h - 20)) + 'px';
+
+    const head = document.createElement('div');
+    head.className = 'artifact-head';
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = ARTIFACT_KIND[kind] || 'LETI // RESULT';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = title || '';
+    const shut = document.createElement('span');
+    shut.className = 'shut';
+    shut.textContent = '×';
+    shut.title = 'Close';
+    shut.onclick = (e) => { e.stopPropagation(); el.remove(); };
+    head.appendChild(who); head.appendChild(name); head.appendChild(shut);
+
+    const body = document.createElement('div');
+    body.className = 'artifact-body';
+    const grip = document.createElement('div');
+    grip.className = 'artifact-grip';
+    grip.title = 'Resize';
+
+    el.appendChild(head); el.appendChild(body); el.appendChild(grip);
+    el.addEventListener('pointerdown', () => focusArtifact(el));
+    makeDraggable(el, head);
+    makeResizable(el, grip);
+    artifactLayer.appendChild(el);
+    focusArtifact(el);
+    return body;
+  }
+
+  // Move and resize listen only between pointerdown and pointerup, so an artifact
+  // nobody is touching has no handlers running at all.
+  function makeDraggable(el, handle){
+    handle.addEventListener('pointerdown', (e) => {
+      if(e.button !== 0 || e.target.classList.contains('shut')) return;
+      const rect = el.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left, offsetY = e.clientY - rect.top;
+      handle.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        el.style.left = Math.min(Math.max(0, ev.clientX - offsetX), window.innerWidth - 60) + 'px';
+        el.style.top  = Math.min(Math.max(0, ev.clientY - offsetY), window.innerHeight - 40) + 'px';
+      };
+      const up = (ev) => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        try { handle.releasePointerCapture(ev.pointerId); } catch(err) {}
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
+  }
+
+  function makeResizable(el, grip){
+    grip.addEventListener('pointerdown', (e) => {
+      if(e.button !== 0) return;
+      e.stopPropagation();
+      const rect = el.getBoundingClientRect();
+      const startX = e.clientX, startY = e.clientY;
+      const startW = rect.width, startH = rect.height;
+      grip.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        el.style.width = Math.max(240, startW + (ev.clientX - startX)) + 'px';
+        el.style.height = Math.max(150, startH + (ev.clientY - startY)) + 'px';
+      };
+      const up = (ev) => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointercancel', up);
+        try { grip.releasePointerCapture(ev.pointerId); } catch(err) {}
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointercancel', up);
+    });
+  }
+
+  function moreLine(count){
+    const el = document.createElement('div');
+    el.className = 'more';
+    el.textContent = '+ ' + count + ' more not shown';
+    return el;
+  }
+
+  function artifactImages(payload){
+    const body = createArtifact('images', payload.query || '', 420, 340);
+    const grid = document.createElement('div');
+    grid.className = 'image-grid';
+    (payload.items || []).forEach(item => {
+      const img = document.createElement('img');
+      img.src = item.thumbnail || item.url;
+      img.alt = item.title || '';
+      img.title = item.title || '';
+      img.loading = 'lazy';
+      img.onclick = () => openLightbox(item.url || item.thumbnail);
+      grid.appendChild(img);
+    });
+    body.appendChild(grid);
+  }
+
+  function artifactDiagram(payload){
+    const body = createArtifact('diagram', payload.title || '', 480, 380);
     const box = document.createElement('div');
     box.className = 'diagram-box';
-    sessionPanelInner.appendChild(div);
-    div.appendChild(box);
-
+    body.appendChild(box);
     if(mermaidReady){
       const id = 'mmd-' + Math.random().toString(36).slice(2);
       window.mermaid.render(id, payload.mermaid || '').then(({svg}) => {
@@ -2665,13 +3600,88 @@
       pre.textContent = payload.mermaid || '';
       box.appendChild(pre);
     }
-    sessionPanelInner.scrollTop = sessionPanelInner.scrollHeight;
   }
 
-  window.showVisual = function(payload){
-    toggleSession();
-    if(payload.type === 'images') appendVisualImages(payload);
-    else if(payload.type === 'diagram') appendVisualDiagram(payload);
+  function artifactTable(payload){
+    const columns = payload.columns || [];
+    const width = Math.min(760, 150 + columns.length * 110);
+    const body = createArtifact('table', payload.title || '', width, 360);
+    const table = document.createElement('table');
+    const head = document.createElement('tr');
+    columns.forEach(c => {
+      const th = document.createElement('th');
+      th.textContent = c;
+      head.appendChild(th);
+    });
+    table.appendChild(head);
+    (payload.rows || []).forEach(cells => {
+      const tr = document.createElement('tr');
+      cells.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        td.title = cell;
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    body.appendChild(table);
+    if(payload.more) body.appendChild(moreLine(payload.more));
+  }
+
+  function artifactResearch(payload){
+    const body = createArtifact('research', payload.title || '', 460, 400);
+    (payload.items || []).forEach(item => {
+      const card = document.createElement('div');
+      card.className = 'source';
+      const t = document.createElement('div');
+      t.className = 't'; t.textContent = item.title || item.url;
+      const d = document.createElement('div');
+      // The address as text, not as a link: this page holds a live session to the
+      // assistant, and following an outside link inside the native window would
+      // navigate the application away from itself.
+      d.className = 'd'; d.textContent = item.domain || item.url || '';
+      card.appendChild(t); card.appendChild(d);
+      if(item.snippet){
+        const sn = document.createElement('div');
+        sn.className = 's'; sn.textContent = item.snippet;
+        card.appendChild(sn);
+      }
+      body.appendChild(card);
+    });
+    if(payload.more) body.appendChild(moreLine(payload.more));
+  }
+
+  function artifactDocument(payload){
+    const body = createArtifact('document', payload.title || '', 520, 420);
+    const doc = document.createElement('div');
+    doc.className = 'doc';
+    doc.textContent = payload.text || '';
+    body.appendChild(doc);
+    if(payload.truncated) body.appendChild(moreLine('...'));
+  }
+
+  const ARTIFACT_RENDERERS = {
+    images: artifactImages,
+    diagram: artifactDiagram,
+    table: artifactTable,
+    research: artifactResearch,
+    document: artifactDocument,
   };
+
+  window.showVisual = function(payload){
+    if(!payload || IS_PUCK_WINDOW) return;
+    const render = ARTIFACT_RENDERERS[payload.type];
+    if(!render) return;              // an unknown kind is a no-op, not a broken window
+    render(payload);
+    rtLog('artifact', 'Opened ' + (ARTIFACT_KIND[payload.type] || 'a panel').replace('LETI // ', '').toLowerCase()
+          + (payload.title || payload.query ? ': ' + (payload.title || payload.query) : ''));
+  };
+
+  // Closing every artifact at once, for when the screen has got busy.
+  document.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape' && artifactLayer.childElementCount){
+      artifactLayer.replaceChildren();
+    }
+  });
 })();
 </script>

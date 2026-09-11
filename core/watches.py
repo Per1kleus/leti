@@ -482,6 +482,17 @@ def check(watch_id: str, now: Optional[float] = None) -> Dict[str, Any]:
         {"at": _stamp(now), "condition": describe_condition(watch)})
     watch["history"] = watch["history"][-MAX_HISTORY:]
     _replace(watch)
+    # Mirrored to the interface's activity log. Nothing about the watch changes
+    # here, and a failure to log can never stop a watch from firing.
+    try:
+        from core import diagnostics
+
+        diagnostics.record_activity(
+            "watch", f"Watch triggered - {describe_condition(watch)}",
+            watch_id=watch_id,
+        )
+    except Exception:
+        logger.debug("Couldn't mirror a watch trigger to the activity log.")
     return {"watch_id": watch_id, "outcome": "triggered", "watch": watch}
 
 

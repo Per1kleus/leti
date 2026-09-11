@@ -23,7 +23,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from core.config_loader import get_settings
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
-from core import diagnostics
+from core import artifacts, diagnostics
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
@@ -456,8 +456,13 @@ class Orchestrator:
                 # surface can show it (the GUI), independent of what the model ends up
                 # saying in text - a tool result carrying a "visual" key is shown
                 # immediately rather than waiting on/depending on the model to describe it.
+                # A tool that supplies its own "visual" always wins; core/artifacts.py
+                # only reads the SHAPE of results that don't have one (a table of
+                # uniform rows, a set of sources, one long document) so a result
+                # worth looking at is shown rather than only described. No model
+                # call, no classifier, and nothing for a tool to opt into.
                 if result.success and self.visual_callback and isinstance(result.output, dict):
-                    visual = result.output.get("visual")
+                    visual = result.output.get("visual") or artifacts.derive(result.output)
                     if visual:
                         try:
                             await self.visual_callback(visual)

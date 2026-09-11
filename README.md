@@ -758,12 +758,13 @@ leti/
 │   ├── watches.py             # Watch a condition, act when it changes (uses the scheduler below)
 │   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks
 │   ├── computer_use.py        # Chooses tool > browser > GUI, and bounds a GUI session
+│   ├── artifacts.py           # Which tool results are worth a floating panel, by shape
 │   ├── model_setup.py         # First-launch hardware detection and model recommendation
 │   ├── diagnostics.py         # Measured timings, or an honest "Unavailable"
 │   ├── atomic_write.py        # Crash-safe state-file writes
 │   └── settings_editor.py     # The /settings command - schema-driven, no LLM involved
 ├── gui/
-│   ├── hud.html                # The HUD interface (audio-reactive ring, dashboard, chat)
+│   ├── hud.html                # The interface: system rail, the core, controls + RT-LOG, artifacts
 │   ├── desktop.py              # The two native windows: main window + always-on-top puck
 │   ├── icon.svg                # Icon source: full mark (48px and up)
 │   ├── icon-small.svg          # Icon source: simplified, for 16-32px

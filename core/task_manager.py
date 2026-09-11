@@ -213,6 +213,19 @@ def find_active(hint: str = "") -> List[Dict[str, Any]]:
 # Control - all cooperative, all persisted
 # --------------------------------------------------------------------------- #
 
+# How each status reads in the interface's activity log. The status itself is
+# unchanged and still owned here - this is only the wording.
+_STATUS_WORDS = {
+    QUEUED: "queued",
+    RUNNING: "started",
+    PAUSED: "paused",
+    WAITING_FOR_USER: "waiting for your approval",
+    FAILED: "failed",
+    COMPLETED: "completed",
+    CANCELLED: "cancelled",
+}
+
+
 def _set_status(task_id: str, status: str, **fields) -> Optional[Dict[str, Any]]:
     task = get_task(task_id)
     if task is None:
@@ -222,7 +235,45 @@ def _set_status(task_id: str, status: str, **fields) -> Optional[Dict[str, Any]]
     if status in FINISHED_STATUSES:
         task["completed_at"] = time.time()
     _replace(task)
+    _mirror_to_activity(task, status)
     return task
+
+
+def _mirror_step(task: Dict[str, Any], index: int) -> None:
+    """Progress, for the same log and with the same guarantee: a task never fails
+    over a log line. Read from the step that is already being marked running."""
+    try:
+        from core import diagnostics
+
+        steps = task.get("steps", [])
+        diagnostics.record_activity(
+            "task",
+            f"{task.get('name') or 'Task'} - step {index + 1} of {len(steps)}: "
+            f"{steps[index].get('instruction', '')[:80]}",
+            task_id=task.get("id"), step=index + 1,
+        )
+    except Exception:
+        logger.debug("Couldn't mirror step progress to the activity log.")
+
+
+def _mirror_to_activity(task: Dict[str, Any], status: str) -> None:
+    """Tell the activity log a status changed. Writes nothing and decides nothing.
+
+    Every status transition already passes through _set_status, so one call here
+    covers all of them without a second place that knows what a task's states are.
+    Wrapped because a task must never fail over a log line.
+    """
+    try:
+        from core import diagnostics
+
+        diagnostics.record_activity(
+            "task",
+            f"Task '{task.get('name') or task.get('objective', 'task')}' "
+            f"{_STATUS_WORDS.get(status, status)}",
+            task_id=task.get("id"), status=status,
+        )
+    except Exception:
+        logger.debug("Couldn't mirror a task status to the activity log.")
 
 
 def pause(task_id: str) -> Optional[Dict[str, Any]]:
@@ -338,6 +389,7 @@ class TaskRunner:
         step.setdefault("first_attempt_at", time.time())
         step["status"] = "running"
         _replace(task)
+        _mirror_step(task, index)
 
         instruction = (
             f"[Autonomous task '{task['name']}', step {index + 1} of "

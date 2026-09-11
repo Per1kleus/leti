@@ -27,6 +27,7 @@ from core.config_loader import CONFIG_DIR, get_settings, reload_settings
 # echoed back with their real value once set - only "(currently set)".
 SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "email": {
+        "kind": "connection",
         "label": "Email (IMAP/SMTP)",
         "fields": [
             {"key": "imap_host", "label": "IMAP host", "example": "imap.gmail.com"},
@@ -38,6 +39,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "calendar": {
+        "kind": "connection",
         "label": "Calendar (CalDAV)",
         "fields": [
             {"key": "caldav_url", "label": "CalDAV URL", "example": "https://caldav.icloud.com"},
@@ -47,6 +49,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "zoom": {
+        "kind": "connection",
         "label": "Zoom (Server-to-Server OAuth)",
         "fields": [
             {"key": "account_id", "label": "Account ID"},
@@ -55,6 +58,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "teams": {
+        "kind": "connection",
         "label": "Microsoft Teams",
         "fields": [
             {"key": "tenant_id", "label": "Azure tenant ID"},
@@ -64,6 +68,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "trading": {
+        "kind": "connection",
         "label": "Trading (Alpaca paper account)",
         "fields": [
             {"key": "api_key", "label": "Alpaca paper API key"},
@@ -82,16 +87,90 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "youtube": {
+        "kind": "connection",
         "label": "YouTube",
         "settings_path": ["social_media", "youtube"],
         "fields": [{"key": "api_key", "label": "YouTube Data API v3 key"}],
     },
     "reddit": {
+        "kind": "connection",
         "label": "Reddit",
         "settings_path": ["social_media", "reddit"],
         "fields": [{"key": "user_agent", "label": "User agent string", "example": "leti-assistant/1.0 (by /u/you)"}],
     },
+    "ai": {
+        "kind": "ai",
+        "label": "Models and reasoning",
+        "settings_path": ["ollama"],
+        "fields": [
+            {"key": "reasoning_model", "label": "Reasoning model", "required": False,
+             "example": "qwen2.5:7b"},
+            {"key": "fallback_reasoning_model", "label": "Fallback reasoning model",
+             "required": False, "example": "mistral-nemo"},
+            {"key": "vision_model", "label": "Vision model", "required": False,
+             "example": "llama3.2-vision"},
+            {"key": "embedding_model", "label": "Embedding model", "required": False,
+             "example": "nomic-embed-text"},
+            {"key": "temperature", "label": "Temperature (0.0 - 1.0)", "type": "number",
+             "required": False},
+            {"key": "num_ctx", "label": "Context size in tokens", "type": "number",
+             "required": False},
+            {"key": "max_tool_iterations", "label": "Maximum tool steps per turn",
+             "type": "number", "required": False},
+            {"key": "request_timeout_seconds", "label": "Request timeout (seconds)",
+             "type": "number", "required": False},
+            {"key": "host", "label": "Ollama host", "required": False,
+             "example": "http://localhost:11434"},
+        ],
+    },
+    "tool_routing": {
+        "kind": "ai",
+        "label": "Dynamic tool routing",
+        "fields": [
+            {"key": "enabled", "type": "bool", "required": False,
+             "label": ("Show the model only the tools a request needs (true/false). "
+                       "Every tool stays registered and runnable either way.")},
+        ],
+    },
+    "voice": {
+        "kind": "voice",
+        "label": "Wake word",
+        "settings_path": ["app"],
+        "fields": [
+            {"key": "wake_word", "label": "Wake word model name", "required": False,
+             "example": "hey_leti"},
+            {"key": "wake_word_threshold", "label": "Wake-word threshold (0.0 - 1.0)",
+             "type": "number", "required": False},
+        ],
+    },
+    "stt": {
+        "kind": "voice",
+        "label": "Speech to text (Whisper)",
+        "fields": [
+            {"key": "model_size", "label": "Whisper model", "required": False,
+             "example": "base.en"},
+            {"key": "device", "label": "Device (auto/cpu/cuda)", "required": False,
+             "example": "auto"},
+            {"key": "silence_timeout_seconds", "label": "Stop listening after this much silence",
+             "type": "number", "required": False},
+        ],
+    },
+    "tts": {
+        "kind": "voice",
+        "label": "Speech (voice output)",
+        "fields": [
+            {"key": "voice_id", "label": "Voice ID (blank for the system default)",
+             "required": False},
+            {"key": "rate", "label": "Speaking rate (words per minute)", "type": "number",
+             "required": False},
+            {"key": "volume", "label": "Volume (0.0 - 1.0)", "type": "number",
+             "required": False},
+            {"key": "interruptible", "label": "Let me interrupt Leti mid-sentence (true/false)",
+             "type": "bool", "required": False},
+        ],
+    },
     "safety": {
+        "kind": "safety",
         "label": "Safety (which actions ask before running)",
         "fields": [
             {"key": "require_confirmation_for", "required": False,
@@ -182,7 +261,8 @@ def list_sections() -> List[Dict[str, Any]]:
         current = _deep_get(settings, _get_path(schema, name)) or {}
         required_fields = [f for f in schema["fields"] if f.get("required", True) and not f.get("default")]
         configured = bool(current) and all(current.get(f["key"]) for f in required_fields)
-        out.append({"name": name, "label": schema["label"], "configured": configured})
+        out.append({"name": name, "label": schema["label"], "configured": configured,
+                    "kind": schema.get("kind", "other")})
     return out
 
 
@@ -202,7 +282,8 @@ def get_section(name: str) -> Dict[str, Any]:
             if not f.get("secret"):
                 entry["value"] = raw
         fields.append(entry)
-    return {"name": name, "label": schema["label"], "fields": fields}
+    return {"name": name, "label": schema["label"],
+            "kind": schema.get("kind", "other"), "fields": fields}
 
 
 def update_section(name: str, values: Dict[str, str]) -> Dict[str, Any]:

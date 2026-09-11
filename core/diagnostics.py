@@ -10,6 +10,11 @@ worse than a missing one.
 
 The timings come from record_*, which the orchestrator and router call on the way
 past. They are kept in a small ring in memory and never written to disk.
+
+The same record_* calls also feed the activity ring the interface's RT-LOG reads.
+That ring owns no state either - it mirrors transitions the task manager, the
+watch checker and the agent state machine make anyway, so the log says what Leti
+is doing without anything having to be asked twice or polled for.
 """
 from __future__ import annotations
 
@@ -27,23 +32,78 @@ _turns: Deque[Dict[str, Any]] = deque(maxlen=_KEEP)
 _routings: Deque[Dict[str, Any]] = deque(maxlen=_KEEP)
 _tools: Deque[Dict[str, Any]] = deque(maxlen=_KEEP)
 
+# ---------------------------------------------------------------------------- #
+# The activity feed behind the interface's RT-LOG.
+#
+# This is NOT a second status system. Nothing here decides, stores or owns any
+# state: task status still lives in core/task_manager.py, watch state in
+# core/watches.py, and the agent state machine in the orchestrator. This is a
+# write-only mirror of transitions those parts make anyway, phrased for a person,
+# kept in a bounded ring, and handed to whoever is listening.
+#
+# It is push-based on purpose. A log the interface has to poll for is a timer that
+# runs whether or not anything happened; this one costs exactly one function call
+# per thing that actually did.
+# ---------------------------------------------------------------------------- #
+_ACTIVITY_KEEP = 60           # bounded: the panel shows a tail, not a history
+_activity: Deque[Dict[str, Any]] = deque(maxlen=_ACTIVITY_KEEP)
+_activity_listeners: List[Any] = []
+
+
+def record_activity(kind: str, message: str, **detail: Any) -> None:
+    """Note one thing Leti just did, in words a person can read.
+
+    Never raises into its caller: every call site is a piece of real work that
+    must not fail because a log line could not be delivered.
+    """
+    entry: Dict[str, Any] = {"at": time.time(), "kind": kind, "message": message}
+    if detail:
+        entry.update(detail)
+    _activity.append(entry)
+    for listener in list(_activity_listeners):
+        try:
+            listener(entry)
+        except Exception:
+            logger.debug("An activity listener raised; dropping it from this entry.")
+
+
+def on_activity(listener: Any) -> None:
+    """Subscribe to activity as it happens (gui/api.py pushes it to the HUD)."""
+    _activity_listeners.append(listener)
+
+
+def recent_activity() -> List[Dict[str, Any]]:
+    """The tail, for a client that connected after some of it happened."""
+    return list(_activity)
+
+
+def _humanise(tool_name: str) -> str:
+    return tool_name.replace("_", " ").strip().capitalize() or tool_name
+
 
 def record_routing(tool_count: int, total: int, seconds: float,
                    names: Optional[List[str]] = None) -> None:
     _routings.append({"at": time.time(), "exposed": tool_count, "total": total,
                       "seconds": seconds, "names": list(names or [])[:12]})
+    record_activity("routing", f"Planning - {tool_count} of {total} tools in scope")
 
 
 def record_turn(seconds: float, answer_chars: int = 0) -> None:
     _turns.append({"at": time.time(), "seconds": seconds, "chars": answer_chars})
+    record_activity("turn", f"Answer ready ({seconds:.1f}s)")
 
 
 def record_tool(name: str, seconds: float, success: bool) -> None:
     _tools.append({"at": time.time(), "name": name, "seconds": seconds, "success": success})
+    record_activity(
+        "tool",
+        f"{_humanise(name)} - {'done' if success else 'failed'} ({seconds:.1f}s)",
+        tool=name, success=bool(success),
+    )
 
 
 def reset() -> None:
-    _turns.clear(); _routings.clear(); _tools.clear()
+    _turns.clear(); _routings.clear(); _tools.clear(); _activity.clear()
 
 
 def _last(source: Deque[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

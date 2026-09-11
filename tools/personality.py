@@ -40,6 +40,24 @@ PRESETS: Dict[str, Dict[str, int]] = {
     "blunt_and_brief": {"humor": 2, "sarcasm": 3, "formality": 4, "warmth": 3, "directness": 10, "verbosity": 1},
 }
 
+# The presets the interface's Personality panel offers, by the names a person
+# would use for them. They are not a second personality system and not a second
+# store: each one is a set of values for the SAME six dials above, saved through
+# the same save_values() the tools use. Four of them are the presets above under
+# a plainer name; "Concise" is the balanced set with the verbosity dial down,
+# which is the one common request the list above had no entry for.
+#
+# Deliberately separate from PRESETS rather than added to it: PRESETS is the enum
+# of apply_personality_preset's tool schema, and renaming or extending that would
+# change a tool contract to relabel some buttons.
+UI_PRESETS: Dict[str, Dict[str, int]] = {
+    "Balanced": dict(PRESETS["default"]),
+    "Professional": dict(PRESETS["professional"]),
+    "Friendly": dict(PRESETS["warm_and_supportive"]),
+    "Direct": dict(PRESETS["blunt_and_brief"]),
+    "Concise": {**DEFAULT_PERSONALITY, "verbosity": 1, "directness": 8},
+}
+
 # (low 0-3, mid 4-7, high 8-10) phrasing for each dial.
 _PHRASES: Dict[str, tuple] = {
     "humor": (
@@ -96,6 +114,22 @@ def _load() -> Dict[str, int]:
 
 def _save(values: Dict[str, int]) -> None:
     atomic_write_json(_path(), values)
+
+
+def load_values() -> Dict[str, int]:
+    """The current six dials. The same read the tools do - one store, one truth."""
+    return _load()
+
+
+def save_values(values: Dict[str, int]) -> Dict[str, int]:
+    """Write the six dials, clamped to 0-10. Unknown keys are ignored, and any dial
+    not given keeps its current value - the same rule set_personality follows."""
+    current = _load()
+    for param in PARAM_NAMES:
+        if values.get(param) is not None:
+            current[param] = _clamp(values[param])
+    _save(current)
+    return current
 
 
 def _clamp(v: Any) -> int:

@@ -268,8 +268,29 @@ def test_live_audio_is_never_throttled():
 
 
 def test_leaving_idle_does_not_wait_out_the_idle_timer():
-    mode_fn = re.search(r"function setMode\(newMode\)\{(.*?)\n  \}", CODE, re.S)
+    mode_fn = re.search(r"function setMode\(\w+\)\{(.*?)\n  \}", CODE, re.S)
     assert mode_fn and "clearTimeout(idleTimer)" in mode_fn.group(1)
+
+
+def test_what_leti_is_doing_is_not_what_the_animation_is_doing():
+    """The interface shows eight states; the loop still has three modes.
+
+    `mode` decides the redraw rate - scheduleNextFrame throttles exactly when it
+    is 'idle' - so every value it can take has to be one the throttle knows. The
+    longer list of things Leti can be doing (thinking, executing, waiting for
+    approval) is labels and colours over those three. Collapsing the two back
+    together is how "thinking" would quietly start costing a full-rate frame loop
+    for as long as a turn takes.
+    """
+    states = re.search(r"const STATES = \{(.*?)\n  \};", CODE, re.S)
+    assert states, "the state table moved; this test needs updating"
+    assert set(re.findall(r"anim:'(\w+)'", states.group(1))) == {"idle", "listening", "speaking"}
+    # Every state the backend can push has an entry, or it would silently show idle.
+    listed = set(re.findall(r"\n    (\w+):\s*\{", states.group(1)))
+    orchestrator = (PROJECT_ROOT / "core" / "orchestrator.py").read_text()
+    agent_states = set(re.findall(r"^    [A-Z_]+ = \"(\w+)\"", orchestrator, re.M))
+    assert agent_states and agent_states <= listed, (
+        f"the HUD has no entry for {sorted(agent_states - listed)}")
 
 
 def test_stopping_the_loop_clears_a_pending_frame():
@@ -500,3 +521,187 @@ def test_the_three_idle_states_are_all_handled():
     assert "stopAnimation()" in CODE and "document.hidden" in CODE   # hidden: none
     assert "UNFOCUSED_REDRAW_FPS" in CODE                            # unfocused: few
     assert "IDLE_REDRAW_FPS" in CODE                                 # focused idle
+
+# --- The three columns, and what has to be in each --------------------------------
+
+def test_the_stage_is_still_three_columns_with_the_centre_dominant():
+    grid = re.search(r"\.stage\{(.*?)\}", CODE, re.S)
+    assert grid, ".stage moved; this test needs updating"
+    columns = re.search(r"grid-template-columns:([^;]+);", grid.group(1)).group(1)
+    # Fixed rails either side, and everything left over in the middle.
+    assert "minmax(0,1fr)" in columns.replace(" ", "")
+    assert columns.strip().startswith(("290px", "300px", "310px", "320px"))
+
+
+def test_the_left_column_carries_the_machine_and_the_day():
+    """Time, date, weather, the resource bars, the graphics card and the list."""
+    left = HUD[HUD.index('<div class="col left">'):HUD.index('<!-- ---------- Centre')]
+    for element in ("clockTime", "clockDate", "weatherTemp", "weatherDesc",
+                    "cpuVal", "memVal", "diskVal", "gpuVal", "vramVal", "modelVal",
+                    "todoInput", "todoList"):
+        assert f'id="{element}"' in left, f"the left column lost {element}"
+
+
+def test_the_graphics_card_is_read_once_and_not_on_the_poll():
+    """A GPU does not change while Leti is open and asking costs a subprocess. The
+    row is filled from the hardware check the first-launch card already runs."""
+    stats = re.search(r"function refreshStats\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert stats and "gpuVal" not in stats.group(1)
+    environment = re.search(r"function showEnvironment\(state\)\{(.*?)\n  \}", CODE, re.S)
+    assert environment and "gpuVal" in environment.group(1) and "vramVal" in environment.group(1)
+    assert CODE.count("callApi('get_model_setup')") == 1
+
+
+def test_the_conversation_is_the_supporting_view_not_the_dominant_one():
+    """Leti is spoken to. The transcript sits under the core as a short strip and
+    expands on request - the same panel and renderer at two sizes."""
+    assert 'class="panel log-panel chat-strip" id="sessionPanel"' in HUD
+    centre = HUD[HUD.index('<!-- ---------- Centre'):HUD.index('<!-- ---------- Right')]
+    assert 'id="sessionPanel"' in centre, "the transcript is not under the core"
+    assert "#leti-root.log-expanded .log-panel{" in CODE
+    strip = re.search(r"\.chat-strip\{([^}]*)\}", CODE)
+    assert strip and "px" in strip.group(1), "the strip has no bounded height"
+
+
+def test_the_transcript_is_hidden_with_everything_else_in_the_puck():
+    """It moved out of the right column, so hiding that column no longer hides it."""
+    assert "#leti-root.minimized .chat-strip," in CODE
+
+
+# --- The RT-LOG --------------------------------------------------------------------
+
+def test_the_rt_log_is_pushed_not_polled():
+    """A log the page asks for on a timer is a timer that runs whether or not
+    anything happened."""
+    assert "window.letiActivity" in CODE
+    assert CODE.count("callApi('get_activity')") == 1, "the tail is read once, at load"
+    intervals = re.findall(r"setInterval\(([^,]+),", CODE)
+    assert "letiActivity" not in intervals and "rtLog" not in intervals
+
+
+def test_the_rt_log_cannot_grow_without_bound():
+    """This window is open all day."""
+    assert "RT_LOG_MAX" in CODE
+    log = re.search(r"function rtLog\(kind, text\)\{(.*?)\n  \}", CODE, re.S)
+    assert log and "removeChild(rtLogInner.firstChild)" in log.group(1)
+
+
+def test_a_log_row_cannot_be_styled_as_something_else():
+    """A real bug. The kind arrives from the backend and lands in a class
+    attribute; one of the kinds was "artifact", which is also the class on a
+    floating window - so every "opened a panel" line in the log became an
+    absolutely positioned 240x150 box. The kinds are namespaced and filtered now."""
+    log = re.search(r"function rtLog\(kind, text\)\{(.*?)\n  \}", CODE, re.S)
+    assert log, "rtLog moved; this test needs updating"
+    assert "'rt-row rt-' +" in log.group(1)
+    assert "replace(/[^a-z]/gi, '')" in log.group(1)
+    # And no rule matches a bare kind any more.
+    assert not re.search(r"\.rt-row\.(?!rt-)\w", CODE)
+
+
+def test_a_repeated_state_is_not_logged_twice():
+    """One turn passes through THINKING several times; saying so each time is noise."""
+    handler = re.search(r"window\.setHudState = function\(state\)\{(.*?)\n  \};", CODE, re.S)
+    assert handler and "lastLoggedState" in handler.group(1)
+
+
+# --- Floating artifacts -------------------------------------------------------------
+
+def test_artifacts_are_windows_inside_this_page():
+    """A native window per result would be a renderer process per result."""
+    assert 'id="artifactLayer"' in HUD
+    assert "createArtifact" in CODE
+    assert "set_window_mode" not in re.search(
+        r"function createArtifact\(.*?\n  \}", CODE, re.S).group(0)
+
+
+def test_an_artifact_can_be_moved_resized_and_closed():
+    assert "makeDraggable(el, head)" in CODE and "makeResizable(el, grip)" in CODE
+    assert "el.remove()" in CODE
+
+
+def test_dragging_listens_only_while_a_pointer_is_down():
+    """Handlers left bound to a window nobody is touching are work that keeps
+    happening for no reason."""
+    drag = re.search(r"function makeDraggable\(el, handle\)\{(.*?)\n  \}", CODE, re.S)
+    assert drag, "makeDraggable moved; this test needs updating"
+    body = drag.group(1)
+    assert body.index("addEventListener('pointerdown'") < body.index("addEventListener('pointermove'")
+    assert "removeEventListener('pointermove', move)" in body
+
+
+def test_nothing_about_an_artifact_runs_on_a_clock():
+    for fn in ("createArtifact", "artifactTable", "artifactResearch", "artifactDocument"):
+        block = re.search(rf"function {fn}\(.*?\n  \}}", CODE, re.S)
+        assert block, f"{fn} moved; this test needs updating"
+        for forbidden in ("setInterval", "requestAnimationFrame", "setTimeout"):
+            assert forbidden not in block.group(0), f"{fn} holds a {forbidden}"
+
+
+def test_too_many_artifacts_cannot_bury_the_interface():
+    assert "ARTIFACT_MAX" in CODE
+    create = re.search(r"function createArtifact\(.*?\n  \}", CODE, re.S).group(0)
+    assert "artifactLayer.removeChild(artifactLayer.firstElementChild)" in create
+
+
+def test_every_artifact_kind_the_backend_can_send_can_be_rendered():
+    """showVisual receives whatever a tool put in "visual" plus whatever
+    core/artifacts.py derives. A kind with no renderer is a result that vanishes."""
+    renderers = set(re.findall(r"\n    (\w+): artifact\w+,", CODE))
+    from core import artifacts as artifact_module
+
+    derived = set(artifact_module.titles())
+    tool_supplied = {"images", "diagram"}
+    assert derived | tool_supplied <= renderers, sorted((derived | tool_supplied) - renderers)
+    # Searched in HUD, not CODE: the labels contain "//" and the comment stripper
+    # takes the rest of the line with it.
+    assert set(re.findall(r"\n    (\w+):\s+'LETI // ", HUD)) == renderers
+
+
+def test_an_unknown_artifact_kind_is_a_no_op_not_a_broken_window():
+    show = re.search(r"window\.showVisual = function\(payload\)\{(.*?)\n  \};", CODE, re.S)
+    assert show and "if(!render) return;" in show.group(1)
+
+
+def test_artifacts_never_open_in_the_puck_window():
+    show = re.search(r"window\.showVisual = function\(payload\)\{(.*?)\n  \};", CODE, re.S)
+    assert "IS_PUCK_WINDOW" in show.group(1)
+    assert "html.puck-window .artifact-layer{ display:none !important; }" in CODE
+
+
+def test_an_outside_link_cannot_navigate_the_application_away_from_itself():
+    """This page holds a live session to the assistant. A research card shows the
+    address; it does not offer to follow it."""
+    research = re.search(r"function artifactResearch\(payload\)\{(.*?)\n  \}", CODE, re.S)
+    assert research and "createElement('a')" not in research.group(1)
+    assert "target=\"_blank\"" not in CODE
+
+
+# --- The mark ------------------------------------------------------------------------
+
+def test_the_mark_is_part_of_the_drawing_it_sits_in():
+    """A separate element over the radar would be dragged through rasterisation by
+    every frame of the core. In the same SVG it is a few more vectors in a paint
+    that was happening anyway."""
+    start = HUD.index('<svg viewBox="0 0 400 400"')
+    svg = HUD[start:HUD.index("</svg>", start)]
+    assert 'id="letiMark"' in svg
+    assert "mark-stem" in svg and "mark-hair" in svg
+
+
+def test_the_mark_costs_nothing_to_sit_there():
+    """Its state shows as colour and opacity - transitions that run once and stop."""
+    for rule in ("mark-halo", "mark-stem", "mark-hair"):
+        block = re.search(rf"\.{rule}\{{([^}}]*)\}}", CODE)
+        assert block, f".{rule} moved; this test needs updating"
+        assert "animation" not in block.group(1)
+        assert "filter" not in block.group(1), "a paint-time filter inside the repainting box"
+    assert 'root.setAttribute(\'data-state\', newState)' in CODE
+
+
+def test_the_mark_is_not_a_webfont():
+    """The one element the whole screen is built around should not depend on a
+    network request."""
+    fonts = re.search(r'fonts\.googleapis\.com/css2\?family=([^"]+)', HUD).group(1)
+    assert "Vibes" not in fonts and "Script" not in fonts and "Tangerine" not in fonts
+
