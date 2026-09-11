@@ -16,12 +16,14 @@ import asyncio
 import json
 import logging
 import re
+import time
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
+from core import diagnostics
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
@@ -311,7 +313,13 @@ class Orchestrator:
         )
 
         messages = await self._build_messages(user_text)
+        _turn_started = time.perf_counter()
         final_answer = await self._tool_calling_loop(messages)
+        try:
+            diagnostics.record_turn(time.perf_counter() - _turn_started,
+                                    len(final_answer or ""))
+        except Exception:
+            pass
 
         self.session_memory.add_turn("assistant", final_answer, session_id)
         await self._maybe_persist_to_long_term(user_text, final_answer)
@@ -397,8 +405,17 @@ class Orchestrator:
         # underneath it would throw away the model server's cached prefix on every
         # pass. Routing never raises and its worst case is the full registry, which
         # is exactly what this line used to be.
+        _routing_started = time.perf_counter()
         routing = select_tools_for(last_user_message(messages), self.tool_registry)
         tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
+        # Timings for the diagnostics panel, taken while doing the real work rather
+        # than by measuring anything extra. Never allowed to affect the turn.
+        try:
+            diagnostics.record_routing(routing.count, len(self.tool_registry.names()),
+                                       time.perf_counter() - _routing_started,
+                                       routing.tool_names)
+        except Exception:
+            pass
         logger.info(
             f"Tools for this turn: {routing.count}/{len(self.tool_registry.names())}"
             f"{' (full fallback)' if routing.full_fallback else ''} - {routing.reason}"
@@ -516,9 +533,15 @@ class Orchestrator:
                 },
             )
 
+        _tool_started = time.perf_counter()
         try:
             result = await tool.run(**arguments)
             await self.safety_guard.audit_result(tool_name, arguments, result.success, result.error or "", case=case)
+            try:
+                diagnostics.record_tool(tool_name, time.perf_counter() - _tool_started,
+                                        result.success)
+            except Exception:
+                pass
             return result
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' raised an exception")

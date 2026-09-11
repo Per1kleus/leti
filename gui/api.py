@@ -47,7 +47,8 @@ SYNC_METHODS = {
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
-                 "get_model_setup", "apply_model_setup"}
+                 "get_model_setup", "apply_model_setup",
+                 "get_permissions", "set_permission", "get_diagnostics"}
 
 
 class LetiAPI:
@@ -165,6 +166,37 @@ class LetiAPI:
             # it's permitted: accepting mid-session still has to load Whisper.
             "voice_active": self.voice_active,
         }
+
+    async def a_get_permissions(self) -> dict:
+        """What Leti may do, read from the same files SafetyGuard enforces."""
+        from core import permission_center
+
+        try:
+            return permission_center.overview(self.orchestrator.tool_registry)
+        except Exception as e:
+            logger.warning(f"Couldn't read permissions: {e}")
+            return {"error": str(e), "categories": [], "all_classes": [],
+                    "confirming_classes": []}
+
+    async def a_set_permission(self, action_class: str, must_confirm: bool) -> dict:
+        """Change which classes stop and ask. Writes the guard's own setting."""
+        from core import permission_center
+
+        try:
+            return permission_center.set_class_confirmation(action_class, bool(must_confirm))
+        except Exception as e:
+            logger.exception("Couldn't change a permission")
+            return {"ok": False, "error": str(e)}
+
+    async def a_get_diagnostics(self) -> dict:
+        """A snapshot for the diagnostics panel. Reads only what already exists."""
+        from core import diagnostics
+
+        try:
+            return diagnostics.snapshot(self.orchestrator.tool_registry)
+        except Exception as e:
+            logger.warning(f"Couldn't build a diagnostics snapshot: {e}")
+            return {"error": str(e)}
 
     async def a_get_model_setup(self) -> dict:
         """Detected hardware and the recommended model. Drives the first-run card.

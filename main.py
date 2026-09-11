@@ -149,9 +149,16 @@ from core.task_manager import TaskRunner, recover_interrupted
 from tools.autonomous import (
     ControlAutonomousTaskTool,
     ListAutonomousTasksTool,
+    PursueGoalTool,
     StartAutonomousTaskTool,
 )
 from tools.autonomous import set_runner as set_task_runner
+from tools.control_center import (
+    ChangePermissionTool,
+    DiagnosticsTool,
+    ReviewPermissionsTool,
+)
+from tools.control_center import set_registry as set_control_registry
 from tools.computer_use import (
     ChooseComputerApproachTool,
     EndComputerSessionTool,
@@ -377,6 +384,13 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(EndComputerSessionTool())
 
     registry.register(ArchiveProjectTool())
+    registry.register(PursueGoalTool())
+
+    # The Permission Center and the Diagnostics panel, as tools so they can be
+    # reached by asking as well as by the buttons.
+    registry.register(ReviewPermissionsTool())
+    registry.register(ChangePermissionTool())
+    registry.register(DiagnosticsTool())
 
     _warn_if_context_is_too_small(registry)
     return registry
@@ -633,6 +647,7 @@ async def build_app(start_scheduler: bool = True):
     set_task_runner(task_runner)
     set_workflow_context(registry=tool_registry, runner=task_runner)
     set_watch_runner(task_runner)
+    set_control_registry(tool_registry)
 
     # A task that was mid-step when Leti last closed is marked paused rather than
     # resumed: nothing can know whether that step's side effects happened.

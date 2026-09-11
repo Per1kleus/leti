@@ -98,7 +98,11 @@ CATEGORIES: Dict[str, List[str]] = {
                       "tools.workflow_tools"],
     "automation":    ["tools.autonomous", "tools.workflow_tools", "tools.scheduler",
                       "tools.watch_tools"],
-    "monitoring":    ["tools.watch_tools", "tools.system_health", "tools.network_security"],
+    # Watching things, and what there is to watch on a network. system_health is
+              # deliberately NOT here: it lives in "system" with the rest of the
+              # machine tools, and pulling it in alongside every watch meant a
+              # question about a share price could reach apply_system_updates.
+    "monitoring":    ["tools.watch_tools", "tools.network_security"],
     "gui_control":   ["tools.computer_use", "tools.os_control", "tools.vision",
                       "tools.browser"],
     "social":        ["tools.social_media", "tools.social_login"],
@@ -106,6 +110,7 @@ CATEGORIES: Dict[str, List[str]] = {
     "data":          ["tools.data_analysis", "tools.engineering"],
     "business":      ["tools.business", "tools.venture_scout", "tools.trading_platform"],
     "personal":      ["tools.user_profile", "tools.personality", "tools.contacts"],
+    "control":       ["tools.control_center"],
     "everyday":      ["tools.weather", "tools.todo_list", "tools.sketch"],
 }
 

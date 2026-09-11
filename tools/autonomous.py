@@ -70,6 +70,77 @@ class StartAutonomousTaskTool(BaseTool):
         })
 
 
+class PursueGoalTool(BaseTool):
+    name = "pursue_goal"
+    description = (
+        "Take on a GOAL rather than a list of steps: 'research 20 Greek accounting firms "
+        "and create a report', 'find me three suppliers and compare them'. You still "
+        "write the plan - you are the one reading the request - but this adds the two "
+        "things a goal needs that a task does not: it records what DONE actually looks "
+        "like, and it adds a final step that checks the goal was met rather than just "
+        "that the steps ran. 'Create a report' is not finished because a file was "
+        "created; it is finished when the file exists and contains the report. Use "
+        "start_autonomous_task for a plain sequence of jobs, and this when there is an "
+        "outcome to be judged. For anything a single reply can answer, just answer it - "
+        "planning a one-step goal is overhead with no benefit."
+    )
+    parameters = [
+        ToolParameter(name="goal", type="string",
+                      description="The outcome the user wants, in their terms."),
+        ToolParameter(name="steps", type="array", items_type="string",
+                      description="Ordered plain-language steps to reach it."),
+        ToolParameter(name="success_looks_like", type="string",
+                      description="How to tell the goal was actually met, e.g. "
+                                  "'a file at reports/firms.md listing 20 firms with contacts'."),
+        ToolParameter(name="name", type="string", required=False,
+                      description="Short name for the goal."),
+        ToolParameter(name="project", type="string", required=False,
+                      description="Project this belongs to, if any."),
+    ]
+
+    async def run(self, goal: str, steps: List[str], success_looks_like: str,
+                  name: str = "", project: str = "", **kwargs) -> ToolResult:
+        cleaned = [str(s).strip() for s in (steps or []) if str(s).strip()]
+        if not cleaned:
+            return ToolResult(success=False,
+                              error="A goal needs a plan. Give the steps to reach it.")
+        if not str(success_looks_like or "").strip():
+            return ToolResult(success=False,
+                              error=("A goal needs to say what done looks like, or there "
+                                     "is nothing to verify it against."))
+
+        # The verification step is an ordinary step, which means it runs through the
+        # orchestrator and the guard like any other - checking a file exists is a
+        # tool call, not a privileged inspection.
+        plan = cleaned + [
+            f"Check whether the goal has actually been met. Success looks like: "
+            f"{success_looks_like}. Verify it rather than assuming - if a file was "
+            f"meant to be produced, confirm it exists and contains what it should. "
+            f"Say plainly whether the goal was met, and if not, what is missing."
+        ]
+
+        try:
+            task = task_manager.create_task(goal, plan, name or goal, project=project)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+
+        task = task_manager.get_task(task["id"])
+        task["goal"] = goal
+        task["success_looks_like"] = success_looks_like
+        task_manager._replace(task)
+
+        started = _RUNNER.start_in_background(task["id"]) if _RUNNER is not None else False
+        return ToolResult(success=True, output={
+            "task": task_manager.describe(task),
+            "plan": plan,
+            "success_looks_like": success_looks_like,
+            "started": started,
+            "note": ("Working on it. The last step checks the goal was actually met, and "
+                     "a step that fails in a recoverable way is retried a different way "
+                     "before the task gives up."),
+        })
+
+
 class ListAutonomousTasksTool(BaseTool):
     name = "list_autonomous_tasks"
     description = (

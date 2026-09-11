@@ -44,7 +44,24 @@ MAX_HISTORY = 20
 
 # Conditions this can decide on its own, with no model and no tool call. Anything
 # outside this list is not pretended at: see NEEDS_A_TASK below.
-CONDITION_TYPES = ("cpu_above", "file_changed", "url_changed", "url_available")
+#
+# email_from and price_below/price_above reuse what the email and trading tools
+# already connect to - the same IMAP settings and the same market data helper - so
+# they work exactly when those tools do and fail the same way when they don't.
+#
+# Calendar conflicts are NOT here. Leti can CREATE meetings over CalDAV but has no
+# tool that reads a calendar back, so there is nothing to evaluate a conflict
+# against. A watch that pretended to check would be worse than not offering one.
+CONDITION_TYPES = ("cpu_above", "file_changed", "url_changed", "url_available",
+                   "email_from", "price_below", "price_above")
+
+# Asked for often enough to be worth refusing by name rather than with a generic
+# "unsupported", so the answer explains itself.
+UNSUPPORTED = {
+    "calendar_conflict": ("Leti can create calendar events but has no tool that reads "
+                          "a calendar back, so it cannot check for conflicts. Watching "
+                          "for that would mean inventing an answer."),
+}
 
 ACTIONS = ("notify", "run_workflow", "start_task")
 
@@ -125,6 +142,8 @@ def validate(watch: Dict[str, Any]) -> List[str]:
     """Everything wrong with this watch. Empty means it can be saved."""
     errors: List[str] = []
     kind = watch.get("condition_type")
+    if kind in UNSUPPORTED:
+        return [UNSUPPORTED[kind]]
     if kind not in CONDITION_TYPES:
         return [f"'{kind}' is not something Leti can watch on its own. "
                 f"Supported: {', '.join(CONDITION_TYPES)}."]
@@ -142,6 +161,16 @@ def validate(watch: Dict[str, Any]) -> List[str]:
     elif kind == "file_changed":
         if not str(condition.get("path", "")).strip():
             errors.append("file_changed needs a path.")
+    elif kind == "email_from":
+        if not str(condition.get("sender", "")).strip():
+            errors.append("email_from needs a sender to look for.")
+    elif kind in ("price_below", "price_above"):
+        if not str(condition.get("symbol", "")).strip():
+            errors.append(f"{kind} needs a symbol, e.g. AAPL.")
+        try:
+            float(condition.get("price"))
+        except (TypeError, ValueError):
+            errors.append(f"{kind} needs a numeric price.")
     elif kind in ("url_changed", "url_available"):
         url = str(condition.get("url", "")).strip()
         if not url.startswith(("http://", "https://")):
@@ -198,6 +227,12 @@ def describe_condition(watch: Dict[str, Any]) -> str:
         return f"changes at {c.get('url')}"
     if kind == "url_available":
         return f"{c.get('url')} becoming reachable"
+    if kind == "email_from":
+        return f"unread mail from {c.get('sender')}"
+    if kind == "price_below":
+        return f"{c.get('symbol')} falling below {c.get('price')}"
+    if kind == "price_above":
+        return f"{c.get('symbol')} rising above {c.get('price')}"
     return str(kind)
 
 
@@ -253,7 +288,74 @@ def evaluate_condition(watch: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         return _file_changed(condition, state)
     if kind in ("url_changed", "url_available"):
         return _url(kind, condition, state)
+    if kind == "email_from":
+        return _email_from(condition, state)
+    if kind in ("price_below", "price_above"):
+        return _price(kind, condition, state)
     raise ConditionError(f"'{kind}' has no evaluator.")
+
+
+def _email_from(condition: Dict[str, Any], state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """Unread mail from a particular sender.
+
+    Reuses the mail tool's own settings and IMAP session rather than a second
+    configuration, and reads in peek mode exactly as list_new_emails does - a watch
+    must not mark the user's mail as read behind them.
+    """
+    from tools.email_client import _ImapSession, _decode, _email_settings
+
+    sender = str(condition.get("sender", "")).lower()
+    try:
+        cfg = _email_settings()
+        with _ImapSession(cfg) as conn:
+            status, data = conn.search(None, "UNSEEN")
+            if status != "OK":
+                raise ConditionError("the mail server refused the search")
+            uids = data[0].split()[-50:]
+            seen_uids = set(state.get("matched_uids") or [])
+            matched = []
+            for uid in reversed(uids):
+                status, headers = conn.fetch(uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+                if status != "OK" or not headers or not headers[0]:
+                    continue
+                text = _decode(headers[0][1].decode("utf-8", errors="replace"))
+                if sender in text.lower():
+                    matched.append(uid.decode() if isinstance(uid, bytes) else str(uid))
+    except ConditionError:
+        raise
+    except Exception as e:
+        raise ConditionError(f"couldn't check the mailbox: {e}")
+
+    fresh = [uid for uid in matched if uid not in seen_uids]
+    # True only while something NEW is sitting there, so one message is one event.
+    return bool(fresh), {"matched_uids": matched[:50]}
+
+
+def _price(kind: str, condition: Dict[str, Any], state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """A symbol's last close against a threshold, via the trading tool's own data
+    helper - so it needs the same Alpaca key and fails the same way without it."""
+    import asyncio as _asyncio
+
+    from tools.trading_platform import _get_closes
+
+    symbol = str(condition.get("symbol", "")).upper()
+    try:
+        threshold = float(condition.get("price"))
+    except (TypeError, ValueError):
+        raise ConditionError("the watch has no numeric price to compare against")
+
+    try:
+        closes = _asyncio.run(_get_closes(symbol, limit=1))
+    except RuntimeError:
+        raise ConditionError("price checks cannot run inside a running event loop here")
+    except Exception as e:
+        raise ConditionError(f"couldn't get a price for {symbol}: {e}")
+
+    if not closes:
+        raise ConditionError(f"no price data came back for {symbol}")
+    last = float(closes[-1])
+    hit = last < threshold if kind == "price_below" else last > threshold
+    return hit, {"last_price": last}
 
 
 def _cpu_above(condition: Dict[str, Any], state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:

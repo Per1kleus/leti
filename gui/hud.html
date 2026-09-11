@@ -734,6 +734,17 @@
           <path d="M9 3v6H3M21 15h-6v6"/><path d="M15 9l6-6M3 21l6-6"/>
         </svg>
       </div>
+      <div class="icon-btn" id="permissionsBtn" title="Permissions - what Leti may do">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path d="M12 2l7 3v6c0 4.4-3 8.5-7 11-4-2.5-7-6.6-7-11V5l7-3z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+      </div>
+      <div class="icon-btn" id="diagnosticsBtn" title="Diagnostics - how Leti is running">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12h4l2.5-6 4 12 2.5-6h5"/>
+        </svg>
+      </div>
       <div class="icon-btn" id="settingsBtn" title="Settings">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
           <circle cx="12" cy="12" r="3"/>
@@ -981,6 +992,22 @@
     <div class="settings-panel">
       <div class="settings-close" id="settingsClose">&times;</div>
       <div id="settingsContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="permissionsOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="permissionsClose">&times;</div>
+      <div class="settings-panel-title">What Leti may do</div>
+      <div id="permissionsContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="diagnosticsOverlay">
+    <div class="settings-panel">
+      <div class="settings-close" id="diagnosticsClose">&times;</div>
+      <div class="settings-panel-title">Diagnostics</div>
+      <div id="diagnosticsContent"></div>
     </div>
   </div>
 
@@ -2124,6 +2151,193 @@
   // page, and a first-run card that opens there is a dialogue nobody can read let
   // alone answer. The full window asks - and if the interface is collapsed inside
   // a browser tab, it reopens itself first rather than talking to a corner.
+  // ---------- Permission Center ----------
+  // Reads and writes the same settings SafetyGuard enforces; there is no second
+  // copy of the rules here. Built from the existing overlay and button styles, so
+  // this adds a screen without adding a style rule.
+  const permissionsOverlay = document.getElementById('permissionsOverlay');
+  const permissionsContent = document.getElementById('permissionsContent');
+  const diagnosticsOverlay = document.getElementById('diagnosticsOverlay');
+  const diagnosticsContent = document.getElementById('diagnosticsContent');
+
+  function closeOverlay(overlay){ overlay.classList.remove('open'); }
+  document.getElementById('permissionsClose').onclick = () => closeOverlay(permissionsOverlay);
+  document.getElementById('diagnosticsClose').onclick = () => closeOverlay(diagnosticsOverlay);
+  permissionsOverlay.addEventListener('click', e => {
+    if(e.target === permissionsOverlay) closeOverlay(permissionsOverlay);
+  });
+  diagnosticsOverlay.addEventListener('click', e => {
+    if(e.target === diagnosticsOverlay) closeOverlay(diagnosticsOverlay);
+  });
+
+  const LEVEL_LABEL = { allowed: 'Automatic', asks: 'Asks first', blocked: 'Not allowed' };
+
+  function renderPermissions(data){
+    let html = '<div class="audio-intro">' + (data.note || '') + '</div>';
+    (data.categories || []).forEach(cat => {
+      html += '<div class="panel-head" style="margin-top:14px"><div>' +
+              '<div class="sys">' + cat.category + '</div></div>' +
+              '<div class="tag">' + (LEVEL_LABEL[cat.level] || cat.level) + '</div></div>';
+      html += '<div class="audio-detail">' + cat.blurb + '</div>';
+      (cat.actions || []).forEach(act => {
+        html += '<div class="kv-row"><span class="k">' + act.action + '</span>' +
+                '<span class="v' + (act.level === 'asks' ? ' warn' : '') + '">' +
+                (LEVEL_LABEL[act.level] || act.level) + '</span></div>';
+        html += '<div class="audio-detail" title="' + (act.tools || []).join(', ') + '">' +
+                act.explanation + ' <span style="opacity:.55">(' +
+                (act.tools || []).length + ' tool' +
+                ((act.tools || []).length === 1 ? '' : 's') + ')</span></div>';
+      });
+    });
+
+    html += '<div class="panel-head" style="margin-top:16px"><div>' +
+            '<div class="sys">Confirmation</div></div></div>';
+    html += '<div class="audio-detail">Which kinds of action stop and ask you first. ' +
+            'Irreversible actions always ask.</div>';
+    (data.all_classes || []).forEach(cls => {
+      const on = (data.confirming_classes || []).indexOf(cls) >= 0;
+      const locked = cls === 'critical';
+      html += '<div class="kv-row"><span class="k">' + cls + '</span>' +
+              '<span class="v' + (on ? ' warn' : '') + '">' +
+              (on ? 'asks' : 'automatic') +
+              (locked ? ' (always)' : '') + '</span></div>';
+      if(!locked){
+        html += '<div class="audio-detail"><button class="settings-btn" ' +
+                'data-class="' + cls + '" data-confirm="' + (on ? 'false' : 'true') + '">' +
+                (on ? 'Stop asking for ' + cls : 'Ask before ' + cls) + '</button></div>';
+      }
+    });
+    html += '<div class="audio-detail" id="permissionsNote"></div>';
+    permissionsContent.innerHTML = html;
+
+    permissionsContent.querySelectorAll('button[data-class]').forEach(btn => {
+      btn.onclick = async () => {
+        const note = document.getElementById('permissionsNote');
+        btn.disabled = true;
+        note.textContent = 'Saving\u2026';
+        try {
+          await callApi('set_permission', btn.dataset.class, btn.dataset.confirm === 'true');
+          await openPermissions();
+        } catch(e){
+          btn.disabled = false;
+          note.innerHTML = '<span class="settings-error">' + e.message + '</span>';
+        }
+      };
+    });
+  }
+
+  async function openPermissions(){
+    permissionsOverlay.classList.add('open');
+    if(!permissionsContent.innerHTML){
+      permissionsContent.innerHTML = '<div class="audio-intro">Reading permissions\u2026</div>';
+    }
+    try { renderPermissions(await callApi('get_permissions')); }
+    catch(e){
+      permissionsContent.innerHTML =
+        '<div class="settings-error">Couldn\u2019t read permissions: ' + e.message + '</div>';
+    }
+  }
+  document.getElementById('permissionsBtn').onclick = openPermissions;
+
+  // ---------- Diagnostics ----------
+  // Refreshed only while the panel is OPEN, and then slowly. A closed panel costs
+  // nothing at all: the interval is cleared, not left ticking.
+  let diagnosticsTimer = null;
+  const DIAGNOSTICS_REFRESH_MS = 5000;
+
+  function row(label, value){
+    const missing = value === 'Unavailable' || value === null || value === undefined;
+    return '<div class="kv-row"><span class="k">' + label + '</span>' +
+           '<span class="v' + (missing ? ' off' : '') + '">' +
+           (missing ? 'Unavailable' : value) + '</span></div>';
+  }
+
+  function renderDiagnostics(d){
+    const m = d.model || {}, p = d.performance || {}, r = d.resources || {};
+    const t = d.tools || {}, a = d.autonomy || {}, w = d.watches || {};
+    let html = '<div class="audio-intro">Taken at ' + (d.taken_at || '') +
+               '. Nothing here is measured just to fill this panel \u2014 anything ' +
+               'that cannot be read honestly says Unavailable.</div>';
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Model</div></div></div>';
+    html += row('Reasoning model', m.reasoning_model) + row('Context size', m.context_size) +
+            row('Vision model', m.vision_model) + row('Ollama',
+              m.connected === true ? 'Responding' : 'Unavailable');
+    if(m.connected_note) html += '<div class="audio-detail">' + m.connected_note + '</div>';
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Performance</div></div></div>';
+    html += row('Last response', p.last_response_seconds === 'Unavailable' ? 'Unavailable'
+                                  : p.last_response_seconds + ' s') +
+            row('Mean response', p.mean_response_seconds === 'Unavailable' ? 'Unavailable'
+                                  : p.mean_response_seconds + ' s') +
+            row('Tool routing', p.last_routing_ms === 'Unavailable' ? 'Unavailable'
+                                  : p.last_routing_ms + ' ms') +
+            row('Last tool', p.last_tool) +
+            row('Time to first token', p.time_to_first_token) +
+            row('Tokens/sec', p.tokens_per_second);
+    if(p.time_to_first_token_note)
+      html += '<div class="audio-detail">' + p.time_to_first_token_note + '</div>';
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Resources</div></div></div>';
+    html += row('CPU', r.cpu_percent === 'Unavailable' ? 'Unavailable' : r.cpu_percent + '%') +
+            row('Memory', r.ram_percent === 'Unavailable' ? 'Unavailable'
+                          : r.ram_percent + '% (' + r.ram_used_gb + ' / ' + r.ram_total_gb + ' GB)') +
+            row('Leti', r.leti_ram_mb ? r.leti_ram_mb + ' MB, ' + r.threads + ' threads' : 'Unavailable') +
+            row('GPU', r.gpu) + row('VRAM', r.vram) + row('KV cache', r.kv_cache);
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Tools</div></div></div>';
+    html += row('Registered', t.registered) +
+            row('Exposed last request', t.exposed_last_request) +
+            row('Routing time', t.routing_ms === 'Unavailable' ? 'Unavailable' : t.routing_ms + ' ms');
+    if((t.last_selected || []).length)
+      html += '<div class="audio-detail">Last selected: ' + t.last_selected.join(', ') + '</div>';
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Tasks</div></div></div>';
+    html += row('Running', a.running ? a.running.name + ' \u00b7 step ' + a.running.step : 'None') +
+            row('Queued', a.queued) + row('Waiting for approval', a.waiting_for_approval) +
+            row('Recovery attempts', a.recovery_attempts);
+
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Watches</div></div></div>';
+    html += row('Active', w.active) + row('Paused', w.paused) +
+            row('Next evaluation', w.next_evaluation);
+    (w.watches || []).forEach(watch => {
+      html += '<div class="kv-row"><span class="k">' + watch.name + '</span>' +
+              '<span class="v' + (watch.enabled ? '' : ' off') + '">' +
+              (watch.enabled ? 'watching' : 'paused') + '</span></div>';
+      html += '<div class="audio-detail">' + watch.watching + ' \u2192 ' + watch.action +
+              (watch.project ? ' \u00b7 ' + watch.project : '') +
+              ' \u00b7 last trigger: ' + (watch.last_triggered || 'never') +
+              (watch.failures ? ' \u00b7 ' + watch.failures + ' failed checks' : '') + '</div>';
+    });
+
+    diagnosticsContent.innerHTML = html;
+  }
+
+  async function refreshDiagnostics(){
+    try { renderDiagnostics(await callApi('get_diagnostics')); }
+    catch(e){
+      diagnosticsContent.innerHTML =
+        '<div class="settings-error">Couldn\u2019t read diagnostics: ' + e.message + '</div>';
+    }
+  }
+
+  function openDiagnostics(){
+    diagnosticsOverlay.classList.add('open');
+    diagnosticsContent.innerHTML = '<div class="audio-intro">Reading\u2026</div>';
+    refreshDiagnostics();
+    if(diagnosticsTimer) clearInterval(diagnosticsTimer);
+    diagnosticsTimer = setInterval(refreshDiagnostics, DIAGNOSTICS_REFRESH_MS);
+  }
+
+  function stopDiagnostics(){
+    if(diagnosticsTimer){ clearInterval(diagnosticsTimer); diagnosticsTimer = null; }
+  }
+  document.getElementById('diagnosticsBtn').onclick = openDiagnostics;
+  document.getElementById('diagnosticsClose').addEventListener('click', stopDiagnostics);
+  diagnosticsOverlay.addEventListener('click', e => {
+    if(e.target === diagnosticsOverlay) stopDiagnostics();
+  });
+
   // ---------- First launch: which model this computer can run ----------
   // Shown once, before the audio card, and only until it has been answered. It
   // downloads and configures nothing by being opened: both of its buttons are an

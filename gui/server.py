@@ -213,6 +213,12 @@ class LetiWebServer:
                 value = await self.api.a_check_audio(*args)
             elif method == "save_audio_setup":
                 value = await self.api.a_save_audio_setup(*args)
+            elif method == "get_permissions":
+                value = await self.api.a_get_permissions()
+            elif method == "set_permission":
+                value = await self.api.a_set_permission(*args)
+            elif method == "get_diagnostics":
+                value = await self.api.a_get_diagnostics()
             elif method == "get_model_setup":
                 value = await self.api.a_get_model_setup()
             elif method == "apply_model_setup":

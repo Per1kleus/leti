@@ -35,7 +35,9 @@ def isolated(tmp_path, monkeypatch):
 def test_the_new_tools_are_registered_and_nothing_was_lost(registry):
     for name in NEW_TOOLS:
         assert registry.get(name) is not None, f"{name} is missing"
-    assert len(registry.names()) == 119
+    # Only ever goes up: 119 with watches and GUI control, 123 with goals,
+    # the Permission Center and Diagnostics.
+    assert len(registry.names()) >= 123, f"the registry lost tools: {len(registry.names())}"
     for existing in ("mouse_click", "read_screen", "browser_read_page", "create_project",
                      "start_autonomous_task", "create_workflow", "send_email"):
         assert registry.get(existing) is not None, f"{existing} disappeared"

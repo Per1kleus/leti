@@ -25,9 +25,11 @@ class CreateWatchTool(BaseTool):
         "when this page changes', 'tell me when the site comes back up'. Leti checks on "
         "a schedule and reports the moment the condition BECOMES true, once - not every "
         "time it looks. Condition types: cpu_above (percent, optional for_minutes), "
-        "file_changed (path), url_changed (url), url_available (url). If the user wants "
-        "something else watched - email, calendar, prices - say plainly that Leti cannot "
-        "monitor that on its own yet rather than pretending to."
+        "file_changed (path), url_changed (url), url_available (url), email_from (sender - "
+        "needs the mail settings the email tools use), price_below and price_above "
+        "(symbol and price - need the market data key the trading tools use). Leti "
+        "CANNOT watch a calendar: it can create events but has no tool that reads one "
+        "back, so say that plainly rather than pretending to watch it."
     )
     parameters = [
         ToolParameter(name="name", type="string", description="Short name for the watch."),
@@ -42,6 +44,12 @@ class CreateWatchTool(BaseTool):
                       description="For file_changed: the file to watch."),
         ToolParameter(name="url", type="string", required=False,
                       description="For url_changed / url_available: the address."),
+        ToolParameter(name="sender", type="string", required=False,
+                      description="For email_from: the address or name to look for."),
+        ToolParameter(name="symbol", type="string", required=False,
+                      description="For price_below / price_above: e.g. AAPL or BTC/USD."),
+        ToolParameter(name="price", type="number", required=False,
+                      description="For price_below / price_above: the threshold."),
         ToolParameter(name="action", type="string", required=False,
                       description="notify (default), run_workflow, or start_task.",
                       enum=list(watches.ACTIONS)),
@@ -55,6 +63,7 @@ class CreateWatchTool(BaseTool):
 
     async def run(self, name: str, condition_type: str, percent: float = 90,
                   for_minutes: float = 0, path: str = "", url: str = "",
+                  sender: str = "", symbol: str = "", price: float = 0,
                   action: str = "notify", action_target: str = "",
                   interval_minutes: float = watches.DEFAULT_INTERVAL_MINUTES,
                   project: str = "", **kwargs) -> ToolResult:
@@ -65,6 +74,10 @@ class CreateWatchTool(BaseTool):
             condition = {"path": path}
         elif condition_type in ("url_changed", "url_available"):
             condition = {"url": url}
+        elif condition_type == "email_from":
+            condition = {"sender": sender}
+        elif condition_type in ("price_below", "price_above"):
+            condition = {"symbol": symbol, "price": price}
 
         watch = watches.create(name, condition_type, condition, action or "notify",
                                action_target, interval_minutes, project=project)

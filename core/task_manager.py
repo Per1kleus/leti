@@ -39,6 +39,11 @@ logger = logging.getLogger("leti.tasks")
 STORE_PATH = "./data/autonomous_tasks.json"
 MAX_STEPS = 25
 DEFAULT_MAX_ATTEMPTS = 2          # one retry; a step that fails twice is not transient
+# Self-recovery: after the plain retries are spent, a step whose failure looks
+# recoverable gets this many attempts at a DIFFERENT approach. Small on purpose -
+# the failure mode of automatic recovery is a machine that will not admit defeat.
+MAX_RECOVERIES_PER_STEP = 2
+MAX_RECOVERY_SECONDS = 300        # a step that has been recovering for five minutes has failed
 MAX_RESULT_CHARS = 4000
 MAX_TASKS_KEPT = 50
 
@@ -143,6 +148,14 @@ def create_task(objective: str, steps: List[str], name: str = "",
     return task
 
 
+def _note(step: Dict[str, Any], text: str) -> None:
+    """Write what happened into the step, so a recovery is visible rather than
+    a gap between a failure the user saw and a success they cannot explain."""
+    step.setdefault("history", []).append(
+        {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "note": text})
+    step["history"] = step["history"][-10:]
+
+
 def progress(task: Dict[str, Any]) -> Dict[str, Any]:
     """Real progress, counted from the steps. Never an invented percentage."""
     steps = task.get("steps", [])
@@ -170,6 +183,8 @@ def describe(task: Dict[str, Any]) -> Dict[str, Any]:
         "steps_total": p["steps_total"],
         "current": p["current_instruction"],
         "project": task.get("project"),
+        "recoveries": sum(s.get("recoveries", 0) for s in task.get("steps", [])),
+        "step_history": [note for s in task.get("steps", []) for note in s.get("history", [])],
         "blocked_reason": task.get("blocked_reason"),
         "error": task.get("error"),
         "result": task.get("result"),
@@ -320,6 +335,7 @@ class TaskRunner:
         task = get_task(task_id)
         step = task["steps"][index]
         step["attempts"] = step.get("attempts", 0) + 1
+        step.setdefault("first_attempt_at", time.time())
         step["status"] = "running"
         _replace(task)
 
@@ -327,6 +343,8 @@ class TaskRunner:
             f"[Autonomous task '{task['name']}', step {index + 1} of "
             f"{len(task['steps'])}. Objective: {task['objective']}]\n{step['instruction']}"
         )
+        if step.get("recovery_instruction"):
+            instruction += f"\n\n{step['recovery_instruction']}"
         try:
             answer = await self.orchestrator.handle_user_input(instruction)
         except asyncio.CancelledError:
@@ -340,7 +358,10 @@ class TaskRunner:
         step = task["steps"][index]
         step["status"] = "done"
         step["result"] = (answer or "")[:MAX_RESULT_CHARS]
+        if step.get("recoveries"):
+            _note(step, f"recovery {step['recoveries']} succeeded")
         step["error"] = None
+        step.pop("recovery_instruction", None)
         task["current_step"] = index + 1
         _replace(task)
         return True
@@ -367,8 +388,33 @@ class TaskRunner:
             # Retry once. A bounded count, never a loop that can spin.
             step["status"] = "pending"
             step["error"] = message
+            _note(step, f"attempt {step['attempts']} failed: {message}")
             _replace(task)
             logger.info(f"Task {task_id} step {index + 1} failed ({message}); retrying.")
+            return True
+
+        # The plain retries are spent. If the failure looks like something that
+        # might succeed a different way - a site that was briefly down, a request
+        # that timed out - the step is re-run ONCE more with the failure written
+        # into it, so the model tries another approach rather than the same one.
+        # It is still an ordinary request: the orchestrator runs it, the guard
+        # authorises it, and nothing here executes anything.
+        recoveries = step.get("recoveries", 0)
+        elapsed = time.time() - step.get("first_attempt_at", time.time())
+        if (is_recoverable(error) and recoveries < MAX_RECOVERIES_PER_STEP
+                and elapsed < MAX_RECOVERY_SECONDS):
+            step["recoveries"] = recoveries + 1
+            step["attempts"] = 0                  # the retries reset for the new approach
+            step["status"] = "recovering"
+            step["error"] = message
+            step["recovery_instruction"] = (
+                f"The previous attempt failed: {message}. Try a different way of doing "
+                "this same step - an alternative source, address or tool. Do not repeat "
+                "the approach that just failed, and do not skip the step.")
+            _note(step, f"recovery {step['recoveries']} attempted after: {message}")
+            _replace(task)
+            logger.info(f"Task {task_id} step {index + 1}: recovery "
+                        f"{step['recoveries']} after {message}")
             return True
 
         step["status"] = "failed"
@@ -394,6 +440,30 @@ class TaskRunner:
                 asyncio.get_event_loop().create_task(result)
         except Exception:
             logger.exception("Couldn't deliver a task notification")
+
+
+# Failures worth trying differently: something that was briefly unavailable, timed
+# out, or refused once. Deliberately a short list - treating everything as
+# recoverable is how a task spends an afternoon failing in new ways.
+_RECOVERABLE = (
+    "timeout", "timed out", "temporarily", "unavailable", "connection",
+    "network", "unreachable", "rate limit", "too many requests", "503", "502",
+    "504", "429", "reset by peer", "try again",
+)
+
+
+def is_recoverable(error: Exception) -> bool:
+    """Whether a different approach is worth one attempt.
+
+    Never true for an approval stop or a hard block: those are answers, not
+    failures, and retrying them differently would be trying to get around them.
+    """
+    from core.safety_guard import ConfirmationDenied, PermissionDenied
+
+    if isinstance(error, (ConfirmationDenied, PermissionDenied)):
+        return False
+    text = str(error).lower()
+    return any(marker in text for marker in _RECOVERABLE)
 
 
 def _needs_approval(error: Exception) -> bool:

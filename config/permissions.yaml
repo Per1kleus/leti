@@ -365,6 +365,23 @@ tools:
   archive_project:
     action: modify
 
+  # A goal is a plan being written down, like start_autonomous_task; the carrying
+  # out is authorised call by call as it happens.
+  pursue_goal:
+    action: modify
+
+  # --- Permission Center and Diagnostics ---
+  review_permissions:
+    action: read
+
+  # Changes what Leti may do without asking, by writing the very files SafetyGuard
+  # reads. Nothing should be able to loosen its own leash quietly, so this asks.
+  change_permission:
+    action: critical
+
+  get_diagnostics:
+    action: read
+
   # --- Business intelligence ---
   business_dashboard:
     action: read

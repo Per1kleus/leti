@@ -41,7 +41,13 @@ def test_a_watch_is_created_enabled_and_persisted():
     ("cpu_above", {"percent": 500}, "between 1 and 100"),
     ("file_changed", {}, "needs a path"),
     ("url_changed", {"url": "not-a-url"}, "http"),
-    ("email_from", {}, "not something Leti can watch"),
+    ("email_from", {}, "needs a sender"),
+    ("price_below", {"symbol": "AAPL"}, "needs a numeric price"),
+    ("price_above", {"price": 10}, "needs a symbol"),
+    # Still unsupported, and refused by name rather than with a shrug: Leti can
+    # create calendar events but has no tool that reads one back.
+    ("calendar_conflict", {}, "no tool that reads a calendar back"),
+    ("moon_phase", {}, "not something Leti can watch"),
 ])
 def test_an_unsupported_or_invalid_watch_is_refused(kind, condition, fragment):
     problems = watches.validate(watches.create("w", kind, condition))
