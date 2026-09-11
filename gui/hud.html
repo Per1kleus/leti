@@ -359,8 +359,10 @@
   }
   .radar svg{ width:100%; height:100%; overflow:visible; }
   /* Below the mark, not over it. The mark is the identity; this is the caption. */
+  /* Below the ring, not on it. The core's own circle reaches 73 of the drawing's
+     400 units from the middle, so anything above ~68% sits on top of it. */
   .radar-core{
-    position:absolute; left:50%; top:86%; transform:translate(-50%,-50%);
+    position:absolute; left:50%; top:74%; transform:translate(-50%,-50%);
     text-align:center; pointer-events:none;
   }
   .radar-core .state{
@@ -751,6 +753,15 @@
   .rt-row.rt-state .body{ color:var(--cyan); }
   .rt-row.rt-task .body, .rt-row.rt-watch .body{ color:var(--ice); }
   .rt-row.rt-approval .body, .rt-row.rt-error .body{ color:var(--amber); }
+  /* An offer: something Leti could show you, sitting in the log until you want
+     it. Deliberately quiet - the answer is the text, this is a footnote. */
+  .rt-row.rt-offer .body{ color:var(--ice-dim); cursor:pointer; }
+  .rt-row.rt-offer .body:hover{ color:var(--cyan); }
+  .rt-row.rt-offer .body::after{
+    content:' \2197'; color:var(--cyan-dim);
+  }
+  .rt-row.rt-offer.spent .body{ cursor:default; opacity:0.55; }
+  .rt-row.rt-offer.spent .body::after{ content:''; }
 
   /* ---------- The conversation, kept small on purpose ----------
      Leti is spoken to. The transcript is the supporting view, so it sits under
@@ -1132,7 +1143,7 @@
           <!-- The mark. Drawn over the core so the audio-reactive ring moves
                behind it. See the .mark-* rules for why it lives in this SVG. -->
           <g id="letiMark" fill="none" stroke-linecap="round" stroke-linejoin="round"
-             transform="translate(91 118.4) scale(0.865)">
+             transform="translate(145.6 157) scale(0.432)">
             <path class="mark-halo" stroke-width="16"
                   d="M128 36 C116 78, 104 126, 104 156 C106 176, 130 186, 154 176 C170 169, 182 156, 188 144"/>
             <path class="mark-hair" stroke-width="2"
@@ -2004,6 +2015,7 @@
     rtLogInner.appendChild(row);
     while(rtLogInner.childElementCount > RT_LOG_MAX) rtLogInner.removeChild(rtLogInner.firstChild);
     rtLogInner.scrollTop = rtLogInner.scrollHeight;
+    return row;
   }
 
   // The agent state machine's own vocabulary, said plainly. A state that repeats
@@ -3668,13 +3680,35 @@
     document: artifactDocument,
   };
 
+  function artifactName(payload){
+    const kind = (ARTIFACT_KIND[payload.type] || 'LETI // RESULT').replace('LETI // ', '').toLowerCase();
+    const title = payload.title || payload.query || '';
+    return kind + (title ? ': ' + title : '');
+  }
+
+  // Most results are answered in words. When Leti has something it COULD show but
+  // nothing asked to see it, the log gets one quiet line instead of a window over
+  // the interface - and clicking that line opens it. The payload rides on the row,
+  // so it is freed with the row when the log rolls past it.
+  function offerArtifact(payload){
+    const row = rtLog('offer', artifactName(payload) + ' \u2014 ready');
+    row.querySelector('.body').onclick = () => {
+      if(row.classList.contains('spent')) return;
+      row.classList.add('spent');
+      const render = ARTIFACT_RENDERERS[payload.type];
+      if(render) render(payload);
+    };
+  }
+
   window.showVisual = function(payload){
     if(!payload || IS_PUCK_WINDOW) return;
     const render = ARTIFACT_RENDERERS[payload.type];
     if(!render) return;              // an unknown kind is a no-op, not a broken window
+    // The backend decided (see core/artifacts.should_open). The page does not get
+    // a second opinion about it - one rule, in one place, that can be read.
+    if(payload.offer){ offerArtifact(payload); return; }
     render(payload);
-    rtLog('artifact', 'Opened ' + (ARTIFACT_KIND[payload.type] || 'a panel').replace('LETI // ', '').toLowerCase()
-          + (payload.title || payload.query ? ': ' + (payload.title || payload.query) : ''));
+    rtLog('artifact', 'Opened ' + artifactName(payload));
   };
 
   // Closing every artifact at once, for when the screen has got busy.

@@ -658,6 +658,26 @@ def test_every_artifact_kind_the_backend_can_send_can_be_rendered():
     assert set(re.findall(r"\n    (\w+):\s+'LETI // ", HUD)) == renderers
 
 
+def test_a_result_that_was_not_asked_for_becomes_one_line_not_a_window():
+    """Most answers are words. When Leti has something it could show and nothing
+    asked to see it, the log gets a quiet line that opens it on click."""
+    offer = re.search(r"function offerArtifact\(payload\)\{(.*?)\n  \}", CODE, re.S)
+    assert offer, "offerArtifact moved; this test needs updating"
+    body = offer.group(1)
+    assert "rtLog('offer'" in body
+    assert "onclick" in body and "render(payload)" in body
+    # The payload rides on the row, so it is freed when the log rolls past it.
+    assert "artifactLayer" not in body
+    show = re.search(r"window\.showVisual = function\(payload\)\{(.*?)\n  \};", CODE, re.S)
+    assert "if(payload.offer){ offerArtifact(payload); return; }" in show.group(1)
+
+
+def test_an_offer_can_only_be_taken_once():
+    offer = re.search(r"function offerArtifact\(payload\)\{(.*?)\n  \}", CODE, re.S)
+    assert "classList.contains('spent')" in offer.group(1)
+    assert "classList.add('spent')" in offer.group(1)
+
+
 def test_an_unknown_artifact_kind_is_a_no_op_not_a_broken_window():
     show = re.search(r"window\.showVisual = function\(payload\)\{(.*?)\n  \};", CODE, re.S)
     assert show and "if(!render) return;" in show.group(1)
@@ -678,6 +698,20 @@ def test_an_outside_link_cannot_navigate_the_application_away_from_itself():
 
 
 # --- The mark ------------------------------------------------------------------------
+
+def test_the_mark_leaves_room_for_the_ring_it_sits_in():
+    """It is the emblem in the core, not the whole core. Sized so the
+    audio-reactive ring reads as a frame around it rather than crossing it."""
+    mark = re.search(r'id="letiMark".*?transform="translate\([\d.]+ [\d.]+\) scale\(([\d.]+)\)"',
+                     HUD, re.S)
+    assert mark, "the mark's transform moved; this test needs updating"
+    scale = float(mark.group(1))
+    # The letterform is 185 units tall before scaling; the core disc is r=82, and
+    # the ring it sits inside runs from r=54 to r=73.
+    height = 185 * scale
+    assert height < 2 * 54, f"the mark ({height:.0f} units) crosses the core ring"
+    assert height > 60, "the mark has shrunk to a detail"
+
 
 def test_the_mark_is_part_of_the_drawing_it_sits_in():
     """A separate element over the radar would be dragged through rasterisation by

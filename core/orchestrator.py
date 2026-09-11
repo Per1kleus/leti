@@ -201,6 +201,19 @@ def _call_from_object(blob: str, find_tool: Callable[[str], Any],
     return {"function": {"name": name, "arguments": arguments}}
 
 
+def _called_tool_name(call: Any) -> str:
+    """The tool name off a call, for presentation only.
+
+    Deliberately not the parser: _execute_tool_call still does the real
+    normalisation and is the only thing that decides what runs. This reads the
+    same field defensively so a malformed call means "no name" - which makes the
+    result an offer rather than a window, the safe way round.
+    """
+    function = call.get("function") if isinstance(call, dict) else None
+    name = function.get("name") if isinstance(function, dict) else None
+    return name if isinstance(name, str) else ""
+
+
 def _recover_tool_calls_from_text(content: Any,
                                   find_tool: Callable[[str], Any]) -> List[Dict[str, Any]]:
     """Tool calls a template left in the message text. Almost always empty.
@@ -459,11 +472,21 @@ class Orchestrator:
                 # A tool that supplies its own "visual" always wins; core/artifacts.py
                 # only reads the SHAPE of results that don't have one (a table of
                 # uniform rows, a set of sources, one long document) so a result
-                # worth looking at is shown rather than only described. No model
+                # worth looking at can be shown rather than only described. No model
                 # call, no classifier, and nothing for a tool to opt into.
+                #
+                # Recognising one is not the same as putting it on screen. should_open
+                # decides that, and usually says no: a panel opens by itself only for
+                # something a sentence cannot carry, and only when it was asked for or
+                # deliberately made. Everything else is marked as an offer and appears
+                # as one line in the activity log, openable if it turns out to be
+                # wanted. Answering in words is the normal case.
                 if result.success and self.visual_callback and isinstance(result.output, dict):
                     visual = result.output.get("visual") or artifacts.derive(result.output)
                     if visual:
+                        visual = dict(visual)
+                        visual["offer"] = not artifacts.should_open(
+                            visual, _called_tool_name(call), last_user_message(messages))
                         try:
                             await self.visual_callback(visual)
                         except Exception:
