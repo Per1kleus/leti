@@ -1,4 +1,17 @@
-"""Tools for watching something and acting when it changes."""
+"""Tools for watching something and acting when it changes.
+
+Not the same thing as the social watches in tools/social_media.py, despite the
+shared word. A social watch is a content feed with a cursor: it remembers the
+last item id it saw for a channel, subreddit or page, and answers "what is new
+since I last looked" when something asks it. It is pull-based and it never acts.
+
+A watch here is a condition plus an action: CPU above a threshold, a file
+changed, a URL back up. It is evaluated on Leti's scheduler, it fires on the
+transition into true rather than for as long as the condition holds, and what it
+does when it fires goes through the task manager - and therefore the
+orchestrator and SafetyGuard. Neither one can be expressed as the other, so they
+stay separate; see core/watches.py for the condition machinery.
+"""
 from __future__ import annotations
 
 import logging

@@ -11,6 +11,14 @@ Scheduled meetings work the same way and are not a separate feature: a task
 whose instruction is "book the Monday standup on Zoom" calls the existing
 schedule_meeting and create_video_meeting_link tools when it fires.
 
+Three things in this codebase have "schedule" in the name and none of them is a
+copy of another. This file is the scheduler: it owns the task list, when each
+task is due, and what happened when it ran. core/system_scheduler.py owns
+nothing - it registers one recurring command with cron, launchd or schtasks so
+the OS wakes Leti up to ask this file what is due, even when Leti is closed.
+core/watches.py is a consumer: it keeps a single row in this file's store and
+evaluates every watch when that row fires, rather than scheduling one row each.
+
 What the scheduler owns is the part the orchestrator can't supply: when things
 run, whether they succeeded, what they produced, and what to do when they fail.
 Every run is recorded with its output and duration, failures are retried with

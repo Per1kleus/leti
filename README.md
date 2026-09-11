@@ -218,11 +218,13 @@ searches and pages you explicitly ask it to visit.
 
 ## Fitting your GPU
 
-Leti sends **every tool schema on every call**, and again on every iteration of
-the tool-calling loop. That is not a small overhead: 103 tools serialise to
-63,410 characters, roughly **16,000–18,000 tokens**, before the system prompt,
-personality, user profile, recalled memories, conversation buffer, or any tool
-results. `ollama.num_ctx` is 24576 to leave room for the rest.
+Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
+the registry for each message — so a typical turn is shown 15–30 schemas rather
+than all of them. But the full set is still what has to fit when routing falls
+back: **123 tools serialise to 79,676 characters, roughly 20,000 tokens**,
+before the system prompt, personality, user profile, recalled memories,
+conversation buffer, or any tool results.
+`ollama.num_ctx` is 28672 to leave room for the rest.
 
 This matters because Ollama does not error when a request exceeds `num_ctx` — it
 **truncates**. Tools fall off the end and the model behaves as if they were never
@@ -233,16 +235,21 @@ next time this happens it says so.
 The consequence is that a big context window costs VRAM whether or not a given
 turn uses it, and that is what decides your model:
 
-| VRAM | Reasoning model | Roughly |
-|---|---|---|
-| 8 GB | `qwen2.5:7b` | 4.4 GiB weights + 1.3 GiB KV — fits |
-| 12 GB | `qwen2.5:7b` (the default) | ~6.1 GiB, ~4 GiB spare |
-| 16 GB+ | `qwen2.5:14b` | 8.4 GiB weights + 4.5 GiB KV — the better tool-picker |
+These are the figures Leti's own first-launch check computes, at the current
+`num_ctx` of 28672 and after reserving ~1.5 GiB for the desktop and ~0.8 GiB of
+headroom:
 
-On a 12 GB card the 14B needs ~11.4 GiB even with a quantised KV cache, against
-the ~10.5–11 GiB actually free once the desktop compositor has taken its share.
-It does not crash — Ollama moves layers to the CPU — but an eight-iteration tool
-turn then takes minutes. 7B is the honest default there.
+| VRAM | Reasoning model | Needs | Why |
+|---|---|---|---|
+| 8 GB | `qwen2.5:3b` | ~3.6 GiB (1.9 weights + 0.98 KV) | 7B needs 6.63 GiB against a 5.7 GiB budget |
+| 12 GB | `qwen2.5:7b` (the default) | ~6.6 GiB (4.4 + 1.53 KV) | fits with ~3 GiB spare |
+| 16 GB | `qwen2.5:7b` | ~6.6 GiB | 14B needs 14.35 GiB against a 13.7 GiB budget |
+| 24 GB | `qwen2.5:14b` | ~14.4 GiB (8.4 + 5.25 KV) | the better tool-picker, and it fits here |
+
+The 14B's KV cache is what moves it up a card: at 28672 tokens it alone is 5.25
+GiB, more than a 3B model's entire weights. It does not crash on a smaller card —
+Ollama moves layers to the CPU — but an eight-iteration tool turn then takes
+minutes, so 7B is the honest default on 12 GB.
 
 Two Ollama environment variables roughly halve the KV cache cost, which is worth
 setting on any card:
@@ -740,15 +747,24 @@ leti/
 │   ├── config_loader.py       # Shared YAML config loader + canonical path resolution
 │   ├── orchestrator.py        # Async event loop, state machine, tool-calling loop
 │   ├── llm_client.py          # Ollama client with native function calling
+│   ├── tool_router.py         # Picks which tool schemas this request is shown (not what it may run)
 │   ├── safety_guard.py        # Permissions, confirmation barrier, audit logger
+│   ├── permission_center.py   # A readable VIEW of safety_guard/permissions.yaml - not a second authority
 │   ├── intent_signals.py      # Approval/denial phrase detection (voice pre-approval, -y shorthand)
 │   ├── confirmation.py        # CLI + voice confirmation callbacks (shared by CLI and GUI modes)
 │   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
+│   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
+│   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
+│   ├── watches.py             # Watch a condition, act when it changes (uses the scheduler below)
 │   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks
+│   ├── computer_use.py        # Chooses tool > browser > GUI, and bounds a GUI session
+│   ├── model_setup.py         # First-launch hardware detection and model recommendation
+│   ├── diagnostics.py         # Measured timings, or an honest "Unavailable"
 │   ├── atomic_write.py        # Crash-safe state-file writes
 │   └── settings_editor.py     # The /settings command - schema-driven, no LLM involved
 ├── gui/
 │   ├── hud.html                # The HUD interface (audio-reactive ring, dashboard, chat)
+│   ├── desktop.py              # The two native windows: main window + always-on-top puck
 │   ├── icon.svg                # Icon source: full mark (48px and up)
 │   ├── icon-small.svg          # Icon source: simplified, for 16-32px
 │   ├── icon-maskable.svg       # Icon source: full-bleed, for Android launchers
@@ -758,7 +774,8 @@ leti/
 ├── audio/
 │   ├── wake_word.py           # OpenWakeWord engine
 │   ├── stt.py                 # openai-whisper stream/PTT handler
-│   └── tts.py                 # pyttsx3 speech synthesis with interruptibility
+│   ├── tts.py                 # pyttsx3 speech synthesis with interruptibility
+│   └── setup.py               # First-run microphone permission check
 ├── memory/
 │   ├── vector_store.py        # ChromaDB long-term facts/preferences
 │   └── session_memory.py      # Working memory & conversation buffer (+ SQLite log)
@@ -769,8 +786,21 @@ leti/
 │   ├── shell_runner.py        # Sandboxed terminal executor
 │   ├── file_manager.py        # Safe file read, write, search, organize
 │   ├── browser.py             # Playwright automation
+│   ├── computer_use.py        # Decides whether the GUI is the right layer; bounds the session
 │   ├── vision.py              # Screen grab & Ollama Vision multimodal analyzer
 │   ├── web_search.py          # DuckDuckGo live search
+│   ├── image_search.py        # Image search, for when the user wants to SEE something
+│   ├── sketch.py              # Diagram/sketch generation
+│   ├── coding.py              # Running, testing and inspecting code
+│   ├── engineering.py         # Units, symbolic algebra, numerical work
+│   ├── data_analysis.py       # Load, clean, analyse and plot datasets
+│   ├── business.py            # Leads/prospects/clients and the metrics over them
+│   ├── projects.py            # Persistent project workspaces (folder + metadata + context)
+│   ├── autonomous.py          # Start/inspect/control long-running objectives
+│   ├── workflow_tools.py      # Describe a workflow in words, then run it
+│   ├── watch_tools.py         # Create/list/remove watches
+│   ├── scheduler.py           # In-app scheduled tasks (the one scheduler)
+│   ├── control_center.py      # Permission Center + Diagnostics panel tools (read-only views)
 │   ├── network_security.py    # Port/service scan, firewall status, LAN ARP read (read-only)
 │   ├── system_defense.py      # Firewall enable, brute-force detection, persistence/process checks
 │   ├── backup_restore.py      # Hash-baseline snapshot, integrity diff, restore

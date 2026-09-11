@@ -39,20 +39,21 @@ ollama:
   # whichever tools didn't make the cut - it looks exactly like the model not
   # knowing a tool exists, with no error anywhere to point at the real cause.
   #
-  # Every tool schema is sent on every call, and on every iteration of the
-  # tool-calling loop (core/orchestrator.py). Measured, not estimated: 103 tools
-  # serialise to 63,410 characters, which is roughly 16,000-18,000 tokens. This
+  # core/tool_router.py picks a subset of the tools per request, so a typical
+  # turn sends 15-30 schemas rather than all of them. That is the common case,
+  # not the one to size for: when routing is not confident it falls back to the
+  # whole list, and that fallback still has to fit. Measured, not estimated:
+  # 123 tools serialise to 79,676 characters, roughly 19,900 tokens. This
   # comment used to say 9,000 and 16384 used to be enough; the tool count grew
   # past it, which is exactly the silent failure described above. main.py logs a
   # warning at startup if this number stops being big enough again, so the next
   # time it happens it says so instead of looking like a stupid model.
   #
   # Raised from 24576 to 28672 when the tool count went 103 -> 119 (watches and
-  # the controlled GUI mode): 119 schemas are ~18,900 tokens, and 24576 no longer
-  # left enough behind them. This leaves ~9,700 for the system prompt,
-  # personality, user profile, recalled memories, the rolling conversation buffer
-  # and accumulated tool results. Don't go below ~24576 while the list is this
-  # size. On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
+  # the controlled GUI mode). At 123 tools a full-fallback turn is ~19,900
+  # tokens of schemas, leaving ~8,700 for the system prompt, personality, user
+  # profile, recalled memories, the rolling conversation buffer and accumulated
+  # tool results. Don't go below 28672 while the list is this size. On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
   # (1.31 -> 1.53 GiB), which still leaves roughly 4 GiB spare. Raising it
   # costs VRAM for the KV cache whether or not a turn uses it - see the model
   # note above, and README's Windows section for halving that cost with

@@ -1,9 +1,9 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 103 tools serialise to 63,410 characters, roughly
-16,000-18,000 tokens, before the system prompt, personality, profile, recalled
-memories or the conversation get any of a 24,576-token window. This picks a
+tool-calling loop. Measured: 123 tools serialise to 79,676 characters, roughly
+19,900 tokens, before the system prompt, personality, profile, recalled
+memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 
 The registry stays the source of truth. Tools are grouped by the module they are
