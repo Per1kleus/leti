@@ -37,6 +37,25 @@ logger = logging.getLogger("leti.computer_use")
 MAX_STEPS = 20                 # a GUI errand, not an afternoon
 MAX_IDENTICAL_ACTIONS = 2      # twice is a retry; three times is a loop
 SESSION_IDLE_TIMEOUT = 600     # a forgotten session should not stay open
+# How old a look at the screen may be before it is no longer a reason to click.
+# Separate from, and much shorter than, the session timeout: a session can sit for
+# ten minutes while the model thinks, but a window that was in front of you a
+# minute and a half ago is not evidence about where the mouse should go now.
+OBSERVATION_MAX_AGE = 90
+MAX_PLAN_STEPS = 12            # a plan, not a program
+
+# Actions whose result is somebody else's problem if it is wrong: they leave the
+# screen and go somewhere. One of these must be verified before anything else
+# happens, and a session that ends with one unverified says so.
+_CONSEQUENTIAL = re.compile(
+    r"\b(send|submit|confirm|delete|remove|buy|purchase|pay|order|publish|post|"
+    r"install|uninstall|overwrite|replace|sign|accept|apply|save|upload|share|"
+    r"transfer|discard)\b", re.I)
+
+
+def is_consequential(action: str) -> bool:
+    """Whether an action is one that cannot simply be looked at again afterwards."""
+    return bool(_CONSEQUENTIAL.search(str(action or "")))
 
 # Requests a dedicated tool already covers. Reaching for the mouse here would be
 # slower and less reliable, and would lose the tool's own error reporting.
@@ -44,6 +63,14 @@ _BETTER_WITH_A_TOOL = (
     (r"\b(read|open|write|delete|move|list)\b.*\bfile\b", "the file tools"),
     (r"\bsearch (the )?web\b|\bgoogle\b|\blook up\b", "web_search"),
     (r"\bsend (an? )?email\b", "send_email"),
+    (r"\b(create|make|add|book|schedule)\b.*\b(calendar )?(event|meeting|appointment)\b",
+     "schedule_meeting"),
+    # File FORMATS only. "open the invoice page and download it" is browser work,
+    # and an earlier version of this pattern claimed it for the document tools
+    # because it mentioned an invoice.
+    (r"\b(read|summari[sz]e|compare|extract)\b.*\b(pdf|docx|word document|"
+     r"spreadsheet|xlsx|csv)s?\b", "the document tools"),
+    (r"\badd\b.*\b(to my )?(to-?do|task list)\b", "add_todo_item"),
     (r"\bweather\b", "get_weather"),
     (r"\brun\b.*\b(command|shell|script)\b", "run_shell_command"),
     (r"\bscreenshot\b|\bwhat('s| is) on (my |the )?screen\b", "read_screen"),
@@ -54,6 +81,13 @@ _BETTER_IN_THE_BROWSER = (
     (r"\bgo to\b.*\b(https?://|www\.|\.com|\.org|\.net)\b", "browser navigation"),
     (r"\bfill (in |out )?(the )?form\b", "browser_fill_form"),
     (r"\bread\b.*\b(page|website|site|article)\b", "browser_read_page"),
+    # Getting something off a website is browser work before it is mouse work:
+    # navigating and reading a page directly is verifiable, and clicking through
+    # one is not.
+    (r"\b(download|save|fetch)\b.*\b(from|on|off)\b.*"
+     r"\b(site|website|page|portal|url|https?://|www\.)\b", "browser navigation"),
+    (r"\b(find|get|look for|locate)\b.*\bon (the |this |their )?"
+     r"(site|website|page|portal)\b", "browser navigation"),
 )
 
 LAYER_TOOL = "tool"
@@ -94,7 +128,7 @@ def choose_layer(request: str) -> Dict[str, Any]:
 class Session:
     """One bounded GUI errand: what it is for, what it has done, what it saw."""
 
-    def __init__(self, goal: str, session_id: str = ""):
+    def __init__(self, goal: str, session_id: str = "", plan: Optional[List[str]] = None):
         self.goal = goal
         self.id = session_id or f"gui-{int(time.time())}"
         self.started_at = time.time()
@@ -103,6 +137,16 @@ class Session:
         self.observed_at: Optional[float] = None
         self.closed = False
         self.closed_reason: Optional[str] = None
+        # The errand written down before it starts: "open the site", "find the
+        # invoice", "download it", "move it into the project". It is a list of
+        # intentions, not a program - nothing here executes a plan step. What it
+        # buys is a place to say where the errand has got to, which is what turns
+        # a run of clicks into something a person can follow and stop.
+        wanted = [str(t).strip() for t in (plan or []) if str(t).strip()][:MAX_PLAN_STEPS]
+        self.plan: List[Dict[str, Any]] = [
+            {"n": i + 1, "what": text, "status": "pending", "note": None}
+            for i, text in enumerate(wanted)
+        ]
 
     # -- state ------------------------------------------------------------------
 
@@ -114,10 +158,58 @@ class Session:
     def steps_left(self) -> int:
         return max(0, MAX_STEPS - self.steps_taken)
 
+    @property
+    def plan_index(self) -> int:
+        """The plan step being worked on, or the length of the plan when done."""
+        for i, step in enumerate(self.plan):
+            if step["status"] != "done":
+                return i
+        return len(self.plan)
+
+    def plan_progress(self) -> Dict[str, Any]:
+        """Where the errand has got to. Counted, never estimated."""
+        done = sum(1 for s in self.plan if s["status"] == "done")
+        current = self.plan[self.plan_index] if self.plan_index < len(self.plan) else None
+        return {
+            "planned": len(self.plan),
+            "done": done,
+            # No plan means no progress to report, and "Working..." is the honest
+            # thing to say rather than a fraction with an invented denominator.
+            "position": f"{done}/{len(self.plan)}" if self.plan else "working",
+            "current": current["what"] if current else None,
+            "steps": [dict(s) for s in self.plan],
+        }
+
+    def complete_plan_step(self, note: str = "") -> Optional[Dict[str, Any]]:
+        """Mark the plan step that is being worked on as done. The caller says so;
+        nothing infers it from a click, because a click is not an outcome."""
+        index = self.plan_index
+        if index >= len(self.plan):
+            return None
+        self.plan[index]["status"] = "done"
+        self.plan[index]["note"] = (note or "")[:200] or None
+        _announce(self, f"{self.plan[index]['what']} - done")
+        return dict(self.plan[index])
+
+    def unverified_actions(self) -> List[Dict[str, Any]]:
+        """Consequential steps nobody looked at afterwards.
+
+        Clicking Send and never checking is the one failure a GUI session can hide
+        completely, so it is reported rather than left to be assumed either way.
+        """
+        return [{"n": s["n"], "action": s["action"], "detail": s["detail"]}
+                for s in self.steps if s.get("consequential") and not s.get("verified")]
+
     def observe(self, what_is_on_screen: str) -> None:
         """Record one look at the screen. Nothing captures on its own."""
         self.last_observation = what_is_on_screen or ""
         self.observed_at = time.time()
+        # Anything consequential that was waiting to be checked has now been
+        # looked at; whether it WORKED is expectation_holds' answer, not this one.
+        for step in reversed(self.steps):
+            if step.get("consequential") and not step.get("verified"):
+                step["verified"] = True
+                break
 
     def expectation_holds(self, expectation: str) -> Tuple[bool, str]:
         """Whether the last look matches what was expected.
@@ -149,8 +241,9 @@ class Session:
         if self.observed_at is None:
             return False, ("nothing has been looked at yet - check the screen before "
                            "acting on it")
-        if time.time() - self.observed_at > SESSION_IDLE_TIMEOUT:
-            return False, "the last look at the screen is too old to act on; look again"
+        if time.time() - self.observed_at > OBSERVATION_MAX_AGE:
+            return False, (f"the last look at the screen is more than "
+                           f"{OBSERVATION_MAX_AGE}s old; look again before acting on it")
 
         signature = f"{action}:{detail}"
         repeats = sum(1 for s in self.steps if s["signature"] == signature)
@@ -163,8 +256,11 @@ class Session:
     def record(self, action: str, detail: str = "") -> Dict[str, Any]:
         step = {"n": self.steps_taken + 1, "action": action, "detail": detail,
                 "signature": f"{action}:{detail}", "at": time.time(),
-                "observed": self.last_observation is not None}
+                "observed": self.last_observation is not None,
+                "consequential": is_consequential(f"{action} {detail}"),
+                "verified": False}
         self.steps.append(step)
+        _announce(self, f"{action}" + (f" - {detail}" if detail and detail != action else ""))
         # A step invalidates the last look: the screen has moved on.
         self.observed_at = None
         return step
@@ -172,9 +268,11 @@ class Session:
     def close(self, reason: str = "finished") -> Dict[str, Any]:
         self.closed = True
         self.closed_reason = reason
+        _announce(self, f"session closed - {reason}")
         return self.summary()
 
     def summary(self) -> Dict[str, Any]:
+        unverified = self.unverified_actions()
         return {
             "session_id": self.id,
             "goal": self.goal,
@@ -182,22 +280,41 @@ class Session:
             "steps_left": self.steps_left,
             "closed": self.closed,
             "closed_reason": self.closed_reason,
-            "actions": [{"n": s["n"], "action": s["action"], "detail": s["detail"]}
+            "progress": self.plan_progress(),
+            "actions": [{"n": s["n"], "action": s["action"], "detail": s["detail"],
+                         "consequential": s.get("consequential", False),
+                         "verified": s.get("verified", False)}
                         for s in self.steps],
+            "unverified_actions": unverified,
+            "warning": (f"{len(unverified)} action(s) that change something were never "
+                        "checked afterwards. Say so rather than reporting them as done."
+                        if unverified else None),
         }
+
+
+def _announce(session: "Session", message: str) -> None:
+    """Put one line in the interface's activity log. Decides nothing, and a
+    failure to log can never stop or change what is happening on screen."""
+    try:
+        from core import diagnostics
+
+        diagnostics.record_activity("computer", message, session_id=session.id)
+    except Exception:
+        logger.debug("Couldn't mirror a computer-use step to the activity log.")
 
 
 _SESSIONS: Dict[str, Session] = {}
 
 
-def open_session(goal: str) -> Session:
+def open_session(goal: str, plan: Optional[List[str]] = None) -> Session:
     """Start an errand. Old sessions are dropped rather than accumulating."""
     cutoff = time.time() - SESSION_IDLE_TIMEOUT
     for stale in [k for k, s in _SESSIONS.items()
                   if s.closed or s.started_at < cutoff]:
         _SESSIONS.pop(stale, None)
-    session = Session(goal)
+    session = Session(goal, plan=plan)
     _SESSIONS[session.id] = session
+    _announce(session, f"started: {goal[:80]}")
     return session
 
 

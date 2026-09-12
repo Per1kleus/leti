@@ -357,3 +357,47 @@ def test_a_routing_result_is_only_ever_names_the_registry_knows(registry):
     for text in ["send an email", "delete a file", "hello", "asdkjfh", ""]:
         for name in route(text, registry).tool_names:
             assert registry.get(name) is not None, f"routing invented '{name}'"
+
+# --- The document tools are reachable ------------------------------------------------
+# Routing exists to hide tools, so a capability that routing can never expose is a
+# capability that does not exist. These are the phrasings the file work was for.
+
+DOCUMENT_TOOLS = {"find_documents", "inspect_document", "read_document",
+                  "compare_documents", "look_at_image"}
+
+
+@pytest.mark.parametrize("request_text", [
+    "read these PDFs and compare the offers",
+    "find the important information in these documents",
+    "compare these excel files and tell me which option is better",
+    "summarise this folder",
+    "create a report based on these files",
+    "what do these contracts say about notice periods",
+    "read the invoice and tell me the total",
+])
+def test_a_request_about_files_reaches_the_document_tools(registry, request_text):
+    routing = route(request_text, registry)
+    exposed = set(routing.tool_names) & DOCUMENT_TOOLS
+    assert exposed, f"{request_text!r} exposed none of the document tools"
+
+
+@pytest.mark.parametrize("request_text", [
+    "what's the weather in Athens",
+    "convert 5 inches to cm",
+    "add milk to my todo list",
+])
+def test_a_request_about_nothing_of_the_kind_does_not(registry, request_text):
+    routing = route(request_text, registry)
+    assert not (set(routing.tool_names) & DOCUMENT_TOOLS), request_text
+
+
+@pytest.mark.parametrize("request_text", [
+    "open the application and click through the settings dialog",
+    "click the export button in this program",
+])
+def test_a_desktop_errand_reaches_the_computer_use_tools(registry, request_text):
+    routing = route(request_text, registry)
+    exposed = set(routing.tool_names) & {"choose_computer_approach", "plan_computer_task",
+                                         "computer_step_done", "verify_screen"}
+    assert exposed, f"{request_text!r} exposed none of the computer-use tools"
+

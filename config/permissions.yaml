@@ -19,6 +19,27 @@ tools:
   list_files:
     action: read
 
+  # Working out which files a request is about, what they are, and reading the
+  # parts that answer a question. All four only read from disk - they open
+  # nothing the file tools above could not already open, and send nothing
+  # anywhere - so they carry the same class read_file does.
+  find_documents:
+    action: read
+
+  inspect_document:
+    action: read
+
+  read_document:
+    action: read
+
+  compare_documents:
+    action: read
+
+  # Reads an image off disk and asks the local vision model about it. The same
+  # class read_screen is in, for the same reason: it looks, and changes nothing.
+  look_at_image:
+    action: execute
+
   write_file:
     action: modify
 
@@ -354,6 +375,15 @@ tools:
   # therefore governed by the same rules as the equivalent tool, which is what
   # stops it becoming a way around them.
   choose_computer_approach:
+    action: read
+
+  # Writing the errand down, and saying a written step is finished. Neither
+  # touches the screen or anything else - they are bookkeeping for a session the
+  # existing mouse and keyboard tools do the work of, under the same guard.
+  plan_computer_task:
+    action: read
+
+  computer_step_done:
     action: read
 
   verify_screen:

@@ -44,7 +44,9 @@ class FakeOrchestrator:
     def __init__(self):
         self.seen = []
 
-    async def handle_user_input(self, text):
+    # **kwargs because the real orchestrator takes voice_mode and preapproved;
+    # a double that refuses them stops doubling the thing it stands in for.
+    async def handle_user_input(self, text, **kwargs):
         self.seen.append(text)
         return "done"
 

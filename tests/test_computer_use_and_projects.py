@@ -32,6 +32,17 @@ from tools import projects  # noqa: E402
     ("fill in the form", computer_use.LAYER_BROWSER),
     ("open Blender and click the Settings button", computer_use.LAYER_GUI),
     ("change the theme in this application's preferences", computer_use.LAYER_GUI),
+    # A dedicated tool exists for each of these, so the mouse is the wrong answer.
+    ("create a calendar event for Friday at three", computer_use.LAYER_TOOL),
+    ("book a meeting with Maria next week", computer_use.LAYER_TOOL),
+    ("read the pdf and summarise it", computer_use.LAYER_TOOL),
+    ("compare these spreadsheets", computer_use.LAYER_TOOL),
+    ("add milk to my todo list", computer_use.LAYER_TOOL),
+    # Getting something off a website is browser work before it is mouse work.
+    ("download the invoice from their billing page", computer_use.LAYER_BROWSER),
+    ("find the invoice on the website", computer_use.LAYER_BROWSER),
+    # And a real GUI errand is still a GUI errand.
+    ("rename the file in the application's own file browser", computer_use.LAYER_GUI),
 ])
 def test_the_cheapest_capable_layer_is_chosen(request_text, expected):
     """A dedicated tool beats the browser, and the browser beats the mouse."""
@@ -153,9 +164,166 @@ def test_a_closed_session_does_nothing_more():
 def test_a_stale_look_is_not_acted_on(monkeypatch):
     session = computer_use.open_session("goal")
     session.observe("Settings window")
-    session.observed_at -= computer_use.SESSION_IDLE_TIMEOUT + 1
+    session.observed_at -= computer_use.OBSERVATION_MAX_AGE + 1
 
     assert session.may_act("click", "Save")[0] is False
+
+
+def test_an_observation_goes_stale_long_before_the_session_does():
+    """A session can sit for ten minutes while the model thinks. A look at the
+    screen cannot: a window that was in front of you ten minutes ago is not
+    evidence about where the mouse should go now."""
+    assert computer_use.OBSERVATION_MAX_AGE < computer_use.SESSION_IDLE_TIMEOUT
+    session = computer_use.open_session("goal")
+    session.observe("a window")
+    session.observed_at -= computer_use.OBSERVATION_MAX_AGE + 5
+    allowed, why = session.may_act("click", "Save")
+    assert allowed is False and "look again" in why
+
+
+# --- Consequential actions get checked ------------------------------------------------------
+
+@pytest.mark.parametrize("action,expected", [
+    ("click Send", True), ("submit the form", True), ("delete the row", True),
+    ("confirm the purchase", True), ("publish it", True),
+    ("scroll down", False), ("read the list", False), ("open the menu", False),
+])
+def test_actions_that_change_something_are_known_from_ones_that_do_not(action, expected):
+    assert computer_use.is_consequential(action) is expected
+
+
+def test_a_consequential_action_nobody_looked_at_afterwards_is_reported():
+    """Clicking Send and never checking is the one failure a GUI session can hide
+    completely, so it is reported rather than assumed either way."""
+    session = computer_use.open_session("send the reply")
+    session.observe("a compose window with a Send button")
+    session.record("click Send", "Send")
+
+    assert [a["action"] for a in session.unverified_actions()] == ["click Send"]
+    assert "never checked" in session.summary()["warning"]
+
+    session.observe("the message was sent, inbox showing")
+    assert session.unverified_actions() == []
+    assert session.summary()["warning"] is None
+
+
+def test_an_ordinary_action_is_not_flagged_as_unchecked():
+    session = computer_use.open_session("look around")
+    session.observe("a list of files")
+    session.record("scroll down", "")
+    assert session.unverified_actions() == []
+
+
+# --- A plan, and where the errand has got to -------------------------------------------------
+
+def test_a_plan_is_counted_never_estimated():
+    session = computer_use.open_session("download the invoice", plan=[
+        "open the billing page", "find the invoice", "download it", "move it"])
+    assert session.plan_progress()["position"] == "0/4"
+    assert session.plan_progress()["current"] == "open the billing page"
+
+    session.complete_plan_step("the page is open")
+    progress = session.plan_progress()
+    assert progress["position"] == "1/4"
+    assert progress["current"] == "find the invoice"
+    assert [s["status"] for s in progress["steps"]] == ["done", "pending", "pending", "pending"]
+
+
+def test_a_session_with_no_plan_says_working_rather_than_inventing_a_fraction():
+    session = computer_use.open_session("click something")
+    assert session.plan_progress()["position"] == "working"
+    assert session.plan_progress()["planned"] == 0
+
+
+def test_a_plan_is_bounded():
+    session = computer_use.open_session("a lot", plan=[f"step {i}" for i in range(40)])
+    assert len(session.plan) == computer_use.MAX_PLAN_STEPS
+
+
+def test_finishing_every_planned_step_leaves_nothing_to_advance():
+    session = computer_use.open_session("two things", plan=["one", "two"])
+    session.complete_plan_step()
+    session.complete_plan_step()
+    assert session.complete_plan_step() is None
+    assert session.plan_progress()["position"] == "2/2"
+
+
+@pytest.mark.asyncio
+async def test_planning_a_multi_step_errand_still_defers_to_a_dedicated_tool():
+    """Writing a plan down does not make the GUI the right layer."""
+    from tools.computer_use import PlanComputerTaskTool
+
+    result = await PlanComputerTaskTool().run(
+        "send an email to Maria and then another to John",
+        steps=["open the mail client", "write the first", "send it"])
+    assert result.success
+    assert result.output["layer"] == computer_use.LAYER_TOOL
+    assert result.output["suggestion"] == "send_email"
+    assert "session_id" not in result.output, "a GUI session was opened anyway"
+
+
+@pytest.mark.asyncio
+async def test_a_gui_errand_gets_a_session_that_remembers_the_plan():
+    from tools.computer_use import CompleteComputerStepTool, PlanComputerTaskTool
+
+    result = await PlanComputerTaskTool().run(
+        "open Blender, click Settings and change the theme",
+        steps=["open Blender", "click Settings", "change the theme"])
+    assert result.success and result.output["layer"] == computer_use.LAYER_GUI
+    session_id = result.output["session_id"]
+    assert result.output["progress"]["position"] == "0/3"
+
+    done = await CompleteComputerStepTool().run(session_id, "Blender is open")
+    assert done.success
+    assert done.output["progress"]["position"] == "1/3"
+    assert done.output["progress"]["current"] == "click Settings"
+
+
+@pytest.mark.asyncio
+async def test_a_plan_with_no_steps_is_refused():
+    from tools.computer_use import PlanComputerTaskTool
+
+    result = await PlanComputerTaskTool().run("do the thing", steps=[])
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_progress_cannot_be_advanced_for_a_session_that_has_no_plan():
+    from tools.computer_use import CompleteComputerStepTool
+
+    session = computer_use.open_session("no plan here")
+    result = await CompleteComputerStepTool().run(session.id, "done")
+    assert result.success is False
+    assert "no plan" in result.error
+
+
+# --- What the interface sees --------------------------------------------------------------
+
+def test_the_interface_reads_live_sessions_and_captures_nothing_to_do_it():
+    from gui.api import LetiAPI
+
+    session = computer_use.open_session("download the invoice",
+                                        plan=["open the page", "download it"])
+    session.observe("the billing page")
+    session.record("click Download", "Download")
+
+    view = LetiAPI.get_computer_use(LetiAPI.__new__(LetiAPI))
+    live = [s for s in view["sessions"] if s["session_id"] == session.id]
+    assert live and live[0]["progress"]["position"] == "0/2"
+    assert live[0]["last_actions"] == ["click Download"]
+
+    source = inspect.getsource(LetiAPI.get_computer_use)
+    for forbidden in ("capture", "screenshot", "ScreenCapture", "sleep"):
+        assert forbidden not in source, f"the task view {forbidden}s"
+
+
+def test_a_finished_session_leaves_the_interface_showing_nothing():
+    """Idle means idle: no session, no panel, no work to keep it up to date."""
+    from gui.api import LetiAPI
+
+    for live in computer_use.active_sessions():
+        live.close("test cleanup")
+    assert LetiAPI.get_computer_use(LetiAPI.__new__(LetiAPI))["sessions"] == []
 
 
 # --- The GUI is not a way round the rules ------------------------------------------------
@@ -177,7 +345,8 @@ def test_the_gui_tools_are_read_only_in_permissions():
     from core.config_loader import get_permissions
 
     entries = get_permissions()["tools"]
-    for name in ("choose_computer_approach", "verify_screen", "end_computer_session"):
+    for name in ("choose_computer_approach", "verify_screen", "end_computer_session",
+                 "plan_computer_task", "computer_step_done"):
         assert entries[name]["action"] == "read", name
     # The things that actually touch the machine are unchanged.
     assert entries["mouse_click"]["action"] != "read"

@@ -298,11 +298,18 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     # Main entry point: handle one user utterance/turn end-to-end
     # ------------------------------------------------------------------ #
-    async def handle_user_input(self, user_text: str, session_id: str = "default", voice_mode: bool = False) -> str:
+    async def handle_user_input(self, user_text: str, session_id: str = "default",
+                                voice_mode: bool = False, preapproved: bool = False) -> str:
+        """One turn. `preapproved` is the caller saying the user has already agreed
+        to what this turn will do - the task runner passes it for a step the user
+        approved in the interface. It feeds the SAME pre-approval SafetyGuard
+        already honours for voice, with the same limit: an irreversible action is
+        never covered by it and still stops to ask."""
         async with self._turn_lock:
-            return await self._handle_one_turn(user_text, session_id, voice_mode)
+            return await self._handle_one_turn(user_text, session_id, voice_mode, preapproved)
 
-    async def _handle_one_turn(self, user_text: str, session_id: str, voice_mode: bool) -> str:
+    async def _handle_one_turn(self, user_text: str, session_id: str, voice_mode: bool,
+                               preapproved: bool = False) -> str:
         self._set_state(AgentState.THINKING)
         self.session_memory.add_turn("user", user_text, session_id)
 
@@ -319,7 +326,7 @@ class Orchestrator:
         # described. Instead this is a single-use budget: SafetyGuard reports when it's
         # spent (see _execute_tool_call), and everything after it prompts normally.
         # SafetyGuard additionally refuses to apply it to DESTRUCTIVE calls at all.
-        self._preapproved_this_turn = (
+        self._preapproved_this_turn = bool(preapproved) or (
             voice_mode
             and contains_request_approval(user_text)
             and not contains_explicit_denial(user_text)

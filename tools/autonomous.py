@@ -29,6 +29,12 @@ def set_runner(runner) -> None:
     _RUNNER = runner
 
 
+def get_runner():
+    """The live runner, for the interface's task controls. There is one, and this
+    is it - the panel resumes a task through the same runner the tools use."""
+    return _RUNNER
+
+
 class StartAutonomousTaskTool(BaseTool):
     name = "start_autonomous_task"
     description = (

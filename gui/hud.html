@@ -772,6 +772,62 @@
   .rt-row.rt-offer.spent .body{ cursor:default; opacity:0.55; }
   .rt-row.rt-offer.spent .body::after{ content:''; }
 
+  /* ---------- A task, while there is one ----------
+     Between the controls and the log, and only on screen when something is
+     actually running: a panel that says "no tasks" every day is furniture. It is
+     rendered from core/task_manager.py's own state and refreshed when that state
+     changes - there is no timer behind it and nothing is polled. */
+  .task-card[hidden]{ display:none; }
+  .task-card{ flex:0 0 auto; }
+  .task-name{
+    font-size:12.5px; color:var(--ice); line-height:1.4; margin-bottom:9px;
+    word-break:break-word;
+  }
+  .task-progress{ display:flex; align-items:center; gap:9px; margin-bottom:9px; }
+  .task-bar{ flex:1; height:4px; background:rgba(18,48,68,0.75); overflow:hidden; }
+  .task-bar i{
+    display:block; height:100%; width:0%;
+    background:linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+    box-shadow:0 0 9px rgba(79,227,255,0.55); transition:width .4s ease;
+  }
+  .task-count{
+    font-family:var(--mono); font-size:10px; letter-spacing:1.3px; color:var(--ice-dim);
+    white-space:nowrap;
+  }
+  .task-current{
+    font-family:var(--mono); font-size:10.5px; line-height:1.6; color:var(--cyan);
+    word-break:break-word;
+  }
+  .task-current .arrow{ color:var(--ice-dim); }
+  .task-actions{ display:flex; gap:7px; margin-top:11px; flex-wrap:wrap; }
+  .task-actions .settings-btn{ flex:1 1 auto; padding:7px 10px; font-size:10px; }
+  .task-ask{
+    border:1px solid var(--amber); background:rgba(255,180,84,0.07);
+    padding:10px 11px; margin-top:11px;
+  }
+  .task-ask .head{
+    font-family:var(--mono); font-size:9px; letter-spacing:1.8px; color:var(--amber);
+    text-transform:uppercase; margin-bottom:6px;
+  }
+  .task-ask .what{ font-size:12px; color:var(--ice); line-height:1.5; white-space:pre-wrap; }
+  /* The step list, in the panel that expands. A tick, an arrow and a ring - the
+     three things a person needs to see at a glance. */
+  .step{ display:flex; gap:10px; align-items:flex-start; padding:6px 0; font-size:12.5px;
+         border-bottom:1px solid rgba(18,48,68,0.35); }
+  .step:last-child{ border-bottom:0; }
+  .step .mark{ font-family:var(--mono); width:14px; flex-shrink:0; text-align:center; }
+  .step .what{ flex:1; min-width:0; color:var(--ice-dim); word-break:break-word; }
+  .step.done .mark{ color:var(--cyan); }
+  .step.running .mark, .step.recovering .mark{ color:var(--cyan); }
+  .step.running .what, .step.recovering .what{ color:var(--ice); }
+  .step.failed .mark, .step.blocked .mark{ color:var(--amber); }
+  .step.failed .what, .step.blocked .what{ color:var(--amber); }
+  .step .why{
+    font-size:11px; color:var(--ice-dim); margin-top:4px; line-height:1.5;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .step .why.bad{ color:var(--amber); }
+
   /* ---------- The conversation, kept small on purpose ----------
      Leti is spoken to. The transcript is the supporting view, so it sits under
      the core as a short strip and expands to a reading size on request - the
@@ -1276,6 +1332,32 @@
         <div class="control-legend" id="controlLegend">&nbsp;</div>
       </div>
 
+      <!-- On screen only while something is running. See renderTaskCard. -->
+      <div class="panel task-card" id="taskCard" hidden>
+        <i class="bracket-tr"></i><i class="bracket-bl"></i>
+        <div class="panel-head">
+          <div>
+            <div class="sys">Task //</div>
+          </div>
+          <div class="tag" id="taskStatus">-</div>
+        </div>
+        <div class="task-name" id="taskName"></div>
+        <div class="task-progress">
+          <div class="task-bar"><i id="taskFill"></i></div>
+          <span class="task-count" id="taskCount"></span>
+        </div>
+        <div class="task-current" id="taskCurrent"></div>
+        <div class="task-ask" id="taskAsk" hidden>
+          <div class="head">Waiting for approval</div>
+          <div class="what" id="taskAskWhat"></div>
+          <div class="task-actions">
+            <button class="settings-btn primary" id="taskApprove">Approve</button>
+            <button class="settings-btn danger" id="taskReject">Reject</button>
+          </div>
+        </div>
+        <div class="task-actions" id="taskQuick"></div>
+      </div>
+
       <div class="panel rt-panel">
         <i class="bracket-tr"></i><i class="bracket-bl"></i>
         <div class="panel-head">
@@ -1357,6 +1439,14 @@
       <div class="settings-close" id="voiceClose">&times;</div>
       <div class="settings-panel-title">Voice</div>
       <div id="voiceContent"></div>
+    </div>
+  </div>
+
+  <div class="settings-overlay" id="taskOverlay">
+    <div class="settings-panel wide">
+      <div class="settings-close" id="taskClose">&times;</div>
+      <div class="settings-panel-title">Tasks</div>
+      <div id="taskContent"></div>
     </div>
   </div>
 
@@ -2040,6 +2130,9 @@
   window.letiActivity = function(entry){
     if(!entry || !entry.message) return;
     rtLog(entry.kind, entry.message);
+    // A task or a GUI errand moved, so the panel showing it is out of date. This
+    // is the only thing that refreshes it - there is no interval anywhere.
+    if(entry.kind === 'task' || entry.kind === 'computer') refreshTasksSoon();
   };
 
   // ---------- Bottom chat input + session panel ----------
@@ -2125,6 +2218,10 @@
   callApi('get_session_messages').then(messages => {
     messages.forEach(m => appendSessionMessage(m.role === 'assistant' ? 'leti' : 'user', m.content, true));
   }).catch(() => {});
+
+  // Whatever was already running when this client connected. Read once; after
+  // this the panel only updates when something actually happens.
+  refreshTasks();
 
   // The tail of the activity ring, for a client that opened after some of it
   // happened. Read once, at load; everything after this arrives pushed.
@@ -3442,6 +3539,229 @@
     personalityContent.appendChild(saveNote);
   }
   document.getElementById('personalityBtn').onclick = openPersonality;
+
+  // ---------- Tasks, while there are any ----------
+  // A view of core/task_manager.py and nothing else: the panel reads the task
+  // store's own state and every button calls back into the task manager. It does
+  // not run a step, it does not authorise one, and it holds no state of its own.
+  //
+  // It is refreshed when something happens - a task changes status, a step
+  // starts, a GUI errand moves - because those already arrive as activity
+  // entries. There is no timer here: a Leti with nothing running does no work to
+  // keep this up to date, and the panel is not even on screen.
+  const taskCard = document.getElementById('taskCard');
+  const taskOverlay = document.getElementById('taskOverlay');
+  const taskContent = document.getElementById('taskContent');
+  wireOverlay(taskOverlay, 'taskClose');
+
+  const STATUS_WORD = {
+    queued: 'Queued', running: 'Running', paused: 'Paused',
+    waiting_for_user: 'Waiting for you', failed: 'Failed',
+    completed: 'Completed', cancelled: 'Cancelled',
+  };
+  const STEP_MARK = { done: '✓', running: '→', recovering: '→',
+                      failed: '×', blocked: '!', pending: '○' };
+
+  let taskState = { active: [], recent: [], sessions: [] };
+  let taskRefreshQueued = false;
+
+  // Several activity lines arrive together at the start of a step; one read is
+  // enough for all of them.
+  function refreshTasksSoon(){
+    if(taskRefreshQueued) return;
+    taskRefreshQueued = true;
+    setTimeout(() => { taskRefreshQueued = false; refreshTasks(); }, 400);
+  }
+
+  function refreshTasks(){
+    return Promise.all([
+      callApi('get_tasks').catch(() => ({active: [], recent: []})),
+      callApi('get_computer_use').catch(() => ({sessions: []})),
+    ]).then(([tasks, computer]) => {
+      taskState = {
+        active: tasks.active || [], recent: tasks.recent || [],
+        sessions: computer.sessions || [],
+      };
+      renderTaskCard();
+      if(taskOverlay.classList.contains('open')) renderTaskOverlay();
+    });
+  }
+
+  function renderTaskCard(){
+    const task = taskState.active[0];
+    const session = taskState.sessions[0];
+    if(!task && !session){ taskCard.hidden = true; return; }
+    taskCard.hidden = false;
+
+    const status = document.getElementById('taskStatus');
+    const name = document.getElementById('taskName');
+    const fill = document.getElementById('taskFill');
+    const count = document.getElementById('taskCount');
+    const current = document.getElementById('taskCurrent');
+    const ask = document.getElementById('taskAsk');
+    const quick = document.getElementById('taskQuick');
+
+    if(task){
+      status.textContent = STATUS_WORD[task.status] || task.status;
+      name.textContent = task.name || task.objective || '';
+      // Real steps, counted. A task whose length is unknown says so rather than
+      // showing a fraction of a number nobody has.
+      const total = task.steps_total || 0;
+      count.textContent = total ? (task.steps_done + ' / ' + total) : 'working...';
+      fill.style.width = total ? Math.round(task.steps_done / total * 100) + '%' : '0%';
+      current.innerHTML = '';
+      if(task.current){
+        const arrow = document.createElement('span');
+        arrow.className = 'arrow'; arrow.textContent = '→ ';
+        const what = document.createElement('span');
+        what.textContent = task.current;
+        current.appendChild(arrow); current.appendChild(what);
+      }
+      ask.hidden = !task.awaiting_approval;
+      if(task.awaiting_approval){
+        document.getElementById('taskAskWhat').textContent = task.approval_request || '';
+        document.getElementById('taskApprove').onclick = () => taskAction(task.id, 'approve');
+        document.getElementById('taskReject').onclick = () => taskAction(task.id, 'reject');
+      }
+      quick.replaceChildren();
+      [['pause', 'Pause'], ['resume', 'Resume'], ['retry', 'Retry step'],
+       ['cancel', 'Cancel']].forEach(([action, label]) => {
+        if(!(task.can || {})[action]) return;
+        const btn = document.createElement('button');
+        btn.className = 'settings-btn' + (action === 'cancel' ? ' danger' : '');
+        btn.textContent = label;
+        btn.onclick = () => taskAction(task.id, action);
+        quick.appendChild(btn);
+      });
+      const open = document.createElement('button');
+      open.className = 'settings-btn';
+      open.textContent = 'Steps';
+      open.onclick = openTasks;
+      quick.appendChild(open);
+    } else {
+      // No task, but a GUI errand is in progress - the same card, showing that.
+      status.textContent = 'Computer use';
+      name.textContent = session.goal || '';
+      const progress = session.progress || {};
+      count.textContent = progress.position === 'working'
+        ? 'working...' : (progress.done + ' / ' + progress.planned);
+      fill.style.width = progress.planned
+        ? Math.round(progress.done / progress.planned * 100) + '%' : '0%';
+      current.textContent = progress.current ? '→ ' + progress.current : '';
+      ask.hidden = true;
+      quick.replaceChildren();
+      const open = document.createElement('button');
+      open.className = 'settings-btn';
+      open.textContent = 'Steps';
+      open.onclick = openTasks;
+      quick.appendChild(open);
+    }
+  }
+
+  function taskAction(taskId, action){
+    taskCard.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    callApi('control_task', taskId, action).then(result => {
+      if(result && result.ok === false) rtLog('error', result.error || 'That task control failed.');
+      refreshTasks();
+    }).catch(e => { rtLog('error', e.message); refreshTasks(); });
+  }
+
+  function stepRow(step){
+    const row = document.createElement('div');
+    row.className = 'step ' + (step.status || 'pending');
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.textContent = STEP_MARK[step.status] || STEP_MARK.pending;
+    const body = document.createElement('div');
+    body.className = 'what';
+    body.textContent = step.instruction || '';
+    if(step.error){
+      const why = document.createElement('div');
+      why.className = 'why bad';
+      why.textContent = step.error;
+      body.appendChild(why);
+    } else if(step.result){
+      const why = document.createElement('div');
+      why.className = 'why';
+      why.textContent = step.result;
+      body.appendChild(why);
+    }
+    row.appendChild(mark); row.appendChild(body);
+    return row;
+  }
+
+  function renderTaskOverlay(){
+    taskContent.replaceChildren();
+    const everything = taskState.active.concat(taskState.recent);
+    if(!everything.length && !taskState.sessions.length){
+      taskContent.appendChild(note('Nothing is running. Ask Leti for something that takes '
+        + 'several steps and it will appear here as it works through them.'));
+      return;
+    }
+
+    taskState.sessions.forEach(session => {
+      taskContent.appendChild(groupTitle('Computer use · ' + (session.goal || '')));
+      const progress = session.progress || {};
+      taskContent.appendChild(note(
+        (progress.position === 'working' ? 'Working' : 'Step ' + progress.position)
+        + ' · ' + session.steps_taken + ' actions taken, ' + session.steps_left + ' allowed'));
+      (progress.steps || []).forEach(step => taskContent.appendChild(stepRow(
+        {status: step.status, instruction: step.what, result: step.note})));
+      if((session.unverified_actions || []).length){
+        taskContent.appendChild(note('Not checked afterwards: '
+          + session.unverified_actions.map(a => a.action).join(', ')));
+      }
+    });
+
+    everything.forEach(task => {
+      taskContent.appendChild(groupTitle(
+        (task.name || task.objective) + ' · ' + (STATUS_WORD[task.status] || task.status)));
+      const total = task.steps_total || 0;
+      taskContent.appendChild(note(
+        (total ? task.steps_done + ' of ' + total + ' steps done' : 'working')
+        + (task.project ? ' · project: ' + task.project : '')
+        + (task.recoveries ? ' · ' + task.recoveries + ' recovery attempts' : '')));
+      if(task.awaiting_approval && task.approval_request){
+        const ask = document.createElement('div');
+        ask.className = 'task-ask';
+        const head = document.createElement('div');
+        head.className = 'head'; head.textContent = 'Waiting for approval';
+        const what = document.createElement('div');
+        what.className = 'what'; what.textContent = task.approval_request;
+        const actions = document.createElement('div');
+        actions.className = 'task-actions';
+        [['approve', 'Approve', ' primary'], ['reject', 'Reject', ' danger']].forEach(
+          ([action, label, cls]) => {
+            const btn = document.createElement('button');
+            btn.className = 'settings-btn' + cls;
+            btn.textContent = label;
+            btn.onclick = () => taskAction(task.id, action);
+            actions.appendChild(btn);
+          });
+        ask.appendChild(head); ask.appendChild(what); ask.appendChild(actions);
+        taskContent.appendChild(ask);
+      }
+      (task.steps || []).forEach(step => taskContent.appendChild(stepRow(step)));
+      const actions = document.createElement('div');
+      actions.className = 'task-actions';
+      [['pause', 'Pause', ''], ['resume', 'Resume', ''], ['retry', 'Retry step', ''],
+       ['cancel', 'Cancel', ' danger']].forEach(([action, label, cls]) => {
+        if(!(task.can || {})[action]) return;
+        const btn = document.createElement('button');
+        btn.className = 'settings-btn' + cls;
+        btn.textContent = label;
+        btn.onclick = () => taskAction(task.id, action);
+        actions.appendChild(btn);
+      });
+      if(actions.childElementCount) taskContent.appendChild(actions);
+    });
+  }
+
+  function openTasks(){
+    taskOverlay.classList.add('open');
+    renderTaskOverlay();
+    refreshTasks();
+  }
 
   // ---------- Floating artifacts ----------
   // A result worth looking at gets a window of its own, inside this page. Not an

@@ -43,17 +43,21 @@ ollama:
   # turn sends 15-30 schemas rather than all of them. That is the common case,
   # not the one to size for: when routing is not confident it falls back to the
   # whole list, and that fallback still has to fit. Measured, not estimated:
-  # 123 tools serialise to 79,676 characters, roughly 19,900 tokens. This
+  # 130 tools serialise to 85,216 characters, roughly 21,300 tokens. This
   # comment used to say 9,000 and 16384 used to be enough; the tool count grew
   # past it, which is exactly the silent failure described above. main.py logs a
   # warning at startup if this number stops being big enough again, so the next
   # time it happens it says so instead of looking like a stupid model.
   #
   # Raised from 24576 to 28672 when the tool count went 103 -> 119 (watches and
-  # the controlled GUI mode). At 123 tools a full-fallback turn is ~19,900
-  # tokens of schemas, leaving ~8,700 for the system prompt, personality, user
+  # the controlled GUI mode). At 130 tools a full-fallback turn is ~21,300
+  # tokens of schemas, leaving ~7,300 for the system prompt, personality, user
   # profile, recalled memories, the rolling conversation buffer and accumulated
-  # tool results. Don't go below 28672 while the list is this size. On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
+  # tool results. Don't go below 28672 while the list is this size, and note
+  # that the margin above main.py's 6,000-token reserve is now about 1,400
+  # tokens - the next few tools are the ones that will need this raised.
+  #
+  # On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
   # (1.31 -> 1.53 GiB), which still leaves roughly 4 GiB spare. Raising it
   # costs VRAM for the KV cache whether or not a turn uses it - see the model
   # note above, and README's Windows section for halving that cost with

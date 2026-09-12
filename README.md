@@ -151,6 +151,14 @@ searches and pages you explicitly ask it to visit.
     Reddit/YouTube signals for the niche before generating ideas, grounding at least one idea in
     real current traction where relevant - it degrades gracefully to pure model knowledge if
     nothing's configured or reachable.
+- **Files Leti can actually read** - PDF, Word, Excel, CSV, JSON, Markdown and text. "Read
+  these PDFs and compare the offers" works: Leti finds which files the request is about,
+  looks at their structure, and reads only the parts that answer the question - with the
+  page, sheet or row range attached to every quote. Nothing loads a whole file into the
+  prompt. See [Working with files](#working-with-files).
+- **Long tasks you can watch and stop** - a task that runs on its own shows its real steps,
+  which are done and which is running, and can be paused, resumed, retried or cancelled
+  from the interface. When one stops to ask permission it says exactly what for.
 - **The interface** - three columns with a calligraphic capital L at the centre, the machine
   and the day down the left, five controls and a live activity log down the right, and
   floating panels that appear only when a sentence genuinely cannot carry the answer. See
@@ -225,7 +233,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **123 tools serialise to 79,676 characters, roughly 20,000 tokens**,
+back: **130 tools serialise to 85,216 characters, roughly 21,300 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -582,6 +590,30 @@ one (and is how you navigate) so it can answer from what the page says rather th
 a search snippet, and `browser_click`/`browser_fill_form` drive a dedicated
 Playwright browser from there.
 
+**Clicking is the last resort, not the first.** Before Leti drives the screen it
+asks `choose_computer_approach` — or `plan_computer_task` for an errand of
+several moves — which answers *tool*, *browser* or *gui* and names the better
+option when there is one. "Send an email" is `send_email`. "Create a calendar
+event" is `schedule_meeting`. "Read the contract PDF" is the document tools.
+"Download the invoice from their billing page" is the browser. Only when nothing
+covers the job does the mouse come out, and then inside a bounded session:
+
+- it will not act before it has looked at the screen, and a look more than 90
+  seconds old is not a reason to click;
+- every action invalidates that look, so the next one has to look again;
+- what it expected must match what it saw, or the session stops — it does not
+  click on into a window it did not predict;
+- the same action twice with no change is a loop, and it refuses a third;
+- twenty steps is the ceiling, and a plan written up front says how far through
+  the errand is;
+- an action that changes something — Send, Submit, Delete, Publish — is tracked
+  until it has been looked at afterwards, and a session that ends with one
+  unchecked says so rather than reporting it as done.
+
+None of that executes anything. Every click is still `mouse_click`, called by the
+orchestrator and authorised by SafetyGuard exactly as if you had asked for it —
+which is what stops clicking Send being cheaper than sending an email.
+
 Window control (`close_app`, `focus_window`) works on Windows and macOS;
 pygetwindow doesn't implement it on Linux, where the tools now say so plainly
 instead of surfacing a bare exception.
@@ -681,6 +713,45 @@ Two things follow from nobody being present for those runs:
 Output goes to `logs/scheduled_runs.log`, and the run exits non-zero if a task
 failed, so the OS scheduler's own logs show it.
 
+## Working with files
+
+"Read these PDFs and compare the offers" is an ordinary thing to ask and an
+expensive thing to do badly: a folder of contracts is several hundred thousand
+tokens, and the answer to "which is cheaper" is two numbers. So Leti works in
+stages, each cheaper than reading:
+
+1. **Which files** — `find_documents` ranks the readable files in the open
+   project (or a folder you name) against your request, by name and kind. It
+   opens none of them.
+2. **What they are** — `inspect_document` reports a file's type and size and
+   lists its pages, sheets, rows or headings with one line from each.
+3. **The part that answers** — `read_document` returns the relevant sections and
+   nothing else. `compare_documents` asks the same question of several files at
+   once.
+
+Every piece of text comes back attached to the place it came from — `Page 7`,
+`Sheet 'Pricing'`, `Rows 51-100`, `## Payment terms` — so Leti can tell you
+*"according to Offer_Company_A.pdf, page 3"* and be held to it. Those labels come
+from the file's own structure; none is invented, and Leti is told not to cite one
+it was not given.
+
+A file it cannot read says so. A missing file, a format with no reader, a corrupt
+PDF, or a scan with no text in it each come back as a plain refusal with a reason
+— never as an empty extraction that reads like an empty document. When one file
+of several is unreadable, the rest are still compared and the problem is named.
+
+Formats: PDF (via `pypdf`), Word `.docx` (no package — a .docx is a zip of XML the
+standard library opens), Excel `.xlsx`, CSV/TSV, JSON, Markdown and plain text.
+Image files report their dimensions, and `look_at_image` points the vision model
+at one when the picture itself is the question.
+
+**Projects scope the search.** With a project open, "find the invoices" looks in
+that project's folder rather than the disk. With no project and no folder named,
+Leti asks which folder instead of searching everything.
+
+Nothing is sent anywhere: every one of these tools reads from disk and returns,
+and they carry the same permission class `read_file` does.
+
 ## The interface
 
 Three columns, and the middle one is the point.
@@ -712,6 +783,23 @@ use: *listening, planning, web search done, waiting for your approval, task
 completed*. Every line comes from a transition something else already made — the
 state machine, the tool router, the task manager, a watch — pushed as it
 happens. An idle Leti adds nothing to it and costs nothing for it.
+
+Between the controls and the log, **a task card appears while something is
+running** — and only while something is running. It shows the task, its status,
+real progress counted from its own steps (`13 / 20`, or "working..." when the
+number of steps is not known rather than an invented percentage), the step it is
+on, and buttons to pause, resume, retry the step that failed or cancel. Steps
+opens the full list: ✓ done, → running, ○ still to come, with each step's result
+or its actual error.
+
+When a task stops to ask permission the card says exactly what for — *"Step 3
+needs your approval: 'send_email' is an 'external' action"* — with Approve and
+Reject. Approving does not run anything: it marks that one step as carrying your
+answer and hands the task back to the runner, so the action still goes through
+the orchestrator and SafetyGuard, which still refuses to let an irreversible one
+ride on approval given in advance.
+
+A GUI errand shows in the same card, with its plan and how far through it is.
 
 Leti is spoken to first and typed to second, so the conversation sits under the
 core as a short strip and expands to a reading size on request.
@@ -819,6 +907,7 @@ leti/
 │   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks
 │   ├── computer_use.py        # Chooses tool > browser > GUI, and bounds a GUI session
 │   ├── artifacts.py           # Which tool results are worth a floating panel, by shape
+│   ├── documents.py           # Reading what is in a file without putting the file in the prompt
 │   ├── model_setup.py         # First-launch hardware detection and model recommendation
 │   ├── diagnostics.py         # Measured timings, or an honest "Unavailable"
 │   ├── atomic_write.py        # Crash-safe state-file writes
@@ -846,6 +935,7 @@ leti/
 │   ├── os_control.py          # App launcher, window manager, mouse/keyboard
 │   ├── shell_runner.py        # Sandboxed terminal executor
 │   ├── file_manager.py        # Safe file read, write, search, organize
+│   ├── documents.py           # Which files a request is about, and the parts that answer it
 │   ├── browser.py             # Playwright automation
 │   ├── computer_use.py        # Decides whether the GUI is the right layer; bounds the session
 │   ├── vision.py              # Screen grab & Ollama Vision multimodal analyzer

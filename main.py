@@ -31,6 +31,13 @@ from tools.browser import (
     BrowserSession,
     set_shared_session,
 )
+from tools.documents import (
+    CompareDocumentsTool,
+    FindDocumentsTool,
+    InspectDocumentTool,
+    LookAtImageTool,
+    ReadDocumentTool,
+)
 from tools.file_manager import DeleteFileTool, ListFilesTool, MoveFileTool, ReadFileTool, WriteFileTool
 from tools.os_control import (
     CloseAppTool,
@@ -161,7 +168,9 @@ from tools.control_center import (
 from tools.control_center import set_registry as set_control_registry
 from tools.computer_use import (
     ChooseComputerApproachTool,
+    CompleteComputerStepTool,
     EndComputerSessionTool,
+    PlanComputerTaskTool,
     VerifyScreenTool,
 )
 from tools.image_search import SearchImagesTool
@@ -216,6 +225,14 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(ListFilesTool())
     registry.register(DeleteFileTool())
     registry.register(MoveFileTool())
+    # Which files a request is about, and the parts of them that answer it. They
+    # read from disk through the same guard the file tools do; nothing here is a
+    # second filesystem.
+    registry.register(FindDocumentsTool())
+    registry.register(InspectDocumentTool())
+    registry.register(ReadDocumentTool())
+    registry.register(CompareDocumentsTool())
+    registry.register(LookAtImageTool(llm_client))
     registry.register(LaunchAppTool())
     registry.register(CloseAppTool())
     registry.register(FocusWindowTool())
@@ -380,6 +397,8 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     # The controlled GUI mode. These choose the layer and verify the screen; the
     # clicking is still mouse_click, keyboard_type and the rest.
     registry.register(ChooseComputerApproachTool())
+    registry.register(PlanComputerTaskTool())
+    registry.register(CompleteComputerStepTool())
     registry.register(VerifyScreenTool())
     registry.register(EndComputerSessionTool())
 

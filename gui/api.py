@@ -45,6 +45,7 @@ SYNC_METHODS = {
     "list_settings_sections", "get_settings_section", "update_settings_section", "clear_settings_section",
     "get_audio_setup", "set_window_mode",
     "get_personality", "set_personality", "get_activity",
+    "get_tasks", "control_task", "get_computer_use",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
@@ -344,6 +345,82 @@ class LetiAPI:
         from core import diagnostics
 
         return diagnostics.recent_activity()
+
+    # ---- Long-running tasks. A VIEW of core/task_manager.py and a set of
+    # controls that go back into it - there is no second task store here, no
+    # second runner, and nothing in this file executes a step. ----
+
+    def get_tasks(self) -> dict:
+        from core import task_manager
+
+        try:
+            tasks = task_manager.load_tasks()
+        except Exception as e:
+            logger.warning(f"Couldn't read the task store: {e}")
+            return {"error": str(e), "active": [], "recent": []}
+        active = [t for t in tasks if t.get("status") in task_manager.ACTIVE_STATUSES]
+        finished = [t for t in tasks if t.get("status") in task_manager.FINISHED_STATUSES]
+        return {
+            "active": [task_manager.detail(t) for t in active],
+            # A short tail, so "what happened to that task" has an answer without
+            # the panel becoming a history.
+            "recent": [task_manager.detail(t) for t in finished[-5:]],
+        }
+
+    def control_task(self, task_id: str, action: str) -> dict:
+        """Pause, resume, cancel, retry, approve or reject - by calling the task
+        manager's own functions.
+
+        Approving does not run anything and does not authorise anything: it marks
+        one step as carrying the user's answer and hands the task back to the
+        runner, which goes through the orchestrator and SafetyGuard exactly as
+        every other step does.
+        """
+        from core import task_manager
+        from tools.autonomous import get_runner
+
+        moves = {
+            "pause": task_manager.pause,
+            "resume": task_manager.resume,
+            "cancel": task_manager.cancel,
+            "retry": task_manager.retry,
+            "approve": task_manager.approve,
+            "reject": task_manager.reject,
+        }
+        if action not in moves:
+            return {"ok": False, "error": f"'{action}' is not something a task can be told."}
+        try:
+            updated = moves[action](task_id)
+        except Exception as e:
+            logger.exception("A task control failed")
+            return {"ok": False, "error": str(e)}
+        if updated is None:
+            return {"ok": False,
+                    "error": f"That task can't be {action}d from the state it is in."}
+
+        started = False
+        if action in ("resume", "retry", "approve"):
+            runner = get_runner()
+            if runner is not None:
+                started = bool(runner.start_in_background(task_id))
+        return {"ok": True, "started": started, "task": task_manager.detail(updated)}
+
+    # ---- What a GUI errand is doing, if one is. Read from the sessions
+    # core/computer_use.py already keeps; nothing is captured to answer this. ----
+
+    def get_computer_use(self) -> dict:
+        from core import computer_use
+
+        sessions = computer_use.active_sessions()
+        return {"sessions": [{
+            "session_id": s.id,
+            "goal": s.goal,
+            "steps_taken": s.steps_taken,
+            "steps_left": s.steps_left,
+            "progress": s.plan_progress(),
+            "unverified_actions": s.unverified_actions(),
+            "last_actions": [a["action"] for a in s.steps[-3:]],
+        } for s in sessions]}
 
 
 def _serve_headless(note: str = "", url: str = "") -> None:

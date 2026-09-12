@@ -45,6 +45,83 @@ class ChooseComputerApproachTool(BaseTool):
         return ToolResult(success=True, output=output)
 
 
+class PlanComputerTaskTool(BaseTool):
+    name = "plan_computer_task"
+    description = (
+        "For a desktop errand of several moves - 'open the website, find the invoice, "
+        "download it, rename it, move it into the project' - write the steps down BEFORE "
+        "starting. Answers the same question choose_computer_approach does (tool, browser "
+        "or gui, and the better option when there is one), and when the GUI really is the "
+        "right layer opens a session that remembers the plan, so progress can be seen and "
+        "the errand stopped part-way. For a single action use choose_computer_approach."
+    )
+    parameters = [
+        ToolParameter(name="request", type="string",
+                      description="What the user actually asked for, in their words."),
+        ToolParameter(name="steps", type="array",
+                      description="The errand as an ordered list of plain steps, e.g. "
+                                  "['open the billing page', 'find the invoice', "
+                                  "'download it', 'move it into the project folder']."),
+    ]
+
+    async def run(self, request: str, steps: Any = None, **kwargs) -> ToolResult:
+        plan = [str(s).strip() for s in (steps or []) if str(s).strip()]
+        if not plan:
+            return ToolResult(success=False,
+                              error="Write the errand down as steps first - that is what "
+                                    "makes it possible to say where it got to.")
+        decision = computer_use.choose_layer(request)
+        output = dict(decision)
+        if decision["layer"] != computer_use.LAYER_GUI:
+            output["next"] = f"Use {decision['suggestion']} instead of the GUI."
+            output["plan_not_started"] = plan
+            return ToolResult(success=True, output=output)
+
+        session = computer_use.open_session(request, plan=plan)
+        output.update({
+            "session_id": session.id,
+            "steps_allowed": computer_use.MAX_STEPS,
+            "progress": session.plan_progress(),
+            "next": ("Call read_screen, then verify_screen with what you expected, before "
+                     "the first click. Call computer_step_done when a planned step is "
+                     "actually finished - not when you have clicked towards it."),
+        })
+        return ToolResult(success=True, output=output)
+
+
+class CompleteComputerStepTool(BaseTool):
+    name = "computer_step_done"
+    description = (
+        "Say the planned step you were on is finished, and move to the next. Only after "
+        "the screen shows it really happened: this is what the progress display reads "
+        "from, so marking a step done that is not done is worse than no progress at all."
+    )
+    parameters = [
+        ToolParameter(name="session_id", type="string", description="Which session."),
+        ToolParameter(name="note", type="string", required=False,
+                      description="What actually happened, e.g. 'invoice-2024-11.pdf saved "
+                                  "to Downloads'."),
+    ]
+
+    async def run(self, session_id: str, note: str = "", **kwargs) -> ToolResult:
+        session = computer_use.get_session(session_id)
+        if session is None:
+            return ToolResult(success=False, error=f"No GUI session '{session_id}'.")
+        if not session.plan:
+            return ToolResult(success=False,
+                              error="This session has no plan to advance. Sessions started "
+                                    "with plan_computer_task do.")
+        completed = session.complete_plan_step(note)
+        if completed is None:
+            return ToolResult(success=False, error="Every planned step is already done.",
+                              output={"progress": session.plan_progress()})
+        return ToolResult(success=True, output={
+            "completed": completed,
+            "progress": session.plan_progress(),
+            "unverified_actions": session.unverified_actions(),
+        })
+
+
 class VerifyScreenTool(BaseTool):
     name = "verify_screen"
     description = (
@@ -74,6 +151,16 @@ class VerifyScreenTool(BaseTool):
             return ToolResult(success=False,
                               error=f"No GUI session '{session_id}'. Start one with "
                                     "choose_computer_approach.")
+        # A session that already stopped is not a session to check against. It
+        # refused every action anyway, but answering "matches: true" to a session
+        # closed because the screen was wrong is a mixed signal about the one
+        # thing that has to be unambiguous.
+        if session.closed:
+            return ToolResult(success=False,
+                              error=f"That session is closed ({session.closed_reason}). "
+                                    "Tell the user where it got to; start a new session "
+                                    "only if they ask you to try again.",
+                              output={"session": session.summary()})
 
         session.observe(observed)
         matches, why = session.expectation_holds(expected)
@@ -93,6 +180,7 @@ class VerifyScreenTool(BaseTool):
             "matches": True,
             "may_continue": allowed,
             "reason": reason,
+            "progress": session.plan_progress(),
             "session": session.summary(),
             "note": ("Go ahead with the existing tool for that action - mouse_click, "
                      "keyboard_type, focus_window - and verify again afterwards."

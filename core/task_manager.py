@@ -192,6 +192,43 @@ def describe(task: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+STEP_STATES = ("pending", "running", "recovering", "done", "failed", "blocked")
+
+
+def detail(task: Dict[str, Any]) -> Dict[str, Any]:
+    """Everything the interface's task panel shows, read from the task itself.
+
+    Separate from describe() on purpose: describe() goes into tool output and
+    therefore into the model's context, where a full step list would be tokens
+    spent on something the model already knows it planned. This goes to a panel,
+    where the whole point is seeing every step.
+    """
+    base = describe(task)
+    steps = task.get("steps", [])
+    base["steps"] = [{
+        "n": s.get("n", i + 1),
+        "instruction": s.get("instruction", ""),
+        "status": s.get("status", "pending"),
+        "attempts": s.get("attempts", 0),
+        "recoveries": s.get("recoveries", 0),
+        "error": s.get("error"),
+        # A preview, not the result: a step that wrote a report should not put the
+        # report in a panel row.
+        "result": (s.get("result") or "")[:400] or None,
+        "history": s.get("history", [])[-4:],
+    } for i, s in enumerate(steps)]
+    base["awaiting_approval"] = task.get("status") == WAITING_FOR_USER
+    base["approval_request"] = task.get("blocked_reason") if base["awaiting_approval"] else None
+    base["can"] = {
+        "pause": task.get("status") in (QUEUED, RUNNING),
+        "resume": task.get("status") in (PAUSED, WAITING_FOR_USER, FAILED),
+        "cancel": task.get("status") not in FINISHED_STATUSES,
+        "retry": task.get("status") in (FAILED, PAUSED, WAITING_FOR_USER, CANCELLED),
+        "approve": task.get("status") == WAITING_FOR_USER,
+    }
+    return base
+
+
 def find_active(hint: str = "") -> List[Dict[str, Any]]:
     """Active tasks matching a phrase, for "pause the research task".
 
@@ -293,11 +330,72 @@ def resume(task_id: str) -> Optional[Dict[str, Any]]:
     return _set_status(task_id, QUEUED, blocked_reason=None, error=None)
 
 
-def cancel(task_id: str) -> Optional[Dict[str, Any]]:
+def cancel(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
+    """Stop, and keep everything already done. A cancelled task is not a finished
+    one: its steps keep their own statuses so the history says what happened."""
     task = get_task(task_id)
     if task is None or task.get("status") in FINISHED_STATUSES:
         return None
-    return _set_status(task_id, CANCELLED)
+    return _set_status(task_id, CANCELLED, blocked_reason=reason or None)
+
+
+def retry(task_id: str) -> Optional[Dict[str, Any]]:
+    """Try the step that stopped, again, from the beginning of that step.
+
+    Only that step: everything before it keeps its result, which is the whole
+    reason a task records per-step state. The attempt counters reset so the
+    ordinary retry and recovery budgets apply afresh rather than being already
+    spent on the failure the user just looked at.
+    """
+    task = get_task(task_id)
+    if task is None or task.get("status") in (RUNNING, COMPLETED):
+        return None
+    steps = task.get("steps", [])
+    index = next((i for i, s in enumerate(steps)
+                  if s.get("status") in ("failed", "blocked", "running", "recovering")), None)
+    if index is None:
+        index = min(task.get("current_step", 0), max(0, len(steps) - 1))
+    if not steps:
+        return None
+    step = steps[index]
+    _note(step, f"retried by the user after: {step.get('error') or step.get('status')}")
+    step["status"] = "pending"
+    step["attempts"] = 0
+    step["recoveries"] = 0
+    step["error"] = None
+    step.pop("recovery_instruction", None)
+    step.pop("first_attempt_at", None)
+    task["current_step"] = index
+    _replace(task)
+    return _set_status(task_id, QUEUED, blocked_reason=None, error=None)
+
+
+def approve(task_id: str) -> Optional[Dict[str, Any]]:
+    """The user has said yes to the action the task stopped on.
+
+    This does not authorise anything itself. It marks ONE step as carrying the
+    user's approval and hands it back to the runner, which passes it to the
+    orchestrator as the same pre-approval SafetyGuard already understands from a
+    spoken "yes, go ahead". The guard still classifies the action, still refuses
+    to let an irreversible one ride on approval given in advance, and still writes
+    the audit line. There is no path here that runs a tool.
+    """
+    task = get_task(task_id)
+    if task is None or task.get("status") != WAITING_FOR_USER:
+        return None
+    task["approved_step"] = task.get("current_step", 0)
+    task["approved_at"] = time.time()
+    _replace(task)
+    return _set_status(task_id, QUEUED, blocked_reason=None, error=None)
+
+
+def reject(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
+    """The user has said no. The task stops and says why, rather than skipping on."""
+    task = get_task(task_id)
+    if task is None or task.get("status") != WAITING_FOR_USER:
+        return None
+    asked = task.get("blocked_reason") or "the action it stopped on"
+    return cancel(task_id, reason or f"You declined: {asked}")
 
 
 # --------------------------------------------------------------------------- #
@@ -388,6 +486,11 @@ class TaskRunner:
         step["attempts"] = step.get("attempts", 0) + 1
         step.setdefault("first_attempt_at", time.time())
         step["status"] = "running"
+        # One shot: the approval is consumed as the step starts, so a step that
+        # fails for some other reason cannot quietly re-use the user's yes.
+        approved = task.pop("approved_step", None) == index
+        if approved:
+            _note(step, "running with the approval you gave in the interface")
         _replace(task)
         _mirror_step(task, index)
 
@@ -398,16 +501,27 @@ class TaskRunner:
         if step.get("recovery_instruction"):
             instruction += f"\n\n{step['recovery_instruction']}"
         try:
-            answer = await self.orchestrator.handle_user_input(instruction)
+            answer = await self.orchestrator.handle_user_input(
+                instruction, preapproved=approved)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             return self._step_failed(task_id, index, e)
 
         task = get_task(task_id)
-        if task is None or task.get("status") == CANCELLED:
+        if task is None:
             return False
         step = task["steps"][index]
+        if task.get("status") == CANCELLED:
+            # Cancelled while this step was running. The step finished anyway -
+            # the answer is in hand - so it is recorded as finished and the task
+            # stops. Leaving it as "running" would show a step frozen mid-flight
+            # forever and lose work that actually happened.
+            step["status"] = "done"
+            step["result"] = (answer or "")[:MAX_RESULT_CHARS]
+            _note(step, "finished, but the task was cancelled before the next step")
+            _replace(task)
+            return False
         step["status"] = "done"
         step["result"] = (answer or "")[:MAX_RESULT_CHARS]
         if step.get("recoveries"):
@@ -430,8 +544,17 @@ class TaskRunner:
             step["status"] = "blocked"
             step["error"] = message
             _replace(task)
+            # Approved once and still refused means the guard classed it as
+            # irreversible, which approval given in advance deliberately does not
+            # cover. Saying that is more use than offering the same button again.
+            already_approved = any("approval you gave" in n.get("note", "")
+                                   for n in step.get("history", []))
             _set_status(task_id, WAITING_FOR_USER, blocked_reason=(
-                f"Step {index + 1} needs your approval: {message}"))
+                f"Step {index + 1} needs your approval: {message}"
+                + ("\n\nYou already approved this once. Leti will not let an "
+                   "irreversible action run on approval given in advance - do this "
+                   "step while you are here, or take it out of the task."
+                   if already_approved else "")))
             self._announce(f"'{task['name']}' is waiting for your approval on step "
                            f"{index + 1} of {len(task['steps'])}.")
             return False

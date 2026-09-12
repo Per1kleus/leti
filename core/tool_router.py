@@ -1,8 +1,8 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 123 tools serialise to 79,676 characters, roughly
-19,900 tokens, before the system prompt, personality, profile, recalled
+tool-calling loop. Measured: 130 tools serialise to 85,216 characters, roughly
+21,300 tokens, before the system prompt, personality, profile, recalled
 memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 
@@ -86,7 +86,11 @@ _WORD = re.compile(r"[a-z0-9]+")
 # _uncategorised_modules - and a test asserts the table still covers the registry
 # so that stays a safety net rather than a habit.
 CATEGORIES: Dict[str, List[str]] = {
-    "files":         ["tools.file_manager", "tools.backup_restore"],
+    "files":         ["tools.file_manager", "tools.documents", "tools.backup_restore"],
+    # Reading what is IN a file, as opposed to moving files around. Deliberately
+    # this module alone: pairing it with file_manager and data_analysis made a
+    # unit conversion match "documents" and drag delete_file along with it.
+    "documents":     ["tools.documents"],
     "system":        ["tools.os_control", "tools.shell_runner", "tools.system_health",
                       "tools.vision", "tools.computer_use"],
     "security":      ["tools.system_defense", "tools.network_security",

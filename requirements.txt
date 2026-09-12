@@ -32,6 +32,13 @@ playwright>=1.45.0
 # Web search
 ddgs>=6.0.0
 
+# Reading documents (core/documents.py). Only PDF needs a package: .docx is a zip
+# of XML the standard library already opens, .xlsx goes through openpyxl below,
+# and CSV/JSON/Markdown/text are stdlib. pypdf is pure Python, so it adds no
+# build step - and if it is missing, Leti says it cannot read PDFs rather than
+# guessing at one.
+pypdf>=4.0
+
 # Data analysis: one pandas DataFrame is the common representation every format
 # loads into (tools/data_analysis.py). openpyxl is pandas' Excel engine, scipy
 # supplies the statistics and MATLAB .mat reading, matplotlib draws the charts.
