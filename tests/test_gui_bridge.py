@@ -699,18 +699,48 @@ def test_an_outside_link_cannot_navigate_the_application_away_from_itself():
 
 # --- The mark ------------------------------------------------------------------------
 
+def _mark_box():
+    """Where the mark actually lands in the drawing, from its own outlines."""
+    group = re.search(r'<g id="letiMark" transform="translate\(([-\d.]+) ([-\d.]+)\) '
+                      r'scale\(([\d.]+)\)">(.*?)</g>', HUD, re.S)
+    assert group, "the mark's group moved; this test needs updating"
+    tx, ty, scale = float(group.group(1)), float(group.group(2)), float(group.group(3))
+    numbers = [float(n) for n in re.findall(r"-?\d+\.?\d*",
+                                            " ".join(re.findall(r'\sd="([^"]+)"', group.group(4))))]
+    xs, ys = numbers[0::2], numbers[1::2]
+    return (tx + min(xs) * scale, ty + min(ys) * scale,
+            tx + max(xs) * scale, ty + max(ys) * scale)
+
+
 def test_the_mark_leaves_room_for_the_ring_it_sits_in():
-    """It is the emblem in the core, not the whole core. Sized so the
-    audio-reactive ring reads as a frame around it rather than crossing it."""
-    mark = re.search(r'id="letiMark".*?transform="translate\([\d.]+ [\d.]+\) scale\(([\d.]+)\)"',
-                     HUD, re.S)
-    assert mark, "the mark's transform moved; this test needs updating"
-    scale = float(mark.group(1))
-    # The letterform is 185 units tall before scaling; the core disc is r=82, and
-    # the ring it sits inside runs from r=54 to r=73.
-    height = 185 * scale
+    """It is the emblem in the core, not the whole core. Measured from the paths
+    themselves, so it stays true if the letterform is redrawn.
+
+    The drawing is 400 units across, the core disc is r=82, and the audio-reactive
+    ring inside it runs from r=54 out to r=73 as the core reacts.
+    """
+    x0, y0, x1, y1 = _mark_box()
+    height, width = y1 - y0, x1 - x0
     assert height < 2 * 54, f"the mark ({height:.0f} units) crosses the core ring"
     assert height > 60, "the mark has shrunk to a detail"
+    # And it is centred in the core rather than merely small.
+    assert abs((x0 + x1) / 2 - 200) < 6, "the mark is off-centre horizontally"
+    assert abs((y0 + y1) / 2 - 200) < 12, "the mark is off-centre vertically"
+    assert width < height, "a capital script L is taller than it is wide"
+
+
+def test_the_mark_is_written_rather_than_wired():
+    """A stroked path has one width everywhere, which is what makes a letterform
+    read as a wire. These are outlines: the weight varies along the stroke."""
+    group = re.search(r'<g id="letiMark".*?</g>', HUD, re.S).group(0)
+    assert "stroke-width" not in group, "the mark is stroked again"
+    # The letter is one continuous pen stroke, plus the faint copy behind it.
+    assert group.count("<path") == 2
+    for rule in ("mark-stem", "mark-halo"):
+        block = re.search(rf"\.{rule}\{{([^}}]*)\}}", CODE)
+        assert block and "fill:var(--cyan)" in block.group(1).replace(" ", "")
+    # Each outline closes, or the fill would bleed.
+    assert group.count('Z"') == 2
 
 
 def test_the_mark_is_part_of_the_drawing_it_sits_in():
@@ -720,12 +750,12 @@ def test_the_mark_is_part_of_the_drawing_it_sits_in():
     start = HUD.index('<svg viewBox="0 0 400 400"')
     svg = HUD[start:HUD.index("</svg>", start)]
     assert 'id="letiMark"' in svg
-    assert "mark-stem" in svg and "mark-hair" in svg
+    assert "mark-stem" in svg and "mark-halo" in svg
 
 
 def test_the_mark_costs_nothing_to_sit_there():
     """Its state shows as colour and opacity - transitions that run once and stop."""
-    for rule in ("mark-halo", "mark-stem", "mark-hair"):
+    for rule in ("mark-halo", "mark-stem"):
         block = re.search(rf"\.{rule}\{{([^}}]*)\}}", CODE)
         assert block, f".{rule} moved; this test needs updating"
         assert "animation" not in block.group(1)

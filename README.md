@@ -151,6 +151,10 @@ searches and pages you explicitly ask it to visit.
     Reddit/YouTube signals for the niche before generating ideas, grounding at least one idea in
     real current traction where relevant - it degrades gracefully to pure model knowledge if
     nothing's configured or reachable.
+- **The interface** - three columns with a calligraphic capital L at the centre, the machine
+  and the day down the left, five controls and a live activity log down the right, and
+  floating panels that appear only when a sentence genuinely cannot carry the answer. See
+  [The interface](#the-interface).
 
 ---
 
@@ -677,14 +681,70 @@ Two things follow from nobody being present for those runs:
 Output goes to `logs/scheduled_runs.log`, and the run exits non-zero if a task
 failed, so the OS scheduler's own logs show it.
 
+## The interface
+
+Three columns, and the middle one is the point.
+
+**Left** is the machine and the day: the time and date, the weather, CPU, memory
+and disk, and — where they can be read — the graphics card, its memory and the
+model Leti is configured with. Those last three are read once at startup from
+the same hardware check the first-launch card runs, not on a poll: a GPU does
+not change while Leti is open, and asking costs a subprocess.
+
+**Centre** is Leti. A calligraphic capital L sits in the core, inside a ring that
+follows real audio — the microphone while you are speaking, Leti's own speech
+while it is answering. The readout under it says what Leti is doing: idle,
+listening, thinking, executing, waiting for your approval. Those come from the
+orchestrator's own state machine rather than from anything the interface decides.
+
+**Right** is five controls and a log.
+
+| Control | What it is a view of |
+| --- | --- |
+| Connections | The integrations in `core/settings_editor.py` — connect, configure, disconnect. Passwords and API keys are never shown again once saved. |
+| AI settings | The models, temperature, context size, tool limit and routing switch Leti is already running with. Blank fields keep their current value. |
+| Voice | The microphone, wake word, Whisper and speech settings, and the setup card. |
+| Personality | The six dials in `tools/personality.py`, with presets that are just six numbers each. |
+| Permissions | What Leti may do on its own, and which classes stop to ask — the same setting SafetyGuard reads. |
+
+Under them the **RT-LOG** says what Leti is doing in the words a person would
+use: *listening, planning, web search done, waiting for your approval, task
+completed*. Every line comes from a transition something else already made — the
+state machine, the tool router, the task manager, a watch — pushed as it
+happens. An idle Leti adds nothing to it and costs nothing for it.
+
+Leti is spoken to first and typed to second, so the conversation sits under the
+core as a short strip and expands to a reading size on request.
+
+### When something appears on screen
+
+Most answers are words. A floating panel opens by itself only when both of these
+are true: it is something a sentence cannot carry — a picture, a chart, a
+diagram — and it was either asked for ("show me…", "plot…", "what does it look
+like") or produced by a tool whose whole job is visual (`search_images`,
+`create_sketch`, `visualize_dataset`).
+
+Everything else Leti *could* show — a table, a set of sources, a document — gets
+one quiet line in the RT-LOG that opens it on click, and is otherwise just the
+text answer. So "what's the weather in Athens" puts nothing on screen, and "show
+me the last five years of Tesla" puts up a chart. The rule is in
+`core/artifacts.py`, it is a word list and three tool names, and there is no
+second model deciding how to present an answer.
+
+Panels are draggable, resizable and closable, they live inside the page rather
+than in new operating-system windows, at most four are open at once, and nothing
+about them runs on a clock.
+
 ## The icon
 
-`gui/icon.svg` is the source of truth. Three variants exist because one drawing
-can't serve every size: the full mark has a HUD ring that turns to a smudge at
-taskbar size, so `gui/icon-small.svg` drops the ring and enlarges the "L" for
-the 16-32px entries, and `gui/icon-maskable.svg` is full-bleed with the mark
-pulled into Android's safe zone, since launchers crop home-screen icons to the
-device's own shape.
+`gui/icon.svg` is the source of truth, and carries the same capital L the
+interface draws in its core — one pen stroke, filled rather than stroked, so the
+weight falls in the downstroke the way a pen puts it there. Three variants exist
+because one drawing can't serve every size: the full mark has a HUD ring that
+turns to a smudge at taskbar size, so `gui/icon-small.svg` drops the ring and
+enlarges the letter with a heavier pen for the 16-32px entries, and
+`gui/icon-maskable.svg` is full-bleed with the mark pulled into Android's safe
+zone, since launchers crop home-screen icons to the device's own shape.
 
 Edit an SVG, then regenerate the PNG/`.ico`/`.icns` files in `gui/icons/`:
 

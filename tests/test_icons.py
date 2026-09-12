@@ -145,3 +145,79 @@ def test_pywebview_window_icon_exists():
     match = re.search(r'"icons"\s*/\s*"([^"]+)"', api)
     assert match, "gui/api.py no longer points the window at an icon"
     assert (ICON_DIR / match.group(1)).is_file()
+
+# --- The mark is one mark ----------------------------------------------------------
+# The letterform appears in four files: the interface's core and three icon
+# variants. They are generated from one centreline at different weights, so the
+# path data legitimately differs - but the SHAPE must not, or the app and its
+# launcher icon stop being the same thing.
+
+HUD = PROJECT_ROOT / "gui" / "hud.html"
+ICON_SVGS = {name: PROJECT_ROOT / "gui" / f"{name}.svg"
+             for name in ("icon", "icon-small", "icon-maskable")}
+
+
+# The letterform's own group, wherever it sits: translate then scale, with the
+# translate's two numbers space-separated (the maskable icon's outer wrapper uses
+# commas, which is what keeps this from matching it instead).
+MARK_GROUP = re.compile(r'<g (?:id="letiMark" )?transform="translate\(-?[\d.]+ -?[\d.]+\) '
+                        r'scale\([\d.]+\)">(.*?)</g>', re.S)
+
+
+def _mark_points(text):
+    """Every point of the filled letterform in one file, in its own coordinates."""
+    group = MARK_GROUP.search(text)
+    assert group, "no letterform group found"
+    paths = re.findall(r'\sd="([^"]+)"', group.group(1))
+    assert paths, "the letterform group holds no paths"
+    numbers = [float(n) for n in re.findall(r"-?\d+\.?\d*", " ".join(paths))]
+    return list(zip(numbers[0::2], numbers[1::2]))
+
+
+def _grid(points, n=8):
+    """A coarse occupancy grid of the shape, normalised into a unit box."""
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    w, h = (x1 - x0) or 1, (y1 - y0) or 1
+    cells = set()
+    for x, y in points:
+        cells.add((min(n - 1, int((x - x0) / w * n)), min(n - 1, int((y - y0) / h * n))))
+    return cells, w / h
+
+
+def test_the_icons_carry_the_same_letterform_as_the_interface():
+    """Redrawing the mark in one place and not the others is the failure this
+    catches - the launcher icon and the app would stop being the same thing."""
+    reference, ratio = _grid(_mark_points(HUD.read_text()))
+    for name, path in ICON_SVGS.items():
+        cells, icon_ratio = _grid(_mark_points(path.read_text()))
+        difference = len(cells ^ reference)
+        # Measured: the ringed and maskable icons differ by 2 cells of 40, and the
+        # small variant by 9 because it is drawn with a heavier pen so its
+        # hairlines survive 16px. The block L these replaced differs by 36, which
+        # is the kind of drift this is for.
+        assert difference <= 14, (
+            f"{name}.svg draws a different shape from the interface "
+            f"({difference} grid cells differ)")
+        assert abs(icon_ratio - ratio) < 0.08, (
+            f"{name}.svg has different proportions ({icon_ratio:.2f} vs {ratio:.2f})")
+
+
+def test_no_icon_still_draws_the_old_block_letter():
+    """The mark was a geometric block L built from h/v runs. A calligraphic one is
+    an outline; there is nothing left for those to be."""
+    for name, path in ICON_SVGS.items():
+        text = path.read_text()
+        assert "h40 v112" not in text and "h78 v218" not in text, f"{name}.svg"
+        assert "<rect x=" not in text, f"{name}.svg still has the level bars"
+
+
+def test_the_letterform_is_filled_not_stroked_everywhere():
+    """A stroked path has one width everywhere, which is what makes a letterform
+    read as a wire rather than as writing."""
+    for name, path in ICON_SVGS.items():
+        chunk = MARK_GROUP.search(path.read_text()).group(1)
+        assert "stroke" not in chunk, f"{name}.svg strokes the letter"
+        assert chunk.count("<path") == 2, f"{name}.svg: expected the letter and its halo"
+
