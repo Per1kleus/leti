@@ -160,19 +160,26 @@ class Session:
 
     @property
     def plan_index(self) -> int:
-        """The plan step being worked on, or the length of the plan when done."""
+        """The plan step being worked on, or the length of the plan when done.
+
+        A step that was abandoned when the session stopped is not the step being
+        worked on - nothing is.
+        """
         for i, step in enumerate(self.plan):
-            if step["status"] != "done":
+            if step["status"] == "pending":
                 return i
         return len(self.plan)
 
     def plan_progress(self) -> Dict[str, Any]:
         """Where the errand has got to. Counted, never estimated."""
         done = sum(1 for s in self.plan if s["status"] == "done")
+        abandoned = sum(1 for s in self.plan if s["status"] == "abandoned")
         current = self.plan[self.plan_index] if self.plan_index < len(self.plan) else None
         return {
             "planned": len(self.plan),
             "done": done,
+            "abandoned": abandoned,
+            "finished": bool(self.plan) and done == len(self.plan),
             # No plan means no progress to report, and "Working..." is the honest
             # thing to say rather than a fraction with an invented denominator.
             "position": f"{done}/{len(self.plan)}" if self.plan else "working",
@@ -268,6 +275,14 @@ class Session:
     def close(self, reason: str = "finished") -> Dict[str, Any]:
         self.closed = True
         self.closed_reason = reason
+        # A plan step left "pending" on a session that has stopped reads as work
+        # still to come. It is not: nothing is going to do it. Marking it
+        # abandoned is the same honesty a cancelled task's steps get - the record
+        # says what happened, and nothing is left looking like it is in progress.
+        for step in self.plan:
+            if step["status"] != "done":
+                step["status"] = "abandoned"
+                step["note"] = step["note"] or f"the session stopped: {reason}"
         _announce(self, f"session closed - {reason}")
         return self.summary()
 
@@ -289,6 +304,8 @@ class Session:
             "warning": (f"{len(unverified)} action(s) that change something were never "
                         "checked afterwards. Say so rather than reporting them as done."
                         if unverified else None),
+            "plan_incomplete": ([s["what"] for s in self.plan if s["status"] == "abandoned"]
+                                if self.closed else []),
         }
 
 

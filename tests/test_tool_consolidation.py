@@ -15,6 +15,7 @@ rather than on network results, so they run offline.
 from __future__ import annotations
 
 import ast
+import json
 import inspect
 from pathlib import Path
 
@@ -34,6 +35,7 @@ MERGED_AWAY = [
     "scan_local_ports", "list_suspicious_processes",        # -> inspect_network_connections
     "get_system_specs", "run_health_check", "check_for_updates",  # -> system_report
     "open_url",                                             # -> launch_app
+    "plan_computer_task",                                   # -> choose_computer_approach
 ]
 
 
@@ -416,3 +418,124 @@ def test_the_domain_blocklist_followed_open_url_into_launch_app(monkeypatch):
 
     assert guard.check_hard_block("launch_app", {"app_name": "https://blocked.example/x"})
     assert guard.check_hard_block("launch_app", {"app_name": "https://allowed.example/x"}) is None
+
+
+# --- Tools that look alike, and the ones that only looked alike --------------------
+#
+# The file-intelligence work added five tools that read files and one that looks at
+# an image, next to tools that already read files and already looked at pixels. One
+# of them (plan_computer_task) really was a second way to do the same job and is in
+# MERGED_AWAY above. The rest survived the audit because they answer different
+# questions, and these tests are what "different question" means in practice - if a
+# later change makes one of these pairs interchangeable, the pair should be merged
+# and the test deleted deliberately rather than quietly passing.
+
+def _literal_text(node) -> str:
+    """The text of a string assignment, including the fixed parts of an f-string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value for v in node.values
+                       if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    return ""
+
+
+def _tool_descriptions() -> dict:
+    """name -> description, read statically for the same reason _registered_tool_names is."""
+    found = {}
+    for path in sorted((PROJECT_ROOT / "tools").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            fields = {}
+            for stmt in node.body:
+                if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                        and getattr(stmt.targets[0], "id", None) in ("name", "description")):
+                    text = _literal_text(stmt.value)
+                    if text:
+                        fields[stmt.targets[0].id] = text
+            if "name" in fields and "description" in fields:
+                found[fields["name"]] = fields["description"]
+    return found
+
+
+def test_no_two_tools_describe_the_same_job():
+    """The model picks by description. Two tools that read the same to it are one
+    tool with a coin flip in front of it."""
+    descriptions = _tool_descriptions()
+    registered = set(_registered_tool_names())
+    seen, clashes = {}, []
+    for name, text in descriptions.items():
+        if name not in registered:
+            continue
+        key = " ".join(text.split()).lower()
+        if key in seen:
+            clashes.append((seen[key], name))
+        seen[key] = name
+    assert not clashes, f"tools with identical descriptions: {clashes}"
+
+
+def test_every_registered_tool_says_what_it_is_for():
+    registered = set(_registered_tool_names())
+    descriptions = _tool_descriptions()
+    thin = sorted(n for n in registered if len(descriptions.get(n, "")) < 20)
+    assert not thin, f"registered with no usable description: {thin}"
+
+
+@pytest.mark.asyncio
+async def test_inspect_dataset_and_inspect_document_answer_different_questions(tmp_path):
+    """Both take a path to a CSV. One reports statistics, the other reports shape -
+    a question about missing values has one answer, a question about where to read
+    has the other."""
+    from tools.data_analysis import InspectDatasetTool
+    from tools.documents import InspectDocumentTool
+
+    csv = tmp_path / "sales.csv"
+    csv.write_text("region,amount\nnorth,10\nsouth,\neast,30\n")
+
+    stats = await InspectDatasetTool().run(str(csv))
+    shape = await InspectDocumentTool().run(str(csv))
+    assert stats.success and shape.success
+
+    # The dataset tool knows there is a hole in the data.
+    assert any(c.get("missing") for c in stats.output["column_details"])
+    # The document tool knows where the rows are, and quotes none of them whole.
+    assert shape.output["sections"] and "Rows" in shape.output["sections"][0]["label"]
+    assert "missing" not in json.dumps(shape.output)
+
+
+def test_read_screen_looks_at_the_screen_and_look_at_image_at_a_file():
+    """Same vision model, different subject. read_screen cannot be pointed at a file
+    and look_at_image cannot be pointed at the screen, so neither can stand in for
+    the other however the request is phrased."""
+    from tools.documents import LookAtImageTool
+    from tools.vision import ReadScreenTool
+
+    screen = {p.name for p in ReadScreenTool.parameters}
+    image = {p.name for p in LookAtImageTool.parameters}
+    assert "path" not in screen, "read_screen grew a file parameter; it is now look_at_image"
+    assert "path" in image and "question" in image
+
+
+@pytest.mark.asyncio
+async def test_list_files_lists_and_find_documents_ranks(tmp_path):
+    """list_files answers "what is in this folder". find_documents answers "which of
+    these is the request about", which is a different answer and a smaller one."""
+    from tools.documents import FindDocumentsTool
+    from tools.file_manager import ListFilesTool
+
+    (tmp_path / "holiday_snaps.txt").write_text("nothing to do with work")
+    (tmp_path / "invoice_2024.txt").write_text("Total due: 1,200 EUR")
+    (tmp_path / "notes.md").write_text("# Notes\n")
+
+    listed = await ListFilesTool().run(str(tmp_path))
+    found = await FindDocumentsTool().run(request="find the invoice", folder=str(tmp_path))
+    assert listed.success and found.success
+
+    # Listing is the folder, unranked and unscored.
+    assert "score" not in json.dumps(listed.output)
+    # Finding is the folder in the order the request puts it in.
+    assert found.output["files"][0]["name"] == "invoice_2024.txt"
+    assert found.output["files"][0]["score"] > 0
+    # And it opened nothing: no file's contents came back.
+    assert "1,200 EUR" not in json.dumps(found.output)

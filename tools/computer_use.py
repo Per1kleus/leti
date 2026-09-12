@@ -20,71 +20,43 @@ class ChooseComputerApproachTool(BaseTool):
     name = "choose_computer_approach"
     description = (
         "Before driving the screen with the mouse and keyboard, ask this which way to do "
-        "the job. It answers 'tool', 'browser' or 'gui' and names the better option when "
-        "there is one - a dedicated tool beats browser automation, and browser automation "
+        "the job. It answers 'tool', 'browser' or 'gui', and names what to use instead "
+        "when something else fits - a dedicated tool beats browser automation, and browser automation "
         "beats moving the mouse. Only when it answers 'gui' is clicking and typing on "
         "screen the right approach, and it opens a bounded session for it. Use this for "
-        "requests like 'open this application and click Settings'."
+        "requests like 'open this application and click Settings'. When the job takes "
+        "several clicks, pass `steps` too and the session keeps the plan."
     )
     parameters = [
         ToolParameter(name="request", type="string",
                       description="What the user actually asked for, in their words."),
-    ]
-
-    async def run(self, request: str, **kwargs) -> ToolResult:
-        decision = computer_use.choose_layer(request)
-        output = dict(decision)
-        if decision["layer"] == computer_use.LAYER_GUI:
-            session = computer_use.open_session(request)
-            output["session_id"] = session.id
-            output["steps_allowed"] = computer_use.MAX_STEPS
-            output["next"] = ("Call read_screen, then verify_screen to say what you "
-                              "expected, before the first click.")
-        else:
-            output["next"] = f"Use {decision['suggestion']} instead of the GUI."
-        return ToolResult(success=True, output=output)
-
-
-class PlanComputerTaskTool(BaseTool):
-    name = "plan_computer_task"
-    description = (
-        "For a desktop errand of several moves - 'open the website, find the invoice, "
-        "download it, rename it, move it into the project' - write the steps down BEFORE "
-        "starting. Answers the same question choose_computer_approach does (tool, browser "
-        "or gui, and the better option when there is one), and when the GUI really is the "
-        "right layer opens a session that remembers the plan, so progress can be seen and "
-        "the errand stopped part-way. For a single action use choose_computer_approach."
-    )
-    parameters = [
-        ToolParameter(name="request", type="string",
-                      description="What the user actually asked for, in their words."),
-        ToolParameter(name="steps", type="array",
-                      description="The errand as an ordered list of plain steps, e.g. "
+        ToolParameter(name="steps", type="array", required=False,
+                      description="For a multi-step errand: the ordered plain steps, e.g. "
                                   "['open the billing page', 'find the invoice', "
-                                  "'download it', 'move it into the project folder']."),
+                                  "'download it']. Leave out for a single action."),
     ]
 
     async def run(self, request: str, steps: Any = None, **kwargs) -> ToolResult:
         plan = [str(s).strip() for s in (steps or []) if str(s).strip()]
-        if not plan:
-            return ToolResult(success=False,
-                              error="Write the errand down as steps first - that is what "
-                                    "makes it possible to say where it got to.")
         decision = computer_use.choose_layer(request)
         output = dict(decision)
         if decision["layer"] != computer_use.LAYER_GUI:
             output["next"] = f"Use {decision['suggestion']} instead of the GUI."
-            output["plan_not_started"] = plan
+            # Writing a plan down does not make the GUI the right layer; say what
+            # was not started rather than starting it.
+            if plan:
+                output["plan_not_started"] = plan
             return ToolResult(success=True, output=output)
 
-        session = computer_use.open_session(request, plan=plan)
+        session = computer_use.open_session(request, plan=plan or None)
         output.update({
             "session_id": session.id,
             "steps_allowed": computer_use.MAX_STEPS,
             "progress": session.plan_progress(),
-            "next": ("Call read_screen, then verify_screen with what you expected, before "
-                     "the first click. Call computer_step_done when a planned step is "
-                     "actually finished - not when you have clicked towards it."),
+            "next": ("Call read_screen, then verify_screen to say what you expected, "
+                     "before the first click."
+                     + (" Call computer_step_done when a planned step is actually "
+                        "finished - not when you have clicked towards it." if plan else "")),
         })
         return ToolResult(success=True, output=output)
 
@@ -92,7 +64,8 @@ class PlanComputerTaskTool(BaseTool):
 class CompleteComputerStepTool(BaseTool):
     name = "computer_step_done"
     description = (
-        "Say the planned step you were on is finished, and move to the next. Only after "
+        "Say the planned step you were on is finished, and move to the next. Only for a "
+        "session started with a plan (see choose_computer_approach's `steps`). Only after "
         "the screen shows it really happened: this is what the progress display reads "
         "from, so marking a step done that is not done is worse than no progress at all."
     )
@@ -109,8 +82,8 @@ class CompleteComputerStepTool(BaseTool):
             return ToolResult(success=False, error=f"No GUI session '{session_id}'.")
         if not session.plan:
             return ToolResult(success=False,
-                              error="This session has no plan to advance. Sessions started "
-                                    "with plan_computer_task do.")
+                              error="This session has no plan to advance. Pass `steps` to "
+                                    "choose_computer_approach to start one that has.")
         completed = session.complete_plan_step(note)
         if completed is None:
             return ToolResult(success=False, error="Every planned step is already done.",

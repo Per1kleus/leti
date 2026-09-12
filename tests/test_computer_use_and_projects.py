@@ -251,9 +251,9 @@ def test_finishing_every_planned_step_leaves_nothing_to_advance():
 @pytest.mark.asyncio
 async def test_planning_a_multi_step_errand_still_defers_to_a_dedicated_tool():
     """Writing a plan down does not make the GUI the right layer."""
-    from tools.computer_use import PlanComputerTaskTool
+    from tools.computer_use import ChooseComputerApproachTool
 
-    result = await PlanComputerTaskTool().run(
+    result = await ChooseComputerApproachTool().run(
         "send an email to Maria and then another to John",
         steps=["open the mail client", "write the first", "send it"])
     assert result.success
@@ -264,9 +264,9 @@ async def test_planning_a_multi_step_errand_still_defers_to_a_dedicated_tool():
 
 @pytest.mark.asyncio
 async def test_a_gui_errand_gets_a_session_that_remembers_the_plan():
-    from tools.computer_use import CompleteComputerStepTool, PlanComputerTaskTool
+    from tools.computer_use import ChooseComputerApproachTool, CompleteComputerStepTool
 
-    result = await PlanComputerTaskTool().run(
+    result = await ChooseComputerApproachTool().run(
         "open Blender, click Settings and change the theme",
         steps=["open Blender", "click Settings", "change the theme"])
     assert result.success and result.output["layer"] == computer_use.LAYER_GUI
@@ -280,11 +280,31 @@ async def test_a_gui_errand_gets_a_session_that_remembers_the_plan():
 
 
 @pytest.mark.asyncio
-async def test_a_plan_with_no_steps_is_refused():
-    from tools.computer_use import PlanComputerTaskTool
+async def test_one_tool_answers_the_question_with_or_without_a_plan():
+    """choose_computer_approach and plan_computer_task were two tools answering the
+    same question. They are one tool with an optional plan now - so asking without
+    steps still works exactly as it did, and is not an error."""
+    from tools.computer_use import ChooseComputerApproachTool
 
-    result = await PlanComputerTaskTool().run("do the thing", steps=[])
-    assert result.success is False
+    plain = await ChooseComputerApproachTool().run("click the export button in this program")
+    assert plain.success and plain.output["layer"] == computer_use.LAYER_GUI
+    assert plain.output["progress"]["position"] == "working"
+    assert computer_use.get_session(plain.output["session_id"]).plan == []
+
+    planned = await ChooseComputerApproachTool().run(
+        "click the export button in this program", steps=["find it", "click it"])
+    assert planned.output["progress"]["position"] == "0/2"
+
+
+@pytest.mark.asyncio
+async def test_a_plan_is_not_started_when_a_tool_should_do_the_job():
+    from tools.computer_use import ChooseComputerApproachTool
+
+    result = await ChooseComputerApproachTool().run(
+        "send an email to Maria", steps=["open mail", "write it", "send it"])
+    assert result.output["layer"] == computer_use.LAYER_TOOL
+    assert result.output["plan_not_started"] == ["open mail", "write it", "send it"]
+    assert "session_id" not in result.output
 
 
 @pytest.mark.asyncio
@@ -295,6 +315,92 @@ async def test_progress_cannot_be_advanced_for_a_session_that_has_no_plan():
     result = await CompleteComputerStepTool().run(session.id, "done")
     assert result.success is False
     assert "no plan" in result.error
+
+
+# --- Stopping leaves an honest record -------------------------------------------------------
+#
+# The failure these are about is not a wrong click. It is a session that stopped -
+# cancelled, closed, out of steps - and left a record that still reads like work in
+# progress or, worse, like work that succeeded.
+
+@pytest.mark.asyncio
+async def test_a_cancelled_errand_leaves_no_step_looking_like_it_is_still_running():
+    from tools.computer_use import EndComputerSessionTool
+
+    session = computer_use.open_session(
+        "open Blender and change the theme",
+        plan=["open Blender", "click Settings", "change the theme"])
+    session.complete_plan_step("Blender is open")
+
+    ended = await EndComputerSessionTool().run(session.id, "the user cancelled it")
+    assert ended.success
+    statuses = [s["status"] for s in ended.output["progress"]["steps"]]
+    assert statuses == ["done", "abandoned", "abandoned"]
+    assert "pending" not in statuses, "a step is still shown as work in progress"
+    # And the summary says which parts of the errand did not happen.
+    assert ended.output["plan_incomplete"] == ["click Settings", "change the theme"]
+    assert ended.output["progress"]["finished"] is False
+
+
+def test_an_abandoned_step_is_not_reported_as_the_one_being_worked_on():
+    session = computer_use.open_session("two things", plan=["one", "two"])
+    session.close("the user cancelled it")
+    progress = session.plan_progress()
+    assert progress["current"] is None, "a closed session still claims to be doing something"
+    assert progress["abandoned"] == 2 and progress["done"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_closed_session_cannot_report_a_successful_verification():
+    """The dangerous answer is "matches: true" from a session that already stopped:
+    it reads as the errand going fine."""
+    from tools.computer_use import VerifyScreenTool
+
+    session = computer_use.open_session("open Settings")
+    session.close("the screen was not what was expected")
+
+    result = await VerifyScreenTool().run(session.id, expected="Settings window",
+                                          observed="Settings window", next_action="click Save")
+    assert result.success is False
+    assert "closed" in result.error
+    assert result.output["session"]["steps_taken"] == 0, "a closed session recorded an action"
+
+
+@pytest.mark.asyncio
+async def test_a_verification_that_failed_is_never_a_success():
+    from tools.computer_use import VerifyScreenTool
+
+    session = computer_use.open_session("open Settings")
+    result = await VerifyScreenTool().run(
+        session.id, expected="the Settings window, General tab",
+        observed="an unsaved-changes dialog", next_action="click Save")
+
+    assert result.success is False and result.output["matches"] is False
+    # And the session is over rather than carrying on into a window it did not predict.
+    assert computer_use.get_session(session.id).closed is True
+    assert "Do not carry on clicking" in result.output["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_step_cannot_be_marked_done_in_a_session_that_no_longer_exists():
+    from tools.computer_use import CompleteComputerStepTool, VerifyScreenTool
+
+    for tool in (CompleteComputerStepTool(), VerifyScreenTool()):
+        arguments = {"session_id": "gui-nonexistent"}
+        if isinstance(tool, VerifyScreenTool):
+            arguments.update(expected="anything", observed="anything")
+        result = await tool.run(**arguments)
+        assert result.success is False and "gui-nonexistent" in result.error
+
+
+def test_an_observation_from_before_an_action_cannot_be_used_after_it():
+    """Every action moves the screen on, so the look that authorised it is spent."""
+    session = computer_use.open_session("click twice")
+    session.observe("the Settings window")
+    assert session.may_act("mouse_click", "Save")[0] is True
+    session.record("mouse_click", "Save")
+    allowed, reason = session.may_act("mouse_click", "Close")
+    assert allowed is False and "look" in reason.lower()
 
 
 # --- What the interface sees --------------------------------------------------------------
@@ -346,7 +452,7 @@ def test_the_gui_tools_are_read_only_in_permissions():
 
     entries = get_permissions()["tools"]
     for name in ("choose_computer_approach", "verify_screen", "end_computer_session",
-                 "plan_computer_task", "computer_step_done"):
+                 "computer_step_done"):
         assert entries[name]["action"] == "read", name
     # The things that actually touch the machine are unchanged.
     assert entries["mouse_click"]["action"] != "read"

@@ -170,7 +170,6 @@ from tools.computer_use import (
     ChooseComputerApproachTool,
     CompleteComputerStepTool,
     EndComputerSessionTool,
-    PlanComputerTaskTool,
     VerifyScreenTool,
 )
 from tools.image_search import SearchImagesTool
@@ -397,7 +396,6 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     # The controlled GUI mode. These choose the layer and verify the screen; the
     # clicking is still mouse_click, keyboard_type and the rest.
     registry.register(ChooseComputerApproachTool())
-    registry.register(PlanComputerTaskTool())
     registry.register(CompleteComputerStepTool())
     registry.register(VerifyScreenTool())
     registry.register(EndComputerSessionTool())

@@ -397,7 +397,7 @@ def test_a_request_about_nothing_of_the_kind_does_not(registry, request_text):
 ])
 def test_a_desktop_errand_reaches_the_computer_use_tools(registry, request_text):
     routing = route(request_text, registry)
-    exposed = set(routing.tool_names) & {"choose_computer_approach", "plan_computer_task",
-                                         "computer_step_done", "verify_screen"}
+    exposed = set(routing.tool_names) & {"choose_computer_approach", "computer_step_done",
+                                         "verify_screen"}
     assert exposed, f"{request_text!r} exposed none of the computer-use tools"
 

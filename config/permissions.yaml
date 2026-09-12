@@ -377,12 +377,9 @@ tools:
   choose_computer_approach:
     action: read
 
-  # Writing the errand down, and saying a written step is finished. Neither
-  # touches the screen or anything else - they are bookkeeping for a session the
-  # existing mouse and keyboard tools do the work of, under the same guard.
-  plan_computer_task:
-    action: read
-
+  # Saying a written step is finished. Touches nothing - it is bookkeeping for a
+  # session the existing mouse and keyboard tools do the work of, under the same
+  # guard. (Writing the plan down is choose_computer_approach's `steps`.)
   computer_step_done:
     action: read
 

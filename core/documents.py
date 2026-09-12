@@ -56,6 +56,19 @@ MAX_EXTRACT_CHARS = 24_000
 MAX_SECTIONS_RETURNED = 12
 OUTLINE_PREVIEW_CHARS = 140
 MAX_FILE_BYTES = 80 * 1024 * 1024      # past this, reading is a disk problem
+# An outline is meant to be structure, not contents. Sixty sections at 140
+# characters each is 8KB of "preview" - which is contents by another name.
+MAX_OUTLINE_SECTIONS = 40
+MAX_OUTLINE_CHARS = 3_000
+# How much of one comparison may reach the model in total, however many files
+# were named. Per-file budgets alone multiply.
+MAX_COMPARE_CHARS = 12_000
+# How many pages of a PDF are opened to answer one question. Extracting text
+# from four hundred pages to find one is minutes of work and hundreds of
+# megabytes, so a long document is scanned in a window and says so - and a
+# specific page can always be asked for by name.
+MAX_PDF_PAGES_SCANNED = 120
+MAX_DOCX_TABLE_ROWS = 40               # per table section; more are chunked
 
 # Extensions Leti can open, and what it does with each.
 KINDS: Dict[str, str] = {
@@ -69,6 +82,10 @@ KINDS: Dict[str, str] = {
     ".png": "image", ".jpg": "image", ".jpeg": "image",
     ".gif": "image", ".bmp": "image", ".webp": "image",
 }
+
+# Kinds whose bytes are not their text: decoding one as UTF-8 produces noise, so
+# read_file sends these through this module rather than through read_text().
+BINARY_KINDS = frozenset({"pdf", "docx", "xlsx"})
 
 _WORD = re.compile(r"[a-z0-9]+")
 # Words that match everything and therefore rank nothing.
@@ -162,14 +179,34 @@ def _shape(path: Path, kind: str) -> Dict[str, Any]:
             return {"items": len(data)}
         return {"json_type": type(data).__name__}
     if kind == "image":
+        # Three different things get confused with each other here, so each is
+        # named separately and one of them is honestly absent:
+        #   metadata          - the file's own properties. Available, below.
+        #   image understanding - the vision model saying what a picture shows.
+        #                      Available, through look_at_image.
+        #   text extraction (OCR) - reading characters off the pixels. NOT
+        #                      available: nothing in this project does OCR, and
+        #                      a vision model's guess at a serial number is not
+        #                      the same thing as having read it.
+        shape: Dict[str, Any] = {
+            "text_extraction": "unavailable",
+            "text_extraction_note": (
+                "Leti has no OCR. Text visible in this image cannot be extracted. "
+                "look_at_image can describe the picture with the vision model, which "
+                "may transcribe some text but can misread it - report anything it says "
+                "about text as the model's reading of an image, never as the file's "
+                "contents."),
+            "image_understanding": "look_at_image",
+        }
         try:
             from PIL import Image
 
             with Image.open(path) as im:
-                return {"width": im.width, "height": im.height, "format": im.format,
-                        "note": "An image. Use look_at_image to have it described."}
+                shape.update({"width": im.width, "height": im.height, "format": im.format,
+                              "mode": im.mode})
         except Exception as e:
-            return {"note": f"An image Leti could not open ({e})."}
+            shape["note"] = f"An image Leti could not open ({e})."
+        return shape
     text = path.read_text(encoding="utf-8", errors="replace")
     return {"characters": len(text), "lines": text.count("\n") + 1}
 
@@ -178,24 +215,48 @@ def _shape(path: Path, kind: str) -> Dict[str, Any]:
 # Sections: the unit of citation
 # --------------------------------------------------------------------------- #
 
-def sections(path: Any) -> List[Dict[str, str]]:
-    """The file in labelled pieces. Labels come from the file, never invented."""
+def sections_and_scan(path: Any, first_page: int = 1) -> Tuple[List[Dict[str, str]],
+                                                                 Dict[str, Any]]:
+    """The file in labelled pieces, and what was opened to produce them.
+
+    The second half matters for a long PDF: only a window of pages is read, so
+    the answer has to say which ones, or "not in this document" would really mean
+    "not in the first hundred pages" and nobody could tell the difference.
+    """
     p = Path(path)
     kind = kind_of(p)
     if kind is None:
         raise ValueError(f"No reader for '{p.suffix}'.")
-    reader = {
-        "pdf": _pdf_sections, "docx": _docx_sections, "xlsx": _xlsx_sections,
-        "csv": _csv_sections, "json": _json_sections, "markdown": _markdown_sections,
-        "text": _text_sections, "image": _image_sections,
-    }[kind]
+    scan: Dict[str, Any] = {}
+
+    if kind == "pdf":
+        total, window = pdf_window(p, first_page)
+        scan = {"pages": total, "pages_scanned": window, "first_page_scanned": first_page}
+        raw = list(_pdf_sections(p, first_page=first_page))
+        # Pages with nothing on them are the signature of a scan. Counting them
+        # is what lets extract() say "this is images of text" rather than
+        # "nothing matched", which are different problems with different answers.
+        scan["pages_without_text"] = sum(1 for _, text in raw if not (text or "").strip())
+    else:
+        reader = {
+            "docx": _docx_sections, "xlsx": _xlsx_sections, "csv": _csv_sections,
+            "json": _json_sections, "markdown": _markdown_sections,
+            "text": _text_sections, "image": _image_sections,
+        }[kind]
+        raw = list(reader(p))
+
     out = []
-    for label, text in reader(p):
+    for label, text in raw:
         text = (text or "").strip()
         if not text:
             continue
         out.append({"label": label, "text": text[:MAX_SECTION_CHARS]})
-    return out
+    return out, scan
+
+
+def sections(path: Any) -> List[Dict[str, str]]:
+    """The file in labelled pieces. Labels come from the file, never invented."""
+    return sections_and_scan(path)[0]
 
 
 def _pdf_reader(path: Path):
@@ -206,17 +267,36 @@ def _pdf_reader(path: Path):
             "Reading PDFs needs the 'pypdf' package (pip install pypdf). Leti will not "
             "guess at a PDF's contents without it."
         ) from e
-    return PdfReader(str(path))
+    # strict=False: a PDF with a damaged cross-reference table or an off-by-one
+    # object offset is usually still readable, and refusing the whole file over a
+    # structural complaint is a worse answer than reading what is there.
+    return PdfReader(str(path), strict=False)
 
 
-def _pdf_sections(path: Path) -> Iterable[Tuple[str, str]]:
+def pdf_window(path: Path, first: int = 1, limit: int = MAX_PDF_PAGES_SCANNED) -> Tuple[int, int]:
+    """How many pages this PDF has, and how many of them one pass will open."""
     reader = _pdf_reader(path)
-    for number, page in enumerate(reader.pages, start=1):
+    total = len(reader.pages)
+    return total, min(total, max(0, total - (first - 1)), limit)
+
+
+def _pdf_sections(path: Path, first_page: int = 1,
+                  limit: int = MAX_PDF_PAGES_SCANNED) -> Iterable[Tuple[str, str]]:
+    """Pages, one section each, from `first_page`, at most `limit` of them.
+
+    A page that will not extract yields empty rather than stopping the document:
+    one damaged page out of two hundred should cost that page, not the file.
+    """
+    reader = _pdf_reader(path)
+    pages = reader.pages
+    start = max(0, first_page - 1)
+    for number in range(start, min(len(pages), start + max(0, limit))):
         try:
-            yield f"Page {number}", page.extract_text() or ""
+            text = pages[number].extract_text() or ""
         except Exception as e:
-            logger.debug(f"{path.name} page {number} would not extract: {e}")
-            yield f"Page {number}", ""
+            logger.debug(f"{path.name} page {number + 1} would not extract: {e}")
+            text = ""
+        yield f"Page {number + 1}", text
 
 
 # --- DOCX. A .docx is a zip of XML, so this needs no package: the alternative
@@ -224,8 +304,15 @@ def _pdf_sections(path: Path) -> Iterable[Tuple[str, str]]:
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
-def _docx_body(path: Path) -> Tuple[List[Tuple[str, str]], int]:
-    """Every paragraph as (style, text), and how many tables there are."""
+def _docx_blocks(path: Path) -> List[Dict[str, Any]]:
+    """The document body in order: paragraphs and tables, each appearing once.
+
+    The previous version walked every descendant of the body, which meant the
+    paragraphs INSIDE a table came back as loose paragraphs - the cells were
+    there, stripped of the thing that made them a table, and the table itself was
+    only a count. Walking children and stopping at a table fixes both halves: the
+    rows keep their shape, and their text is not also reported as prose.
+    """
     import xml.etree.ElementTree as ET
 
     with zipfile.ZipFile(path) as archive:
@@ -233,41 +320,105 @@ def _docx_body(path: Path) -> Tuple[List[Tuple[str, str]], int]:
     root = ET.fromstring(xml)
     body = root.find(f"{_W}body")
     if body is None:
-        return [], 0
+        return []
 
-    paragraphs: List[Tuple[str, str]] = []
-    tables = 0
-    for node in body.iter():
-        if node.tag == f"{_W}p":
-            style_node = node.find(f"{_W}pPr/{_W}pStyle")
-            style = style_node.get(f"{_W}val", "") if style_node is not None else ""
-            text = "".join(t.text or "" for t in node.iter(f"{_W}t"))
-            if text.strip():
-                paragraphs.append((style, text))
-        elif node.tag == f"{_W}tbl":
-            tables += 1
-    return paragraphs, tables
+    def text_of(node) -> str:
+        return "".join(t.text or "" for t in node.iter(f"{_W}t"))
+
+    def rows_of(table) -> List[List[str]]:
+        rows = []
+        for row in table.findall(f"{_W}tr"):
+            cells = [" ".join(text_of(cell).split())
+                     for cell in row.findall(f"{_W}tc")]
+            if any(c for c in cells):
+                rows.append(cells)
+        return rows
+
+    blocks: List[Dict[str, Any]] = []
+
+    def walk(parent) -> None:
+        for node in parent:
+            if node.tag == f"{_W}p":
+                style_node = node.find(f"{_W}pPr/{_W}pStyle")
+                style = style_node.get(f"{_W}val", "") if style_node is not None else ""
+                text = text_of(node)
+                if text.strip():
+                    blocks.append({"kind": "paragraph", "style": style, "text": text})
+            elif node.tag == f"{_W}tbl":
+                rows = rows_of(node)
+                if rows:
+                    blocks.append({"kind": "table", "rows": rows})
+            elif node.tag in (f"{_W}sdt", f"{_W}sdtContent", f"{_W}smartTag"):
+                # Content controls wrap real paragraphs; a table can live in one.
+                walk(node)
+
+    walk(body)
+    return blocks
+
+
+def _docx_body(path: Path) -> Tuple[List[Tuple[str, str]], int]:
+    """Paragraphs as (style, text) and the number of tables. Kept for describe()."""
+    blocks = _docx_blocks(path)
+    paragraphs = [(b["style"], b["text"]) for b in blocks if b["kind"] == "paragraph"]
+    return paragraphs, sum(1 for b in blocks if b["kind"] == "table")
 
 
 def _docx_sections(path: Path) -> Iterable[Tuple[str, str]]:
-    paragraphs, _ = _docx_body(path)
-    label, buffer, number = None, [], 0
-    for style, text in paragraphs:
+    """Headings split the prose; each table is its own section, where it stands.
+
+    A table becomes tab-separated rows with its header repeated when it is long
+    enough to be chunked - the same shape a spreadsheet or a CSV comes back as,
+    so "the pricing table in Contract_B.docx" reads the same whichever file it
+    was in. Its label says where it was, so a figure taken from it can be
+    attributed to a table rather than to the document in general.
+    """
+    blocks = _docx_blocks(path)
+    label, buffer, number, table_number = None, [], 0, 0
+
+    def flush():
+        nonlocal buffer, number, label
+        if not buffer:
+            return None
+        number += 1
+        out = (label or f"Section {number}", "\n".join(buffer))
+        buffer = []
+        return out
+
+    for block in blocks:
+        if block["kind"] == "table":
+            pending = flush()
+            if pending:
+                yield pending
+            table_number += 1
+            heading = f" under '{label}'" if label else ""
+            rows = block["rows"]
+            header = "\t".join(rows[0]) if rows else ""
+            for start in range(0, len(rows), MAX_DOCX_TABLE_ROWS):
+                chunk = rows[start:start + MAX_DOCX_TABLE_ROWS]
+                lines = ["\t".join(cells) for cells in chunk]
+                if start and header:
+                    lines.insert(0, header)      # a cited chunk still reads
+                part = (f" rows {start + 1}-{start + len(chunk)}"
+                        if len(rows) > MAX_DOCX_TABLE_ROWS else "")
+                yield f"Table {table_number}{heading}{part}", "\n".join(lines)
+            continue
+
+        style, text = block["style"], block["text"]
         if style.lower().startswith("heading"):
-            if buffer:
-                number += 1
-                yield label or f"Section {number}", "\n".join(buffer)
-                buffer = []
+            pending = flush()
+            if pending:
+                yield pending
             label = text.strip()[:80]
             continue
         buffer.append(text)
         if sum(len(b) for b in buffer) > MAX_SECTION_CHARS:
-            number += 1
-            yield label or f"Section {number}", "\n".join(buffer)
-            label, buffer = (f"{label} (continued)" if label else None), []
-    if buffer:
-        number += 1
-        yield label or f"Section {number}", "\n".join(buffer)
+            pending = flush()
+            if pending:
+                yield pending
+            label = f"{label} (continued)" if label else None
+    pending = flush()
+    if pending:
+        yield pending
 
 
 def _xlsx_sections(path: Path) -> Iterable[Tuple[str, str]]:
@@ -355,10 +506,14 @@ def _text_sections(path: Path) -> Iterable[Tuple[str, str]]:
 
 
 def _image_sections(path: Path) -> Iterable[Tuple[str, str]]:
+    """An image has no sections of text. What it has is a description of itself,
+    and a plain statement that its text cannot be read."""
     shape = describe(path)
     yield "image", (f"{path.name}: {shape.get('width', '?')}x{shape.get('height', '?')} "
-                    f"{shape.get('format', '')}. Leti does not read text out of images "
-                    "here - use look_at_image to have the vision model describe it.")
+                    f"{shape.get('format', '')}. There is no extractable text in an image "
+                    "and Leti has no OCR. Use look_at_image to have the vision model "
+                    "describe what it shows; do not report that description as the file's "
+                    "text.")
 
 
 # --------------------------------------------------------------------------- #
@@ -372,14 +527,40 @@ def outline(path: Any) -> Dict[str, Any]:
     if not info.get("ok"):
         return info
     try:
-        parts = sections(p)
+        parts, scan = sections_and_scan(p)
     except Exception as e:
         return {**info, "ok": False, "error": f"Couldn't open {p.name}: {e}"}
+    info.update(scan)
     info["sections_total"] = len(parts)
-    info["sections"] = [{"label": s["label"],
-                         "preview": " ".join(s["text"].split())[:OUTLINE_PREVIEW_CHARS]}
-                        for s in parts[:60]]
+
+    # An outline is structure. A preview per section is what makes it usable, and
+    # forty of them at 140 characters is where that stops being structure and
+    # starts being the document, so both ends are capped and the cut is stated.
+    shown, used = [], 0
+    for part in parts[:MAX_OUTLINE_SECTIONS]:
+        preview = " ".join(part["text"].split())[:OUTLINE_PREVIEW_CHARS]
+        if used + len(preview) > MAX_OUTLINE_CHARS:
+            break
+        shown.append({"label": part["label"], "preview": preview})
+        used += len(preview)
+    info["sections"] = shown
+    if len(shown) < len(parts):
+        info["sections_not_shown"] = len(parts) - len(shown)
+    if not parts:
+        info["ok"] = False
+        info["error"] = _nothing_readable(p, info)
     return info
+
+
+def _nothing_readable(path: Path, info: Dict[str, Any]) -> str:
+    """Why a file that opened produced no text. Said plainly, never guessed past."""
+    if info.get("kind") == "pdf" and info.get("pages"):
+        return (f"{path.name} has {info['pages']} page(s) and no extractable text in the "
+                f"{info.get('pages_scanned', 0)} scanned. That is what a scanned document "
+                "looks like: the pages are images. Leti has no OCR, so there is no text to "
+                "read out of it - say so rather than describing what it might contain.")
+    return (f"{path.name} opened, but there is no readable text in it. It may be empty, or "
+            "its contents may be images rather than text.")
 
 
 def _stem(word: str) -> str:
@@ -396,6 +577,44 @@ def _stem(word: str) -> str:
     if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
         return word[:-1]
     return word
+
+
+_RANGE = re.compile(r"^\s*(?P<what>[a-z ']*?)\s*(?P<from>\d+)\s*[-\u2013to]+\s*(?P<to>\d+)\s*$",
+                    re.I)
+_NUMBERED = re.compile(r"(\d+)")
+
+
+def _first_page_of(section: str) -> int:
+    """Which page a request names, so a long PDF can be opened there.
+
+    "Page 340" in a four-hundred-page document is past the scan window, and
+    reading from page one to reach it would be the expensive thing this avoids.
+    """
+    text = str(section or "")
+    if "page" not in text.lower():
+        return 1
+    found = _NUMBERED.search(text)
+    return max(1, int(found.group(1))) if found else 1
+
+
+def _sections_matching(parts: List[Dict[str, str]], section: str) -> List[int]:
+    """Sections a request names - one label, or a range like 'Page 3-7'."""
+    wanted = str(section or "").strip()
+    span = _RANGE.match(wanted)
+    if span:
+        low, high = sorted((int(span.group("from")), int(span.group("to"))))
+        prefix = span.group("what").strip().lower()
+        chosen = []
+        for index, part in enumerate(parts):
+            label = part["label"].lower()
+            if prefix and prefix not in label:
+                continue
+            numbers = [int(n) for n in _NUMBERED.findall(part["label"])]
+            if numbers and low <= numbers[0] <= high:
+                chosen.append(index)
+        if chosen:
+            return chosen
+    return [i for i, s in enumerate(parts) if wanted.lower() in s["label"].lower()]
 
 
 def _terms(text: str) -> List[str]:
@@ -437,19 +656,26 @@ def extract(path: Any, query: str = "", max_chars: int = DEFAULT_EXTRACT_CHARS,
     info = describe(p)
     if not info.get("ok"):
         return info
+    first_page = _first_page_of(section) if section else 1
     try:
-        parts = sections(p)
+        parts, scan = sections_and_scan(p, first_page=first_page)
     except Exception as e:
         return {**info, "ok": False, "error": f"Couldn't read {p.name}: {e}"}
+    info.update(scan)
     if not parts:
-        return {**info, "ok": False,
-                "error": f"{p.name} opened, but no readable text came out of it. It may be "
-                         "a scan rather than text, or empty."}
+        # A page number past the end is a different problem from a scan, and
+        # saying "this looks like images of text" about a file that simply has
+        # fewer pages than you asked for would be a confident wrong answer.
+        if section and info.get("pages") and first_page > info["pages"]:
+            return {**info, "ok": False,
+                    "error": f"{p.name} has {info['pages']} page(s); '{section}' is past "
+                             "the end of it."}
+        return {**info, "ok": False, "error": _nothing_readable(p, info)}
 
     budget = max(500, min(int(max_chars or DEFAULT_EXTRACT_CHARS), MAX_EXTRACT_CHARS))
 
     if section:
-        wanted = [i for i, s in enumerate(parts) if section.lower() in s["label"].lower()]
+        wanted = _sections_matching(parts, section)
         if not wanted:
             return {**info, "ok": False,
                     "error": f"{p.name} has no section matching '{section}'.",
@@ -474,6 +700,7 @@ def extract(path: Any, query: str = "", max_chars: int = DEFAULT_EXTRACT_CHARS,
 
     chosen.sort()
     returned, used = [], 0
+    result: Dict[str, Any] = {}
     for index in chosen:
         part = parts[index]
         room = budget - used
@@ -484,7 +711,7 @@ def extract(path: Any, query: str = "", max_chars: int = DEFAULT_EXTRACT_CHARS,
                          "truncated": len(text) < len(part["text"])})
         used += len(text)
 
-    return {
+    result = {
         **info,
         "source": p.name,
         "query": query or None,
@@ -497,6 +724,21 @@ def extract(path: Any, query: str = "", max_chars: int = DEFAULT_EXTRACT_CHARS,
                         "label it came from. Do not cite a label that is not listed."),
     }
 
+    # A long PDF was read in a window. Saying so is the difference between "not in
+    # this document" and "not in the hundred pages that were opened".
+    if info.get("pages") and info.get("pages_scanned", 0) < info["pages"]:
+        last = info["first_page_scanned"] + info["pages_scanned"] - 1
+        result["note"] = (
+            f"Pages {info['first_page_scanned']}-{last} of {info['pages']} were read. "
+            "Ask for a later page by name (section='Page 200') to read further; nothing "
+            "here says anything about the pages that were not opened.")
+    elif info.get("pages_without_text"):
+        result["note"] = (
+            f"{info['pages_without_text']} of the {info['pages_scanned']} pages read had "
+            "no extractable text - those pages are images. Leti has no OCR, so nothing is "
+            "known about what is on them.")
+    return result
+
 
 # --------------------------------------------------------------------------- #
 # Which files a request is about
@@ -507,7 +749,17 @@ def candidate_files(folder: Any, recursive: bool = True) -> List[Path]:
     if not root.is_dir():
         return []
     walk = root.rglob("*") if recursive else root.glob("*")
-    return [p for p in walk if p.is_file() and is_supported(p)]
+    found = []
+    try:
+        for path in walk:
+            try:
+                if path.is_file() and is_supported(path):
+                    found.append(path)
+            except OSError:
+                continue          # a broken link or a file that vanished mid-walk
+    except OSError as e:
+        logger.warning(f"Couldn't finish listing {root}: {e}")
+    return found
 
 
 def find_relevant(request: str, files: Iterable[Any], limit: int = 12,
@@ -525,9 +777,15 @@ def find_relevant(request: str, files: Iterable[Any], limit: int = 12,
     for path in paths:
         name_words = set(_terms(str(path)))
         hits = sorted(wanted & name_words)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            # Listed a moment ago and gone now, or unreadable. Rank it anyway and
+            # let opening it be the thing that reports the problem.
+            size = 0
         scored.append({
             "path": str(path), "name": path.name, "kind": kind_of(path) or "unsupported",
-            "bytes": path.stat().st_size if path.exists() else 0,
+            "bytes": size,
             "score": float(len(hits)),
             "matched": hits,
             "why": (f"the name matches {', '.join(hits)}" if hits else "same folder"),

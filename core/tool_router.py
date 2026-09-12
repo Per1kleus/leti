@@ -1,8 +1,8 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 130 tools serialise to 85,216 characters, roughly
-21,300 tokens, before the system prompt, personality, profile, recalled
+tool-calling loop. Measured: 129 tools serialise to 84,924 characters, roughly
+21,200 tokens, before the system prompt, personality, profile, recalled
 memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 

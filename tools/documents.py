@@ -25,6 +25,7 @@ document.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -76,9 +77,9 @@ class FindDocumentsTool(BaseTool):
         "Which files a request is about, before opening any of them. Ranks the readable "
         "files in the open project (or a folder you name) by how well they match, and "
         "returns names, kinds and sizes - never contents. Use this first for 'compare "
-        "these offers', 'summarise this folder', 'find the invoices', 'write a report "
-        "based on these files'. Sees PDFs, Word documents, Excel spreadsheets, CSVs, "
-        "JSON and text."
+        "these offers', 'summarise this folder', 'find the invoice', 'write a report "
+        "based on these files'. Sees a PDF, a Word document (docx), an Excel spreadsheet "
+        "(xlsx), a CSV, JSON, Markdown or text - a contract, an invoice, a report."
     )
     parameters = [
         ToolParameter(name="request", type="string",
@@ -149,13 +150,13 @@ class InspectDocumentTool(BaseTool):
 class ReadDocumentTool(BaseTool):
     name = "read_document"
     description = (
-        "Read the parts of one file that answer a question - not the whole file. Give the "
-        "question and it returns the most relevant sections, each labelled with where it "
-        "came from ('Page 7', \"Sheet 'Pricing'\", 'Rows 51-100') so you can attribute what "
-        "you quote. Reads a PDF, a Word document (docx), an Excel spreadsheet (xlsx), a "
-        "CSV, JSON, Markdown and plain text - a contract, an invoice, an offer, a report. Ask again "
-        "with a different question, or name a section, when the answer says more is "
-        "available. Never state something as being in a file without reading it here first."
+        "Read the parts of one file that answer a question - not the whole file. Returns "
+        "the relevant sections, each labelled with where it came from ('Page 7', \"Sheet "
+        "'Pricing'\", 'Rows 51-100', 'Table 2'), so you can attribute what you quote. Reads "
+        "PDF, Word (docx), Excel (xlsx), CSV, JSON, Markdown and text: contracts, invoices, "
+        "offers, reports, notes. Name a section or a range ('Page 7', 'Page 3-7') to read "
+        "just that part. Ask again with another question when it says more is available, "
+        "and never say what is in a file without reading it here first."
     )
     parameters = [
         ToolParameter(name="path", type="string", description="Path to the file."),
@@ -211,18 +212,31 @@ class CompareDocumentsTool(BaseTool):
         except (TypeError, ValueError):
             budget = 2_500
 
-        compared, unreadable = [], []
+        # Per-file budgets multiply: eight files at 2,500 characters is 20,000, and
+        # the point of comparing is the few lines that differ. So there is a total
+        # as well, and a file that would take it past the total is shortened
+        # rather than the comparison being cut off without saying so.
+        compared, unreadable, spent = [], [], 0
         for path in wanted[:MAX_COMPARED]:
-            result = documents.extract(resolve_path(path), query=question, max_chars=budget)
+            room = documents.MAX_COMPARE_CHARS - spent
+            if room < 400:
+                unreadable.append({"file": Path(path).name,
+                                   "problem": "not read - the comparison was already at its "
+                                              "size limit. Ask about this file separately."})
+                continue
+            result = documents.extract(resolve_path(path), query=question,
+                                       max_chars=min(budget, room))
             if not result.get("ok"):
                 unreadable.append({"file": Path(path).name,
                                    "problem": result.get("error", "could not be read")})
                 continue
+            spent += result.get("characters", 0)
             compared.append({
                 "file": result["source"],
                 "path": result["path"],
                 "found": [{"label": s["label"], "text": s["text"]} for s in result["sections"]],
                 "more_available": result["more_available"],
+                "note": result.get("note"),
             })
 
         if not compared:
@@ -234,6 +248,7 @@ class CompareDocumentsTool(BaseTool):
             "compared": compared,
             "unreadable": unreadable,
             "skipped": wanted[MAX_COMPARED:],
+            "characters": spent,
             "how_to_cite": ("Attribute every figure to its file and the label beside it. "
                             "If a file is in 'unreadable', say so rather than guessing "
                             "what it contained."),
@@ -273,7 +288,19 @@ class LookAtImageTool(BaseTool):
             answer = await self.llm_client.analyze_image(question, encoded)
         except Exception as e:
             return ToolResult(success=False, error=f"The vision model couldn't read {target.name}: {e}")
+        asked_about_text = bool(re.search(
+            r"\b(text|read|says?|written|wording|number|serial|invoice number|caption|"
+            r"label|transcri\w+|ocr)\b", question, re.I))
         return ToolResult(success=True, output={
-            "source": target.name, "question": question, "answer": answer,
-            "how_to_cite": f"This is the vision model's description of {target.name}, not text read out of it.",
+            "source": target.name,
+            "question": question,
+            "answer": answer,
+            "kind": "image understanding",
+            "text_extraction": "unavailable (Leti has no OCR)",
+            "how_to_cite": (
+                f"This is the vision model looking at {target.name} and saying what it "
+                "sees. It is not text extracted from the file."
+                + (" You asked about text: report anything it read as the model's reading "
+                   "of a picture, which can be wrong, and never as the file's contents."
+                   if asked_about_text else "")),
         })

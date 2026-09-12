@@ -103,14 +103,14 @@ async def test_the_files_a_task_is_about_come_from_the_project_it_belongs_to(
 
 @pytest.mark.asyncio
 async def test_a_dedicated_tool_wins_even_when_the_request_sounds_like_clicking():
-    from tools.computer_use import ChooseComputerApproachTool, PlanComputerTaskTool
+    from tools.computer_use import ChooseComputerApproachTool
 
     for request in ("send an email to the supplier",
                     "create a calendar event for the site visit",
                     "read the contract pdf and tell me the notice period"):
         single = await ChooseComputerApproachTool().run(request)
         assert single.output["layer"] == computer_use.LAYER_TOOL, request
-        planned = await PlanComputerTaskTool().run(request, steps=["do it", "check it"])
+        planned = await ChooseComputerApproachTool().run(request, steps=["do it", "check it"])
         assert planned.output["layer"] == computer_use.LAYER_TOOL, request
 
 
@@ -118,11 +118,11 @@ async def test_a_dedicated_tool_wins_even_when_the_request_sounds_like_clicking(
 async def test_a_multi_step_errand_observes_acts_and_verifies_in_that_order():
     """The errand from the request: open the site, find the invoice, download it."""
     from tools.computer_use import (
-        CompleteComputerStepTool, EndComputerSessionTool, PlanComputerTaskTool,
+        ChooseComputerApproachTool, CompleteComputerStepTool, EndComputerSessionTool,
         VerifyScreenTool,
     )
 
-    started = await PlanComputerTaskTool().run(
+    started = await ChooseComputerApproachTool().run(
         "open the accounting application and export the invoice",
         steps=["open the application", "find the invoice", "export it"])
     session_id = started.output["session_id"]
@@ -151,9 +151,9 @@ async def test_a_multi_step_errand_observes_acts_and_verifies_in_that_order():
 
 @pytest.mark.asyncio
 async def test_an_unexpected_screen_stops_the_errand_rather_than_guessing():
-    from tools.computer_use import PlanComputerTaskTool, VerifyScreenTool
+    from tools.computer_use import ChooseComputerApproachTool, VerifyScreenTool
 
-    started = await PlanComputerTaskTool().run(
+    started = await ChooseComputerApproachTool().run(
         "open the settings dialog in this application",
         steps=["open the dialog", "change the setting"])
     session_id = started.output["session_id"]
@@ -241,6 +241,6 @@ def test_the_new_tools_all_have_a_permission_class():
 
     entries = get_permissions()["tools"]
     for name in ("find_documents", "inspect_document", "read_document", "compare_documents",
-                 "look_at_image", "plan_computer_task", "computer_step_done"):
+                 "look_at_image", "computer_step_done"):
         assert name in entries, f"{name} has no permission entry"
         assert entries[name]["action"] in ("read", "execute"), name

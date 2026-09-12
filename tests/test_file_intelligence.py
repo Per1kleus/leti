@@ -77,14 +77,28 @@ _DOCX_RELS = """<?xml version="1.0" encoding="UTF-8"?>
 </Relationships>"""
 
 
+def _docx_paragraph(style, text) -> str:
+    style_xml = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>' if style else ""
+    safe = str(text).replace("&", "&amp;").replace("<", "&lt;")
+    return f"<w:p>{style_xml}<w:r><w:t>{safe}</w:t></w:r></w:p>"
+
+
 def build_docx(path: Path, blocks) -> None:
-    """A real .docx: a zip of XML, which is all it ever was."""
+    """A real .docx: a zip of XML, which is all it ever was.
+
+    A block is ("Heading1", "text"), ("", "text"), or ("table", [[cells], ...]).
+    """
     namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     body = []
     for style, text in blocks:
-        style_xml = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>' if style else ""
-        safe = text.replace("&", "&amp;").replace("<", "&lt;")
-        body.append(f"<w:p>{style_xml}<w:r><w:t>{safe}</w:t></w:r></w:p>")
+        if style == "table":
+            rows = "".join(
+                "<w:tr>" + "".join(f"<w:tc>{_docx_paragraph('', cell)}</w:tc>"
+                                   for cell in row) + "</w:tr>"
+                for row in text)
+            body.append(f"<w:tbl>{rows}</w:tbl>")
+            continue
+        body.append(_docx_paragraph(style, text))
     document = (f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{namespace}">'
                 f'<w:body>{"".join(body)}</w:body></w:document>')
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -186,9 +200,17 @@ def test_asking_for_a_named_section_reads_only_that_one(folder):
 
 
 def test_a_section_that_does_not_exist_says_which_ones_do(folder):
-    result = documents.extract(folder / "Offer_Company_A.pdf", section="Page 99")
+    result = documents.extract(folder / "Offer_Company_A.pdf", section="Pricing")
     assert result["ok"] is False
     assert "Page 1" in result["available"]
+
+
+def test_a_page_past_the_end_says_how_many_there_are(folder):
+    """And does not say "this looks like a scan", which is a different problem."""
+    result = documents.extract(folder / "Offer_Company_A.pdf", section="Page 99")
+    assert result["ok"] is False
+    assert "has 3 page(s)" in result["error"]
+    assert "scan" not in result["error"].lower()
 
 
 def test_the_extraction_budget_is_honoured(tmp_path):
@@ -261,7 +283,10 @@ def test_an_empty_extraction_is_an_error_not_an_empty_document(tmp_path):
     blank.write_bytes(build_pdf([[], []]))
     result = documents.extract(blank, "anything")
     assert result["ok"] is False
-    assert "no readable text" in result["error"]
+    assert "no extractable text" in result["error"]
+    # It says what that means, and that Leti cannot get round it.
+    assert "scanned" in result["error"] and "no OCR" in result["error"]
+    assert result.get("sections") is None
 
 
 # --- The tools ----------------------------------------------------------------------
@@ -383,3 +408,292 @@ async def test_a_named_folder_overrides_the_open_project(project, tmp_path):
     assert result.success
     assert result.output["project"] is None
     assert "elsewhere.pdf" in [f["name"] for f in result.output["files"]]
+
+
+# --- PDFs that are not the easy case -------------------------------------------------
+
+def test_a_long_pdf_is_read_in_a_window_and_says_which_pages(tmp_path):
+    """Extracting text from four hundred pages to answer one question is minutes of
+    work. A window is read, and the answer says so - otherwise "not in this
+    document" would really mean "not in the pages that were opened"."""
+    pages = [[f"Page {i} of ordinary filler"] for i in range(1, 301)]
+    pages[249] = ["The penalty clause is 5% per week."]
+    long_pdf = tmp_path / "long.pdf"
+    long_pdf.write_bytes(build_pdf(pages))
+
+    result = documents.extract(long_pdf, "penalty clause")
+    assert result["ok"] is True
+    assert result["pages"] == 300
+    assert result["pages_scanned"] == documents.MAX_PDF_PAGES_SCANNED
+    assert "Pages 1-120 of 300 were read" in result["note"]
+    # The answer is on page 250, which was not opened - and nothing pretends it was.
+    assert "penalty" not in json.dumps(result["sections"])
+
+
+def test_a_named_page_opens_that_page_rather_than_reading_up_to_it(tmp_path):
+    pages = [[f"Page {i}"] for i in range(1, 301)]
+    pages[249] = ["The penalty clause is 5% per week."]
+    long_pdf = tmp_path / "long.pdf"
+    long_pdf.write_bytes(build_pdf(pages))
+
+    result = documents.extract(long_pdf, section="Page 250")
+    assert [s["label"] for s in result["sections"]] == ["Page 250"]
+    assert "penalty clause" in result["sections"][0]["text"]
+    assert result["first_page_scanned"] == 250
+
+
+@pytest.mark.parametrize("asked,expected", [
+    ("Page 2-3", ["Page 2", "Page 3"]),
+    ("Page 1 to 2", ["Page 1", "Page 2"]),
+])
+def test_a_range_of_pages_can_be_asked_for(folder, asked, expected):
+    result = documents.extract(folder / "Offer_Company_A.pdf", section=asked)
+    assert [s["label"] for s in result["sections"]] == expected
+
+
+def test_a_scanned_pdf_says_it_is_a_scan_and_offers_nothing_else(tmp_path):
+    """The one place a confident summary of nothing could come from."""
+    scan = tmp_path / "scanned.pdf"
+    scan.write_bytes(build_pdf([[], [], []]))
+    result = documents.extract(scan, "the total")
+    assert result["ok"] is False
+    assert "no extractable text" in result["error"]
+    assert "scanned" in result["error"] and "no OCR" in result["error"]
+    assert result.get("sections") is None
+
+
+def test_a_pdf_that_is_partly_text_reports_the_pages_that_are_not(tmp_path):
+    mixed = tmp_path / "mixed.pdf"
+    mixed.write_bytes(build_pdf([["The readable page."], [], []]))
+    result = documents.extract(mixed, "readable")
+    assert result["ok"] is True
+    assert result["pages_without_text"] == 2
+    assert "no extractable text" in result["note"] and "no OCR" in result["note"]
+
+
+def test_a_pdf_with_a_damaged_structure_is_still_read_where_it_can_be(tmp_path):
+    """strict=False: a broken cross-reference table is not a reason to refuse a
+    document whose pages are perfectly readable."""
+    good = build_pdf([["Total price: 42,500 EUR"]])
+    damaged = tmp_path / "damaged.pdf"
+    # Corrupt the xref offsets, which is the commonest real-world damage.
+    damaged.write_bytes(good.replace(b"0000000009", b"0000000999"))
+    result = documents.extract(damaged, "total price")
+    assert result["ok"] is True
+    assert "42,500" in result["sections"][0]["text"]
+
+
+def test_a_pdf_that_is_not_a_pdf_is_refused_with_a_reason(tmp_path):
+    broken = tmp_path / "torn.pdf"
+    broken.write_bytes(b"%PDF-1.4 and then nothing that parses")
+    result = documents.extract(broken, "anything")
+    assert result["ok"] is False
+    assert "torn.pdf" in result["error"]
+    assert result.get("sections") is None
+
+
+# --- DOCX tables -----------------------------------------------------------------------
+
+@pytest.fixture
+def tabled(tmp_path):
+    build_docx(tmp_path / "quote.docx", [
+        ("Heading1", "Scope"), ("", "Company B will do the works."),
+        ("Heading1", "Pricing table"),
+        ("table", [["Item", "Qty", "Unit price", "Total"],
+                   ["Design", "1", "4,000", "4,000"],
+                   ["Build", "1", "32,000", "32,000"],
+                   ["Warranty", "2", "1,950", "3,900"]]),
+        ("", "All figures exclude VAT."),
+        ("Heading1", "Warranty"), ("", "Two years."),
+    ])
+    return tmp_path / "quote.docx"
+
+
+def test_a_table_comes_back_as_rows_and_cells(tabled):
+    parts = {s["label"]: s["text"] for s in documents.sections(tabled)}
+    table = next(text for label, text in parts.items() if label.startswith("Table 1"))
+    rows = [line.split("\t") for line in table.splitlines()]
+    assert rows[0] == ["Item", "Qty", "Unit price", "Total"]
+    assert ["Build", "1", "32,000", "32,000"] in rows
+    assert len(rows) == 4
+
+
+def test_a_table_is_labelled_by_where_it_stands_in_the_document(tabled):
+    labels = [s["label"] for s in documents.sections(tabled)]
+    assert any(label.startswith("Table 1 under 'Pricing table'") for label in labels)
+    # And it is in document order: after Scope, before Warranty.
+    assert labels.index("Scope") < next(
+        i for i, l in enumerate(labels) if l.startswith("Table 1"))
+    assert next(i for i, l in enumerate(labels) if l.startswith("Table 1")) < labels.index(
+        "Warranty")
+
+
+def test_cell_text_is_not_also_reported_as_prose(tabled):
+    """It used to be: the walk reached the paragraphs inside a table, so the cells
+    came back as loose sentences AND the table was only a count."""
+    prose = [s for s in documents.sections(tabled) if not s["label"].startswith("Table")]
+    assert not any("32,000" in s["text"] for s in prose)
+
+
+def test_a_question_about_a_table_finds_the_table(tabled):
+    result = documents.extract(tabled, "unit price for the build")
+    assert result["sections"][0]["label"].startswith("Table 1")
+    assert "32,000" in result["sections"][0]["text"]
+
+
+def test_the_table_count_still_counts_tables(tabled):
+    info = documents.describe(tabled)
+    assert info["tables"] == 1
+    assert info["paragraphs"] == 6      # the cells are not paragraphs any more
+
+
+def test_a_long_table_is_chunked_with_its_header_repeated(tmp_path):
+    rows = [["Row", "Value"]] + [[f"r{i}", str(i)] for i in range(1, 121)]
+    build_docx(tmp_path / "big.docx", [("Heading1", "Data"), ("table", rows)])
+    parts = [s for s in documents.sections(tmp_path / "big.docx")
+             if s["label"].startswith("Table")]
+    # 121 rows at 40 to a chunk: 1-40, 41-80, 81-120, and the odd last row.
+    assert len(parts) == 4, [p["label"] for p in parts]
+    assert "rows 41-80" in parts[1]["label"]
+    assert parts[1]["text"].splitlines()[0] == "Row\tValue", "a cited chunk lost its header"
+
+
+# --- Context protection ------------------------------------------------------------------
+
+def test_an_outline_is_structure_and_stays_small(tmp_path):
+    """Forty previews at 140 characters is 5KB of "structure" - which is contents."""
+    pages = [[f"Page {i}: " + "long filler text " * 40] for i in range(1, 200)]
+    long_pdf = tmp_path / "long.pdf"
+    long_pdf.write_bytes(build_pdf(pages))
+
+    info = documents.outline(long_pdf)
+    assert len(info["sections"]) <= documents.MAX_OUTLINE_SECTIONS
+    previews = sum(len(s["preview"]) for s in info["sections"])
+    assert previews <= documents.MAX_OUTLINE_CHARS
+    assert info["sections_not_shown"] > 0
+    assert len(json.dumps(info)) < 8_000
+
+
+@pytest.mark.asyncio
+async def test_a_comparison_of_many_files_has_a_total_budget_not_just_a_per_file_one(tmp_path):
+    from tools.documents import CompareDocumentsTool
+
+    paths = []
+    for n in range(8):
+        path = tmp_path / f"offer_{n}.pdf"
+        path.write_bytes(build_pdf([["Pricing " + "detail " * 400,
+                                     f"Total price: {10_000 + n} EUR"]]))
+        paths.append(str(path))
+
+    result = await CompareDocumentsTool().run(paths=paths, question="total price",
+                                              max_characters_each=4_000)
+    assert result.success
+    assert result.output["characters"] <= documents.MAX_COMPARE_CHARS
+    # And a file that did not fit is named rather than silently dropped.
+    skipped = [u for u in result.output["unreadable"] if "size limit" in u["problem"]]
+    assert len(result.output["compared"]) + len(skipped) == 8
+
+
+# --- Images: three different things, one of them absent ------------------------------------
+
+@pytest.fixture
+def picture(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "receipt.png"
+    Image.new("RGB", (640, 480), (255, 255, 255)).save(path)
+    return path
+
+
+def test_an_image_reports_its_metadata(picture):
+    info = documents.describe(picture)
+    assert info["ok"] is True
+    assert info["kind"] == "image"
+    assert (info["width"], info["height"]) == (640, 480)
+    assert info["format"] == "PNG"
+
+
+def test_an_image_says_plainly_that_its_text_cannot_be_extracted(picture):
+    info = documents.describe(picture)
+    assert info["text_extraction"] == "unavailable"
+    assert "no OCR" in info["text_extraction_note"]
+    assert info["image_understanding"] == "look_at_image"
+
+
+def test_reading_an_image_as_a_document_returns_no_text_and_says_why(picture):
+    result = documents.extract(picture, "what does the total say")
+    assert result["ok"] is True
+    body = result["sections"][0]["text"]
+    assert "no extractable text" in body and "no OCR" in body
+    assert "look_at_image" in body
+
+
+@pytest.mark.asyncio
+async def test_read_file_on_an_image_refuses_rather_than_decoding_pixels(picture):
+    from tools.file_manager import ReadFileTool
+
+    result = await ReadFileTool().run(str(picture))
+    assert result.success is False
+    assert "no OCR" in result.error and "look_at_image" in result.error
+
+
+@pytest.mark.asyncio
+async def test_look_at_image_labels_its_answer_as_a_description_not_as_text(picture):
+    from tools.documents import LookAtImageTool
+
+    class FakeVision:
+        async def analyze_image(self, question, encoded):
+            return "A receipt on a white background."
+
+    result = await LookAtImageTool(FakeVision()).run(str(picture), "what text does it show")
+    assert result.success
+    assert result.output["kind"] == "image understanding"
+    assert "no OCR" in result.output["text_extraction"]
+    assert "not text extracted from the file" in result.output["how_to_cite"]
+    assert "never as the file's contents" in result.output["how_to_cite"]
+
+
+@pytest.mark.asyncio
+async def test_look_at_image_refuses_a_file_that_is_not_an_image(folder):
+    from tools.documents import LookAtImageTool
+
+    result = await LookAtImageTool(object()).run(
+        str(folder / "Offer_Company_A.pdf"), "what does it say")
+    assert result.success is False
+    assert "read_document" in result.error
+
+
+# --- read_file and read_document are one capability, not two competing ones ----------------
+
+@pytest.mark.asyncio
+async def test_read_file_on_a_pdf_returns_its_text_not_its_bytes(folder):
+    """It used to decode the file with errors='replace' and report success, handing
+    the model a page of mojibake that reads like an unknowable file."""
+    from tools.file_manager import ReadFileTool
+
+    result = await ReadFileTool().run(str(folder / "Offer_Company_A.pdf"))
+    assert result.success
+    assert "%PDF" not in json.dumps(result.output)
+    assert [s["label"] for s in result.output["sections"]][0].startswith("Page ")
+
+
+@pytest.mark.asyncio
+async def test_read_file_still_returns_a_text_file_whole(tmp_path):
+    from tools.file_manager import ReadFileTool
+
+    note = tmp_path / "note.txt"
+    note.write_text("line one\nline two\n")
+    result = await ReadFileTool().run(str(note))
+    assert result.success and result.output == "line one\nline two\n"
+
+
+@pytest.mark.asyncio
+async def test_a_text_file_too_big_to_return_whole_returns_its_start(tmp_path):
+    from tools.file_manager import ReadFileTool
+
+    big = tmp_path / "huge.txt"
+    big.write_text("\n".join(f"line {i}" for i in range(120_000)))
+    result = await ReadFileTool().run(str(big))
+    assert result.success
+    assert result.output["characters"] <= documents.DEFAULT_EXTRACT_CHARS
+    assert "read_document" in result.output["note"]

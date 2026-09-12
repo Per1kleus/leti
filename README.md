@@ -233,7 +233,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **130 tools serialise to 85,216 characters, roughly 21,300 tokens**,
+back: **129 tools serialise to 84,924 characters, roughly 21,200 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -591,10 +591,11 @@ a search snippet, and `browser_click`/`browser_fill_form` drive a dedicated
 Playwright browser from there.
 
 **Clicking is the last resort, not the first.** Before Leti drives the screen it
-asks `choose_computer_approach` — or `plan_computer_task` for an errand of
-several moves — which answers *tool*, *browser* or *gui* and names the better
-option when there is one. "Send an email" is `send_email`. "Create a calendar
-event" is `schedule_meeting`. "Read the contract PDF" is the document tools.
+asks `choose_computer_approach`, which answers *tool*, *browser* or *gui* and
+names what to use instead when something else fits. Hand it the `steps` of a
+longer errand and the session it opens keeps that plan. "Send an email" is
+`send_email`. "Create a calendar event" is `schedule_meeting`. "Read the
+contract PDF" is the document tools.
 "Download the invoice from their billing page" is the browser. Only when nothing
 covers the job does the mouse come out, and then inside a bounded session:
 
@@ -605,7 +606,8 @@ covers the job does the mouse come out, and then inside a bounded session:
   click on into a window it did not predict;
 - the same action twice with no change is a loop, and it refuses a third;
 - twenty steps is the ceiling, and a plan written up front says how far through
-  the errand is;
+  the errand is — a session that ends early marks its unfinished steps abandoned,
+  so nothing is left looking like it is still running;
 - an action that changes something — Send, Submit, Delete, Publish — is tracked
   until it has been looked at afterwards, and a session that ends with one
   unchecked says so rather than reporting it as done.
@@ -735,15 +737,37 @@ Every piece of text comes back attached to the place it came from — `Page 7`,
 from the file's own structure; none is invented, and Leti is told not to cite one
 it was not given.
 
+Nothing here can flood the window, because every stage has a ceiling as well as
+a filter. An outline is capped at 40 sections and 3,000 characters of preview —
+structure, not contents. A comparison has a total budget as well as a per-file
+one, and a file that would take it past the total is reported as not read rather
+than silently dropped. A 300-page PDF is scanned 120 pages at a time and says so;
+naming the page you want (`Page 250`, or a range like `Page 3-7`) opens it
+directly without scanning what comes before.
+
 A file it cannot read says so. A missing file, a format with no reader, a corrupt
 PDF, or a scan with no text in it each come back as a plain refusal with a reason
 — never as an empty extraction that reads like an empty document. When one file
 of several is unreadable, the rest are still compared and the problem is named.
 
-Formats: PDF (via `pypdf`), Word `.docx` (no package — a .docx is a zip of XML the
+Formats: PDF (via `pypdf`, in tolerant mode, page by page so one broken page does
+not lose the document), Word `.docx` (no package — a .docx is a zip of XML the
 standard library opens), Excel `.xlsx`, CSV/TSV, JSON, Markdown and plain text.
-Image files report their dimensions, and `look_at_image` points the vision model
-at one when the picture itself is the question.
+`read_file` is the same reader: hand it a PDF or a .docx and it extracts rather
+than returning the bytes.
+
+Word tables come back as tables — rows and cells, tab-separated, in their place
+in the document and labelled with it (`Table 1 under 'Pricing table' rows 1-40`),
+chunked with the header row repeated if they are long. The cell text is not also
+repeated into the surrounding prose, so a table costs its own size once.
+
+**Pictures, metadata and text are three different things,** and Leti does not
+blur them. `inspect_document` on an image gives metadata — dimensions, format,
+mode. `look_at_image` points the vision model at it and reports what the model
+*sees*, marked as such. Text extraction is the third thing, and Leti has no OCR:
+there is no Tesseract in the project and none is added here. So a scanned PDF is
+refused with the reason ("the pages are images"), never paraphrased, and an
+answer from the vision model is never presented as the file's text.
 
 **Projects scope the search.** With a project open, "find the invoices" looks in
 that project's folder rather than the disk. With no project and no folder named,

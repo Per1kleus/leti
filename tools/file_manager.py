@@ -2,6 +2,14 @@
 Safe filesystem operations. Protected-path enforcement is handled centrally
 by SafetyGuard before these run; this module focuses on correct, bounded
 file I/O (size limits, encoding safety, non-recursive-by-default search).
+
+read_file reads TEXT. Pointed at a PDF it used to decode the bytes with
+errors="replace" and report success, handing the model a page of mojibake that
+reads like a file whose contents are unknowable - which is a worse answer than a
+refusal, because the model has no way to tell it apart from a real reading. It
+now sends anything core/documents.py knows how to open through that reader
+instead, and returns the labelled sections. Same tool, same argument, same
+answer for a text file; a correct answer instead of nonsense for the rest.
 """
 from __future__ import annotations
 
@@ -19,7 +27,12 @@ MAX_READ_BYTES = 200_000  # ~200KB cap to avoid dumping huge files into the LLM 
 
 class ReadFileTool(BaseTool):
     name = "read_file"
-    description = "Read the text contents of a file."
+    description = (
+        "Read a text file whole - code, configuration, notes, logs. For a PDF, Word or "
+        "Excel file it hands back the readable part with the page or sheet it came from, "
+        "and for anything long use read_document instead, which takes a question and "
+        "returns only the part that answers it."
+    )
     parameters = [
         ToolParameter(name="path", type="string", description="Path to the file to read."),
     ]
@@ -29,8 +42,38 @@ class ReadFileTool(BaseTool):
             p = resolve_path(path)
             if not p.exists():
                 return ToolResult(success=False, error=f"File not found: {p}")
+
+            from core import documents
+
+            kind = documents.kind_of(p)
+            if kind == "image":
+                return ToolResult(success=False, error=(
+                    f"{p.name} is an image, not text. Leti has no OCR, so there is no text "
+                    "to read out of it - use look_at_image to have the vision model "
+                    "describe what it shows."))
+            # A format whose bytes are not its text. Decoding those would be the
+            # mojibake this exists to stop, so it goes through the reader that
+            # knows the format - same tool, correct answer.
+            if kind in documents.BINARY_KINDS:
+                result = documents.extract(p, max_chars=documents.DEFAULT_EXTRACT_CHARS)
+                if not result.get("ok"):
+                    return ToolResult(success=False, error=result.get("error"), output=result)
+                return ToolResult(success=True, output=result)
+
             if p.stat().st_size > MAX_READ_BYTES:
-                return ToolResult(success=False, error=f"File too large to read directly ({p.stat().st_size} bytes).")
+                # Too big to hand over whole, but not unreadable: return the start,
+                # labelled, and say how to ask for the rest.
+                result = documents.extract(p, max_chars=documents.DEFAULT_EXTRACT_CHARS)
+                if result.get("ok"):
+                    result["note"] = (
+                        f"{p.name} is {p.stat().st_size:,} bytes, too much to return whole. "
+                        "This is the start of it; use read_document with a question to get "
+                        "the part you need.")
+                    return ToolResult(success=True, output=result)
+                return ToolResult(
+                    success=False,
+                    error=f"File too large to read directly ({p.stat().st_size} bytes).")
+
             content = p.read_text(encoding="utf-8", errors="replace")
             return ToolResult(success=True, output=content)
         except Exception as e:
