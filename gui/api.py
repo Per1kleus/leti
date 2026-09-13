@@ -46,6 +46,7 @@ SYNC_METHODS = {
     "get_audio_setup", "set_window_mode",
     "get_personality", "set_personality", "get_activity",
     "get_tasks", "control_task", "get_computer_use",
+    "get_watch", "control_watch",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
@@ -404,6 +405,40 @@ class LetiAPI:
             if runner is not None:
                 started = bool(runner.start_in_background(task_id))
         return {"ok": True, "started": started, "task": task_manager.detail(updated)}
+
+    # ---- Watches. A VIEW of core/watches.py and the same three controls the
+    # manage_watch tool has, calling the same functions. There is no second watch
+    # store here, nothing is evaluated from this file, and pausing a watch cannot
+    # run anything: the scheduler still owns when watches are looked at. ----
+
+    def get_watch(self, watch_id: str) -> dict:
+        """One watch in full - what it measures, why it exists, why it last fired."""
+        from core import watches
+
+        watch = watches.get_watch(watch_id)
+        if watch is None:
+            return {"error": f"No watch with id '{watch_id}'."}
+        return watches.describe(watch, detail=True)
+
+    def control_watch(self, watch_id: str, action: str) -> dict:
+        from core import watches
+
+        try:
+            if action == "delete":
+                if not watches.delete(watch_id):
+                    return {"ok": False, "error": f"No watch with id '{watch_id}'."}
+                watches.ensure_scheduled()
+                return {"ok": True, "deleted": watch_id}
+            if action not in ("pause", "resume"):
+                return {"ok": False, "error": f"'{action}' is not something a watch can be told."}
+            watch = watches.set_enabled(watch_id, action == "resume")
+            if watch is None:
+                return {"ok": False, "error": f"No watch with id '{watch_id}'."}
+            watches.ensure_scheduled()
+            return {"ok": True, "watch": watches.describe(watch, detail=True)}
+        except Exception as e:
+            logger.exception("A watch control failed")
+            return {"ok": False, "error": str(e)}
 
     # ---- What a GUI errand is doing, if one is. Read from the sessions
     # core/computer_use.py already keeps; nothing is captured to answer this. ----

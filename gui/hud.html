@@ -2892,23 +2892,111 @@
             row('Queued', a.queued) + row('Waiting for approval', a.waiting_for_approval) +
             row('Recovery attempts', a.recovery_attempts);
 
-    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Watches</div></div></div>';
+    html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Watch &amp; Act</div></div></div>';
     html += row('Active', w.active) + row('Paused', w.paused) +
             row('Next evaluation', w.next_evaluation);
     (w.watches || []).forEach(watch => {
-      html += '<div class="kv-row"><span class="k">' + watch.name + '</span>' +
-              '<span class="v' + (watch.enabled ? '' : ' off') + '">' +
-              (watch.enabled ? 'watching' : 'paused') + '</span></div>';
-      html += '<div class="audio-detail">' + watch.watching + ' \u2192 ' + watch.action +
-              (watch.project ? ' \u00b7 ' + watch.project : '') +
-              ' \u00b7 last trigger: ' + (watch.last_triggered || 'never') +
-              (watch.failures ? ' \u00b7 ' + watch.failures + ' failed checks' : '') + '</div>';
+      // \u25cf Monitoring / paused, then what it is watching, where the numbers
+      // come from, and when it was last looked at - the four things that answer
+      // "is this actually running".
+      html += '<div class="kv-row"><span class="k">' + esc(watch.name) + '</span>' +
+              '<span class="v' + (watch.enabled ? '' : ' off') + '">\u25cf ' +
+              (watch.enabled ? 'Monitoring' : 'Paused') + '</span></div>';
+      html += '<div class="audio-detail">' + esc(watch.watching) + ' \u2192 ' + esc(watch.action) +
+              (watch.project ? ' \u00b7 ' + esc(watch.project) : '') + '<br>' +
+              esc(watch.source || '') +
+              ' \u00b7 checked ' + esc(watch.last_checked || 'not yet') +
+              ' \u00b7 next ' + esc(watch.next_evaluation || '\u2014') +
+              ' \u00b7 last trigger ' + esc(watch.last_triggered || 'never') +
+              (watch.expires ? ' \u00b7 until ' + esc(watch.expires) : '') +
+              (watch.failures ? ' \u00b7 ' + watch.failures + ' failed checks' : '') +
+              (watch.disabled_reason ? '<br>' + esc(watch.disabled_reason) : '') + '</div>';
+      html += '<div class="task-actions" style="margin:4px 0 12px">' +
+              watchBtn(watch.id, watch.enabled ? 'pause' : 'resume',
+                       watch.enabled ? 'Pause' : 'Resume') +
+              watchBtn(watch.id, 'why', 'Why') +
+              watchBtn(watch.id, 'delete', 'Remove', true) + '</div>';
+      if(watch.id === openWatch && watchDetail) html += watchDetailHtml(watchDetail);
     });
 
     diagnosticsContent.innerHTML = html;
   }
 
+  // Which watch is expanded, and what came back for it. Kept outside the render
+  // so a five-second refresh does not close a detail somebody is reading.
+  let openWatch = null, watchDetail = null;
+
+  function esc(text){
+    const box = document.createElement('div');
+    box.textContent = (text === null || text === undefined) ? '' : String(text);
+    return box.innerHTML;
+  }
+
+  function watchBtn(id, action, label, danger){
+    return '<button class="settings-btn' + (danger ? ' danger' : '') +
+           '" data-watch="' + esc(id) + '" data-watch-action="' + action + '">' +
+           label + '</button>';
+  }
+
+  function watchDetailHtml(d){
+    // Why the watch exists, what it is measuring right now, and why it last
+    // fired. Everything here was recorded when it happened; nothing is recomputed
+    // to fill the panel, and an estimate keeps the word "estimate" on it.
+    let out = '<div class="audio-detail" style="border-left:1px solid var(--line);padding-left:8px">';
+    if(d.error){ return out + esc(d.error) + '</div>'; }
+    if(d.why_it_exists) out += 'Why: ' + esc(d.why_it_exists) + '<br>';
+    out += 'Type: ' + esc(d.type) + ' \u00b7 every ' + esc(d.every) +
+           ' \u00b7 quiet period ' + esc(d.cooldown) + '<br>';
+    const signals = d.current_signals || null;
+    if(signals){
+      if(signals.reading) out += 'Now: ' + esc(signals.reading) + '<br>';
+      if(signals.phase) out += 'Attention: ' + esc(signals.phase) + ' \u2014 ' +
+                               esc(signals.why) + ' (estimate, confidence ' +
+                               esc(signals.confidence) + ')<br>';
+      if(signals.not_yet) out += esc(signals.not_yet) + '<br>';
+      if(signals.events_found !== undefined)
+        out += 'Last look: ' + signals.events_found + ' event(s) found<br>';
+    }
+    if(d.last_error) out += 'Last problem: ' + esc(d.last_error) + '<br>';
+    (d.history || []).slice(-4).reverse().forEach(h => {
+      out += '\u00b7 ' + esc(h.at) + ' \u2014 ' + esc(h.why || h.problem || h.condition) + '<br>';
+    });
+    if(!(d.history || []).length) out += 'It has not triggered yet.<br>';
+    return out + '</div>';
+  }
+
+  diagnosticsContent.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-watch-action]');
+    if(!button) return;
+    const id = button.getAttribute('data-watch');
+    const action = button.getAttribute('data-watch-action');
+    if(action === 'why'){
+      if(openWatch === id){ openWatch = null; watchDetail = null; }
+      else {
+        openWatch = id;
+        try { watchDetail = await callApi('get_watch', id); }
+        catch(e){ watchDetail = {error: e.message}; }
+      }
+      refreshDiagnostics();
+      return;
+    }
+    if(action === 'delete' && !confirm('Stop watching and remove this watch?')) return;
+    try {
+      const result = await callApi('control_watch', id, action);
+      if(result && result.ok === false) rtLog('error', result.error || 'That watch control failed.');
+      if(action === 'delete' && openWatch === id){ openWatch = null; watchDetail = null; }
+    } catch(e){ rtLog('error', e.message); }
+    refreshDiagnostics();
+  });
+
   async function refreshDiagnostics(){
+    // An expanded watch is re-read with the rest of the panel: a detail that
+    // stops updating is a detail that quietly goes stale while it still looks
+    // current. It costs one local read, and only while one is open.
+    if(openWatch){
+      try { watchDetail = await callApi('get_watch', openWatch); }
+      catch(e){ watchDetail = {error: e.message}; }
+    }
     try { renderDiagnostics(await callApi('get_diagnostics')); }
     catch(e){
       diagnosticsContent.innerHTML =

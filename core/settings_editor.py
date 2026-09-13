@@ -69,10 +69,13 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     "trading": {
         "kind": "connection",
-        "label": "Trading (Alpaca paper account)",
+        "label": "Market data and trading (Alpaca paper account)",
         "fields": [
             {"key": "api_key", "label": "Alpaca paper API key"},
             {"key": "api_secret", "label": "Alpaca paper API secret", "secret": True},
+            {"key": "data_feed", "label": "Stock data feed (iex is what a free account gets; "
+                                          "sip needs a paid subscription)",
+             "default": "iex", "required": False},
         ],
     },
     "weather": {

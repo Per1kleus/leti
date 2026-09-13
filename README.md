@@ -59,13 +59,15 @@ searches and pages you explicitly ask it to visit.
   mail goes through SMTP and requires confirmation (`risky` tier). Needs an
   app password from your provider in `config/settings.yaml`; see the
   commented `email:` block there.
-- **Trading (paper/sandbox only)** — monitors a configurable watchlist of
-  stocks/crypto via Alpaca's market data API and evaluates simple, well-known
-  technical signals (SMA crossover, RSI threshold) against them. Order
-  placement is hardcoded to Alpaca's **paper trading** endpoint in code (not
-  just config), so it's structurally incapable of touching a live account or
-  real funds. Needs a free Alpaca paper API key in `config/settings.yaml`;
-  see the commented `trading:` block there. Not financial advice.
+- **Market data and trading (paper/sandbox only)** — one Alpaca client reads
+  prices, OHLCV bars and volume for stocks and crypto, and is what the market
+  watches are evaluated against. Figures name the feed they came from (a free
+  key reads IEX, not the consolidated tape). It evaluates simple, well-known
+  technical signals (SMA crossover, RSI threshold) too. Order placement is
+  hardcoded to Alpaca's **paper trading** endpoint in code (not just config),
+  so it's structurally incapable of touching a live account or real funds.
+  Needs a free Alpaca paper API key in `config/settings.yaml`; see the
+  commented `trading:` block there. Not financial advice.
 - **Contacts** — a saved contact book (`data/contacts.json`) so Leti can turn "email Stavros
   about the mechanic news" into the right address automatically. When a name is shared by
   multiple contacts, it disambiguates using the message's topic against each contact's tags/
@@ -233,7 +235,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **129 tools serialise to 84,924 characters, roughly 21,200 tokens**,
+back: **129 tools serialise to 88,628 characters, roughly 22,200 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -715,6 +717,74 @@ Two things follow from nobody being present for those runs:
 Output goes to `logs/scheduled_runs.log`, and the run exits non-zero if a task
 failed, so the OS scheduler's own logs show it.
 
+## Watch and act
+
+"Watch TTWO and tell me if it moves more than 5%" is a watch: a condition Leti
+checks on its own and reports the moment it *becomes* true. Four tools cover all
+of it — `create_watch`, `list_watches`, `manage_watch`, `check_watches` — and
+one row in the scheduler evaluates every watch that is due, so ten watches are
+one wake-up and no watches cost nothing at all.
+
+What can be watched:
+
+- **Markets.** A symbol, a metric and a threshold. `change_percent` with
+  comparison `abs_above` is "moves more than 5% either way"; `volume_ratio`
+  above 2 is a volume spike measured against that symbol's own recent average;
+  and there are `price`, `gap_percent`, high and low breakouts, the gap to a
+  moving average, momentum and volatility. Stocks and crypto, through the
+  Alpaca key the trading tools already use.
+- **News and events.** A topic, and how strong the reporting has to be before it
+  counts. Ten outlets covering one arrest is **one** event: articles are grouped
+  by what they say, each group gets a fingerprint, and a fingerprint that has
+  been reported is never reported again — so the same story tomorrow is silence,
+  while a genuinely new development gets through.
+- **Attention.** Whether interest in something is accelerating, measured from
+  how much is being published and how heavily the symbol is trading, compared
+  against the same watch's own earlier observations.
+
+`also_watch` combines two of these in one watch: "tell me if TTWO moves
+unusually **and** there is major GTA VI news" is a single watch with two signals
+and one set of rules, not two watches and a coincidence.
+
+**Nothing here predicts.** A trend watch says what attention is doing now, with
+the confidence and the number of observations behind it, and it says nothing at
+all until it has seen enough to compare one period against another. "Attention
+has accelerated sharply over the last 48 hours, on 9 observations, confidence
+moderate" is the strongest thing it can honestly produce; a date for a peak is
+not something these signals can know.
+
+**Source quality is part of the answer.** Sources are sorted into official,
+regulator, major outlet, secondary and social. An event is "confirmed" only when
+independent major outlets or an official source carried it; otherwise it is
+"reported" or "unverified", and one post on a social platform is never enough.
+For anything where being wrong matters — an arrest, a charge, an official
+decision — `require_confirmation` refuses to report it at all until it clears
+that bar. Every notification names the sources it rests on.
+
+**A failure is never a "no".** A rate limit, an outage, an unknown symbol, a
+missing API key, a search that times out: each is recorded as what it is, with
+the watch left running and the problem visible. Nothing is ever read as "the
+condition is false", because a monitor that confuses those two is worse than no
+monitor. A watch that keeps failing is disabled with the reason attached.
+
+**Detection is not permission.** "If it drops 10%, sell it" — the watch can see
+the drop. Selling is a task, run by the orchestrator and authorised by
+SafetyGuard call by call, exactly as if you had asked for it in conversation. A
+watch firing at 3am runs unattended, where external actions are refused outright
+rather than confirmed by nobody.
+
+Watches are shown in the Diagnostics panel with their condition, where their
+numbers come from, when each was last checked, when it next will be, and buttons
+to pause, resume or remove one. **Why** shows what the watch is measuring right
+now and why it fired the last time it did.
+
+Market figures say which feed they came from. A free Alpaca key reads **IEX** —
+one exchange's view of the tape, not the whole US market — so prices and volume
+can differ from a broker's; the consolidated SIP feed needs a paid subscription,
+and options data needs an OPRA one. Leti reports what it actually has rather
+than implying full coverage, and when a feed is refused it says that instead of
+guessing. Set `trading.data_feed` in the Connections settings.
+
 ## Working with files
 
 "Read these PDFs and compare the offers" is an ordinary thing to ask and an
@@ -928,6 +998,7 @@ leti/
 │   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
 │   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
 │   ├── watches.py             # Watch a condition, act when it changes (uses the scheduler below)
+│   ├── signals.py             # What a watch can measure: market, news events, attention
 │   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks
 │   ├── computer_use.py        # Chooses tool > browser > GUI, and bounds a GUI session
 │   ├── artifacts.py           # Which tool results are worth a floating panel, by shape
@@ -973,7 +1044,7 @@ leti/
 │   ├── projects.py            # Persistent project workspaces (folder + metadata + context)
 │   ├── autonomous.py          # Start/inspect/control long-running objectives
 │   ├── workflow_tools.py      # Describe a workflow in words, then run it
-│   ├── watch_tools.py         # Create/list/remove watches
+│   ├── watch_tools.py         # Create/list/change/remove watches, and evaluate the due ones
 │   ├── scheduler.py           # In-app scheduled tasks (the one scheduler)
 │   ├── control_center.py      # Permission Center + Diagnostics panel tools (read-only views)
 │   ├── network_security.py    # Port/service scan, firewall status, LAN ARP read (read-only)

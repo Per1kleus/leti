@@ -43,19 +43,20 @@ ollama:
   # turn sends 15-30 schemas rather than all of them. That is the common case,
   # not the one to size for: when routing is not confident it falls back to the
   # whole list, and that fallback still has to fit. Measured, not estimated:
-  # 129 tools serialise to 84,924 characters, roughly 21,200 tokens. This
+  # 129 tools serialise to 88,628 characters, roughly 22,200 tokens. This
   # comment used to say 9,000 and 16384 used to be enough; the tool count grew
   # past it, which is exactly the silent failure described above. main.py logs a
   # warning at startup if this number stops being big enough again, so the next
   # time it happens it says so instead of looking like a stupid model.
   #
   # Raised from 24576 to 28672 when the tool count went 103 -> 119 (watches and
-  # the controlled GUI mode). At 129 tools a full-fallback turn is ~21,200
-  # tokens of schemas, leaving ~7,400 for the system prompt, personality, user
+  # the controlled GUI mode). At 129 tools a full-fallback turn is ~22,200
+  # tokens of schemas, leaving ~6,400 for the system prompt, personality, user
   # profile, recalled memories, the rolling conversation buffer and accumulated
   # tool results. Don't go below 28672 while the list is this size, and note
-  # that the margin above main.py's 6,000-token reserve is now about 1,400
-  # tokens - the next few tools are the ones that will need this raised.
+  # that the margin above main.py's 6,000-token reserve is now about 470 tokens.
+  # The advanced market/news/trend watches spent most of what was left; the next
+  # tool added, or the next long description, is what will need this raised.
   #
   # On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
   # (1.31 -> 1.53 GiB), which still leaves roughly 4 GiB spare. Raising it
@@ -179,9 +180,19 @@ paths:
 # trading with real money. Sign up for a free paper account at
 # https://alpaca.markets and use its paper API key/secret (not live keys).
 # -----------------------------------------------------------------------------
+# The same key also reads market data, which is what the market watches
+# (create_watch) are evaluated against. data_feed names which stock feed to
+# ask for: "iex" is what a free account can read and is one exchange's view of
+# the tape rather than the whole US market; "sip" is the consolidated tape and
+# needs a paid Alpaca subscription. Leti says which feed a figure came from
+# rather than implying full coverage. Crypto needs no subscription. Options
+# data needs an OPRA subscription; without one Alpaca refuses and Leti reports
+# the refusal rather than guessing.
+# -----------------------------------------------------------------------------
 # trading:
 #   api_key: "YOUR_ALPACA_PAPER_KEY"
 #   api_secret: "YOUR_ALPACA_PAPER_SECRET"
+#   data_feed: "iex"        # iex (free) | sip (paid) | delayed_sip | otc
 #   watchlist:
 #     - "AAPL"
 #     - "TSLA"

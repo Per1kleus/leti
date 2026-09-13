@@ -46,6 +46,18 @@ def test_the_new_tools_are_registered_and_nothing_was_lost(registry):
 @pytest.mark.parametrize("request_text,expected", [
     ("tell me if my cpu stays above 90 percent", "create_watch"),
     ("what are you watching", "list_watches"),
+    # The advanced watches are the same four tools, so the router has to reach
+    # them from market, news and attention phrasings too - and did not need a
+    # market_watch, news_watch and trend_watch to do it.
+    ("watch TTWO and tell me if it moves more than 5 percent", "create_watch"),
+    ("watch Bitcoin and notify me if it drops more than 5%", "create_watch"),
+    ("watch this stock and tell me if volume suddenly spikes", "create_watch"),
+    ("watch the news around this game and tell me when there is a major development",
+     "create_watch"),
+    ("watch the game and tell me when the hype starts accelerating", "create_watch"),
+    ("watch this topic and tell me when the hacker responsible for the leak is caught",
+     "create_watch"),
+    ("stop watching TTWO", "manage_watch"),
     ("open this application and click the settings button", "choose_computer_approach"),
     ("archive the parot project", "archive_project"),
 ])
