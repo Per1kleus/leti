@@ -27,9 +27,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
@@ -112,8 +113,16 @@ def _replace(task: Dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 def create_task(objective: str, steps: List[str], name: str = "",
-                project: str = "") -> Dict[str, Any]:
-    """A new task, queued. Steps are the plan; nothing runs until start()."""
+                project: str = "", expected: Optional[List[str]] = None,
+                success_criteria: str = "") -> Dict[str, Any]:
+    """A new task, queued. Steps are the plan; nothing runs until start().
+
+    `expected` is what each step should have produced, in the same order as the
+    steps - the answer to "how would you know that worked". `success_criteria` is
+    the same question about the whole task, and it is what the verification pass
+    at the end checks against. Both are optional: a task without them behaves
+    exactly as tasks did before, which is what every existing caller relies on.
+    """
     if not str(objective or "").strip():
         raise ValueError("A task needs an objective.")
     cleaned = [str(s).strip() for s in (steps or []) if str(s).strip()]
@@ -121,6 +130,7 @@ def create_task(objective: str, steps: List[str], name: str = "",
         raise ValueError("A task needs at least one step.")
     if len(cleaned) > MAX_STEPS:
         raise ValueError(f"That is {len(cleaned)} steps; the limit is {MAX_STEPS}.")
+    outcomes = [str(e).strip() for e in (expected or [])]
 
     now = time.time()
     task = {
@@ -133,8 +143,15 @@ def create_task(objective: str, steps: List[str], name: str = "",
         "status": QUEUED,
         "current_step": 0,
         "steps": [{"n": i + 1, "instruction": text, "status": "pending",
-                   "attempts": 0, "result": None, "error": None}
+                   "attempts": 0, "result": None, "error": None,
+                   "expected": outcomes[i] if i < len(outcomes) else None}
                   for i, text in enumerate(cleaned)],
+        # What finished means for this task, and how many times it has been
+        # checked. A task with no criteria is finished when its steps are, which
+        # is what every task did before this existed.
+        "success_criteria": str(success_criteria or "").strip() or None,
+        "verification": None,
+        "verify_rounds": 0,
         "created_at": now,
         "updated_at": now,
         "completed_at": None,
@@ -188,6 +205,9 @@ def describe(task: Dict[str, Any]) -> Dict[str, Any]:
         "blocked_reason": task.get("blocked_reason"),
         "error": task.get("error"),
         "result": task.get("result"),
+        "success_criteria": task.get("success_criteria"),
+        "verified": (task.get("verification") or {}).get("passed"),
+        "verification_said": (task.get("verification") or {}).get("said"),
         "created": time.strftime("%Y-%m-%d %H:%M", time.localtime(task.get("created_at", 0))),
     }
 
@@ -208,6 +228,8 @@ def detail(task: Dict[str, Any]) -> Dict[str, Any]:
     base["steps"] = [{
         "n": s.get("n", i + 1),
         "instruction": s.get("instruction", ""),
+        "kind": s.get("kind", "work"),
+        "expected": s.get("expected"),
         "status": s.get("status", "pending"),
         "attempts": s.get("attempts", 0),
         "recoveries": s.get("recoveries", 0),
@@ -402,6 +424,73 @@ def reject(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
 # Running
 # --------------------------------------------------------------------------- #
 
+# The check at the end, and how many times it may ask for a correction. Small on
+# purpose: a task that cannot satisfy its own criteria in two rounds has a
+# problem the user needs to know about, not one more attempt.
+MAX_VERIFY_ROUNDS = 2
+VERIFIED = re.compile(r"\bVERIFIED\b", re.I)
+NOT_VERIFIED = re.compile(r"\bNOT[\s_-]*VERIFIED\b", re.I)
+
+
+def verification_step(task: Dict[str, Any]) -> Dict[str, Any]:
+    """The step that checks the work against what the user actually asked for.
+
+    An ordinary step, deliberately: it runs through the orchestrator like every
+    other one, so it is subject to the same routing, the same tool set and the
+    same SafetyGuard. Checking a file means opening it with the file tools, and
+    if checking something needs permission the task stops and waits exactly as it
+    would anywhere else.
+    """
+    return {
+        "n": len(task.get("steps", [])) + 1,
+        "kind": "verify",
+        "instruction": (
+            "Check whether the task is actually finished, then answer.\n"
+            f"Objective: {task.get('objective')}\n"
+            f"It counts as done when: {task.get('success_criteria')}\n"
+            "Verify it by looking, not by remembering: open the file you wrote and "
+            "read it, re-run the check, list the folder. A file existing is not the "
+            "same as a file with the right contents in it.\n"
+            "Reply with the word VERIFIED and one sentence of evidence if every part "
+            "of that is true. Otherwise reply NOT VERIFIED and say exactly which part "
+            "is missing or wrong. Do not fix anything in this step."),
+        "status": "pending", "attempts": 0, "result": None, "error": None,
+        "expected": "a VERIFIED or NOT VERIFIED answer with evidence",
+    }
+
+
+def correction_step(task: Dict[str, Any], problem: str) -> Dict[str, Any]:
+    """One attempt at the thing the check said was missing."""
+    return {
+        "n": len(task.get("steps", [])) + 1,
+        "kind": "correct",
+        "instruction": (
+            f"The check on this task found a problem: {problem}\n"
+            f"Objective: {task.get('objective')}\n"
+            "Fix that specific thing and nothing else. If fixing it needs permission "
+            "you do not have, stop and say so rather than working around it."),
+        "status": "pending", "attempts": 0, "result": None, "error": None,
+        "expected": "the problem the check named, fixed",
+    }
+
+
+def read_verdict(answer: str) -> Tuple[bool, str]:
+    """Whether the checking step said the work is done, and why it said so.
+
+    NOT VERIFIED is looked for first: "not verified" contains "verified", and
+    reading it the other way round would turn every failed check into a pass.
+    An answer that says neither is not a pass either - a task is finished when
+    something says it is, never when nothing said it was not.
+    """
+    text = str(answer or "")
+    if NOT_VERIFIED.search(text):
+        return False, text.strip()[:MAX_RESULT_CHARS]
+    if VERIFIED.search(text):
+        return True, text.strip()[:MAX_RESULT_CHARS]
+    return False, ("the check did not answer VERIFIED or NOT VERIFIED; treating that "
+                   "as unverified. It said: " + text.strip()[:600])
+
+
 class TaskRunner:
     """Runs one task's steps through the orchestrator, one at a time.
 
@@ -462,8 +551,12 @@ class TaskRunner:
                 index = task.get("current_step", 0)
                 steps = task.get("steps", [])
                 if index >= len(steps):
-                    self._finish(task_id)
-                    break
+                    # Every step is done. That is not the same as the task being
+                    # done, and for a task that said what done means it is checked
+                    # rather than assumed.
+                    if not self._verify_or_finish(task_id):
+                        break
+                    continue
                 if not await self._run_step(task_id, index):
                     break
         finally:
@@ -498,6 +591,9 @@ class TaskRunner:
             f"[Autonomous task '{task['name']}', step {index + 1} of "
             f"{len(task['steps'])}. Objective: {task['objective']}]\n{step['instruction']}"
         )
+        if step.get("expected"):
+            instruction += (f"\nThis step is done when: {step['expected']}. Check that "
+                            "before reporting it finished.")
         if step.get("recovery_instruction"):
             instruction += f"\n\n{step['recovery_instruction']}"
         try:
@@ -529,6 +625,47 @@ class TaskRunner:
         step["error"] = None
         step.pop("recovery_instruction", None)
         task["current_step"] = index + 1
+        _replace(task)
+        return True
+
+    def _verify_or_finish(self, task_id: str) -> bool:
+        """PLAN -> EXECUTE -> VERIFY -> CORRECT -> VERIFY -> COMPLETE, in the store.
+
+        Returns True when another step was queued and the loop should keep going,
+        False when the task has reached its end - completed, or failed with the
+        reason the check gave. Nothing here executes anything: it appends the next
+        step and lets the ordinary loop run it through the orchestrator.
+        """
+        task = get_task(task_id)
+        if task is None:
+            return False
+        if not task.get("success_criteria"):
+            self._finish(task_id)
+            return False
+
+        last = (task.get("steps") or [])[-1] if task.get("steps") else None
+        if last and last.get("kind") == "verify":
+            passed, why = read_verdict(last.get("result") or "")
+            task["verification"] = {"passed": passed, "said": why,
+                                    "round": task.get("verify_rounds", 0)}
+            if passed:
+                _replace(task)
+                self._finish(task_id)
+                return False
+            if task.get("verify_rounds", 0) >= MAX_VERIFY_ROUNDS:
+                _replace(task)
+                _set_status(task_id, FAILED,
+                            error=f"The work did not meet its own success criteria: {why}")
+                self._announce(f"'{task['name']}' finished its steps but did not pass its "
+                               f"own check: {why[:200]}")
+                return False
+            task["steps"].append(correction_step(task, why))
+            task["verify_rounds"] = task.get("verify_rounds", 0) + 1
+            _replace(task)
+            return True
+
+        # First arrival, or the step after a correction: check it.
+        task["steps"].append(verification_step(task))
         _replace(task)
         return True
 
@@ -601,10 +738,18 @@ class TaskRunner:
 
     def _finish(self, task_id: str) -> None:
         task = get_task(task_id)
+        # The work's own result, not the checker's verdict on it: "VERIFIED, the
+        # file has all five laptops in it" is how we know the task is done, and
+        # the report the user asked for is what they wanted back.
         last = next((s["result"] for s in reversed(task.get("steps", []))
-                     if s.get("result")), None)
+                     if s.get("result") and s.get("kind") not in ("verify", "correct")), None)
+        if last is None:
+            last = next((s["result"] for s in reversed(task.get("steps", []))
+                         if s.get("result")), None)
         _set_status(task_id, COMPLETED, result=last)
-        self._announce(f"'{task['name']}' is done.")
+        checked = (task.get("verification") or {}).get("passed")
+        self._announce(f"'{task['name']}' is done."
+                       + (" It passed its own check." if checked else ""))
 
     def _announce(self, message: str) -> None:
         if not self.notify:

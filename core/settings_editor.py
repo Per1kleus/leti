@@ -184,6 +184,18 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
              "type": "number", "default": 15, "required": False},
         ],
     },
+    "proactive": {
+        "kind": "safety",
+        "label": "Proactive assistant (what Leti may bring up on its own)",
+        "fields": [
+            {"key": "level", "required": False, "default": "notifications",
+             "label": ("off | suggestions (only while you are already talking) | "
+                       "notifications (watches and scheduled work may come up on their "
+                       "own) | active (Leti may also offer the next step). Leti never "
+                       "DOES anything from this - offers still need your yes, and still "
+                       "ask permission when you give it.")},
+        ],
+    },
     "gui": {
         "label": "GUI web server",
         "fields": [

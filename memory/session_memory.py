@@ -15,6 +15,9 @@ from typing import Any, Deque, Dict, List
 
 from core.config_loader import get_settings, resolve_path
 
+MAX_REFERENTS = 10          # "the first three" never means the thirtieth
+MAX_REFERENT_CHARS = 120
+
 
 class SessionMemory:
     @property
@@ -24,6 +27,8 @@ class SessionMemory:
 
     def __init__(self):
         self._buffer: Deque[Dict[str, Any]] = deque(maxlen=self.settings.get("session_buffer_max_turns", 20))
+        # The ordered list the last answer enumerated, if it enumerated one.
+        self._referents: List[str] = []
         self._db_path = resolve_path(self.settings["sqlite_path"])
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
@@ -71,3 +76,25 @@ class SessionMemory:
 
     def clear_buffer(self) -> None:
         self._buffer.clear()
+        self._referents.clear()
+
+    # ---- What "the first three" refers to -------------------------------------
+    #
+    # The rolling buffer already carries what Leti said, so a short answer is its
+    # own antecedent. A long one is not: the model's list of ten laptops is in the
+    # buffer as prose, and "compare the first three" then depends on the model
+    # re-reading and re-ordering it identically, which is exactly the kind of
+    # thing that quietly comes out different the second time.
+    #
+    # So the ordering is kept once, when the answer is produced, as a handful of
+    # short strings. Not a second memory: the same object, holding the same
+    # conversation, one field bigger.
+
+    def note_referents(self, items: List[str]) -> None:
+        """Remember the list Leti just produced, in the order it produced it."""
+        cleaned = [str(i).strip()[:MAX_REFERENT_CHARS] for i in (items or []) if str(i).strip()]
+        if cleaned:
+            self._referents = cleaned[:MAX_REFERENTS]
+
+    def recent_referents(self) -> List[str]:
+        return list(self._referents)

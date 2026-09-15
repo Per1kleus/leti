@@ -138,6 +138,17 @@ class VerifyScreenTool(BaseTool):
         session.observe(observed)
         matches, why = session.expectation_holds(expected)
         if not matches:
+            # Not what was expected. Either way nothing may act: the look is spent
+            # and may_act refuses until the screen has been looked at again.
+            if session.mismatch():
+                return ToolResult(success=False,
+                                  error=f"Not what was expected: {why}.",
+                                  output={"matches": False, "look_again": True,
+                                          "session": session.summary(),
+                                          "note": ("Do not click. The interface may have "
+                                                   "moved on - call read_screen and check "
+                                                   "again. If it is still wrong the session "
+                                                   "stops.")})
             session.close("the screen was not what was expected")
             return ToolResult(success=False,
                               error=f"Stopping: {why}.",

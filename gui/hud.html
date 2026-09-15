@@ -2892,6 +2892,23 @@
             row('Queued', a.queued) + row('Waiting for approval', a.waiting_for_approval) +
             row('Recovery attempts', a.recovery_attempts);
 
+    const pro = d.proactive || {};
+    if((pro.items || []).length || pro.level){
+      html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
+              'Needs your attention</div></div></div>';
+      html += row('Proactive level', pro.level);
+      if(!(pro.items || []).length){
+        html += '<div class="audio-detail">Nothing waiting.</div>';
+      }
+      (pro.items || []).forEach(p => {
+        html += '<div class="kv-row"><span class="k">' + esc(p.title) + '</span>' +
+                '<span class="v' + (p.needs_approval ? '' : ' off') + '">' +
+                (p.needs_approval ? 'waiting on you' : p.kind) + '</span></div>';
+        html += '<div class="audio-detail">' + esc(p.detail) + '<br>' + esc(p.why) +
+                '<br>' + esc(p.suggestion) + '</div>';
+      });
+    }
+
     html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">Watch &amp; Act</div></div></div>';
     html += row('Active', w.active) + row('Paused', w.paused) +
             row('Next evaluation', w.next_evaluation);
@@ -2997,7 +3014,12 @@
       try { watchDetail = await callApi('get_watch', openWatch); }
       catch(e){ watchDetail = {error: e.message}; }
     }
-    try { renderDiagnostics(await callApi('get_diagnostics')); }
+    try {
+      const [diag, pro] = await Promise.all([
+        callApi('get_diagnostics'), callApi('get_proactive').catch(() => null)]);
+      if(pro) diag.proactive = pro;
+      renderDiagnostics(diag);
+    }
     catch(e){
       diagnosticsContent.innerHTML =
         '<div class="settings-error">Couldn\u2019t read diagnostics: ' + e.message + '</div>';

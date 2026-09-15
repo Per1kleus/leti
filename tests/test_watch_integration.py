@@ -148,6 +148,7 @@ async def test_creating_a_watch_registers_exactly_one_scheduler_row(registry):
 
 @pytest.mark.asyncio
 async def test_the_gui_session_flow_stops_when_the_screen_is_wrong(registry):
+    from core import computer_use
     from tools import computer_use as gui_tools
 
     decision = await gui_tools.ChooseComputerApproachTool().run(
@@ -155,12 +156,19 @@ async def test_the_gui_session_flow_stops_when_the_screen_is_wrong(registry):
     assert decision.output["layer"] == "gui"
     session_id = decision.output["session_id"]
 
-    wrong = await gui_tools.VerifyScreenTool().run(
-        session_id=session_id, expected="Settings window General tab",
-        observed="An unexpected crash dialog is showing", next_action="click Save")
-
-    assert wrong.success is False
-    assert "Stopping" in wrong.error
+    # The first unexpected screen sends it back to look again and refuses to act;
+    # the second stops the session. Neither one clicks.
+    for expected_to_stop in (False, True):
+        wrong = await gui_tools.VerifyScreenTool().run(
+            session_id=session_id, expected="Settings window General tab",
+            observed="An unexpected crash dialog is showing", next_action="click Save")
+        assert wrong.success is False
+        assert computer_use.get_session(session_id).steps_taken == 0
+        if expected_to_stop:
+            assert "Stopping" in wrong.error
+            assert computer_use.get_session(session_id).closed is True
+        else:
+            assert wrong.output["look_again"] is True
 
 
 @pytest.mark.asyncio

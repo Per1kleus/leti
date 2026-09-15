@@ -46,7 +46,7 @@ SYNC_METHODS = {
     "get_audio_setup", "set_window_mode",
     "get_personality", "set_personality", "get_activity",
     "get_tasks", "control_task", "get_computer_use",
-    "get_watch", "control_watch",
+    "get_watch", "control_watch", "get_proactive",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
@@ -405,6 +405,20 @@ class LetiAPI:
             if runner is not None:
                 started = bool(runner.start_in_background(task_id))
         return {"ok": True, "started": started, "task": task_manager.detail(updated)}
+
+    # ---- What Leti would bring up on its own. A VIEW of the four stores that
+    # already hold it (tasks, watches, GUI sessions, the scheduler) at the level
+    # the user chose in settings. Nothing here executes anything: the most it
+    # produces is a sentence and, for an approval, a pointer at the task panel's
+    # existing Approve button - which goes through the task manager and the guard
+    # exactly as it did before this existed. ----
+
+    def get_proactive(self) -> dict:
+        from core import proactive
+
+        level = proactive.level()
+        found = proactive.items(current_level=level)
+        return {"level": level, "levels": list(proactive.LEVELS), "items": found}
 
     # ---- Watches. A VIEW of core/watches.py and the same three controls the
     # manage_watch tool has, calling the same functions. There is no second watch

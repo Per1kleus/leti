@@ -1,8 +1,8 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 129 tools serialise to 88,628 characters, roughly
-22,200 tokens, before the system prompt, personality, profile, recalled
+tool-calling loop. Measured: 129 tools serialise to 89,298 characters, roughly
+22,300 tokens, before the system prompt, personality, profile, recalled
 memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 
@@ -40,7 +40,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger("leti.tool_router")
 
@@ -53,6 +53,9 @@ MIN_TOOLS = 12
 # correct but broader (30.1 and 26.2 tools on average), and 0.65 started missing
 # a tool. 0.55 was the widest setting that still got every request right.
 RELATIVE_THRESHOLD = 0.55
+# The stricter cutoff a small request gets (see _tighten). Close to the best
+# match, because the point is to drop the also-rans, not to pick a number.
+TIGHT_THRESHOLD = 0.82
 # Below this the request did not really match anything and the answer is "broaden".
 ABSOLUTE_THRESHOLD = 1.6
 
@@ -221,17 +224,25 @@ def _names_in(index: _Index, modules: Iterable[str]) -> Set[str]:
     return out
 
 
-def route(request: str, registry: Any) -> Routing:
-    """Pick the tools for one request. Never raises; the worst case is all of them."""
+def route(request: str, registry: Any, budget: Optional[int] = None) -> Routing:
+    """Pick the tools for one request. Never raises; the worst case is all of them.
+
+    `budget` is the adaptive engine's opinion of how small this turn should be
+    (core/performance.py). It can only ever TIGHTEN a route that was already
+    confident: an uncertain route still broadens, a fallback still sends
+    everything, and the best-matching module is always kept whatever the number
+    says. A budget cannot make a tool unreachable - it changes what one turn is
+    shown, not what exists.
+    """
     try:
-        return _route(request, registry)
+        return _route(request, registry, budget)
     except Exception as e:
         logger.warning(f"Tool routing failed ({e}); sending the full tool set.")
         return Routing(tool_names=sorted(registry.names()), confident=False,
                        full_fallback=True, reason=f"routing failed: {e}")
 
 
-def _route(request: str, registry: Any) -> Routing:
+def _route(request: str, registry: Any, budget: Optional[int] = None) -> Routing:
     index = _index_for(registry)
     everything = index.all_names()
 
@@ -304,24 +315,71 @@ def _route(request: str, registry: Any) -> Routing:
                        confident=confident, full_fallback=True,
                        reason="selection covered the whole registry")
 
+    trimmed_to = None
+    if budget and confident and len(selected) > max(budget, MIN_TOOLS):
+        tightened, keep = _tighten(index, module_score, chosen, best, max(budget, MIN_TOOLS))
+        # Only if it actually saved something. A tightening that changes nothing
+        # should not claim to have.
+        if len(tightened) < len(selected):
+            selected, chosen, trimmed_to = tightened, keep, len(tightened)
+
     return Routing(
         tool_names=sorted(selected),
         categories=sorted(categories),
         confident=confident,
-        reason=("matched " + ", ".join(sorted(m.split(".")[-1] for m in chosen))
+        reason=(("matched " + ", ".join(sorted(m.split(".")[-1] for m in chosen))
+                 + (f", trimmed to {trimmed_to} for a small request" if trimmed_to else ""))
                 if confident else
                 "weak match, broadened to " + ", ".join(sorted(categories)) or "everything"),
     )
 
 
-def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None) -> Routing:
+def _tighten(index: _Index, module_score: Dict[str, float], chosen: Set[str],
+             best: float, floor: int) -> Tuple[Set[str], Set[str]]:
+    """The same selection with the far-off matches dropped, for a small request.
+
+    This is the ordinary selection run with a stricter first cut, not a different
+    algorithm and not a count. Two earlier attempts got this wrong in instructive
+    ways. Counting tools to a number dropped list_files from "what files are in
+    this folder" and launch_app from "open blender and click settings". Raising
+    the score cutoff without re-expanding categories dropped list_files again -
+    because file_manager scores 2.2 on that request while documents scores 5.5,
+    and the only reason the right tool was ever there is that they share the
+    "files" category.
+
+    So the stricter cutoff picks the modules, and then the SAME category expansion
+    the confident path uses puts their neighbours back. What a small request loses
+    is the categories that were only marginally implicated; what it keeps is
+    everything the tools it did match live with. Below the floor, the ordinary
+    selection is restored module by module until it is not.
+    """
+    cutoff = best * TIGHT_THRESHOLD
+    keep = {m for m in chosen if module_score.get(m, 0.0) >= cutoff}
+    for module in list(keep):
+        for category in index.category_of.get(module, ()):
+            keep.update(CATEGORIES.get(category, ()))
+    keep.update(ALWAYS_ON_MODULES)
+    keep.update(index.uncategorised_modules())
+
+    selected = _names_in(index, keep)
+    if len(selected) < floor:
+        for module in sorted(chosen, key=lambda m: -module_score.get(m, 0.0)):
+            if len(selected) >= floor:
+                break
+            keep.add(module)
+            selected = _names_in(index, keep)
+    return selected, keep
+
+
+def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None,
+                     budget: Optional[int] = None) -> Routing:
     """The entry point. `enabled` false restores the previous behaviour exactly."""
     if enabled is None:
         enabled = _routing_enabled()
     if not enabled:
         return Routing(tool_names=sorted(registry.names()), full_fallback=True,
                        reason="tool routing is switched off")
-    return route(request, registry)
+    return route(request, registry, budget)
 
 
 def _routing_enabled() -> bool:

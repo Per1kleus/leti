@@ -21,6 +21,8 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
+from core import intent as intent_reader
+from core import performance, proactive
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core import artifacts, diagnostics
@@ -249,7 +251,37 @@ def _recover_tool_calls_from_text(content: Any,
     return []
 
 
+# A numbered or bulleted line, with the marker stripped. Deliberately only these
+# two shapes: a paragraph that happens to contain "1990" is not a list, and a
+# guess about what counts as an item is worse than having no referents at all.
+_LIST_ITEM = re.compile(r"^\s*(?:\d{1,2}[.)]\s+|[-*\u2022]\s+)(.{3,})$")
+
+
+def _enumerated_items(answer: str) -> List[str]:
+    """The ordered items of a list in an answer, or nothing."""
+    if not isinstance(answer, str) or len(answer) > 20_000:
+        return []
+    items = []
+    for line in answer.splitlines():
+        match = _LIST_ITEM.match(line)
+        if match:
+            # The name, not the whole entry: "1. Dell XPS 15 - 1,049 EUR, 32GB"
+            # is remembered as the laptop, which is what gets referred to.
+            items.append(re.split(r"\s+[\u2013\u2014-]\s+|:\s", match.group(1).strip())[0])
+    return items if len(items) >= 2 else []
+
+
+# The reading and the budget a turn falls back on. Class-level defaults so an
+# Orchestrator built without __init__ still has them: nothing here is mutated in
+# place, only ever replaced at the start of a turn.
+_DEFAULT_INTENT = intent_reader.Intent()
+_DEFAULT_MODE = performance.Mode()
+
+
 class Orchestrator:
+    _intent = _DEFAULT_INTENT
+    _mode = _DEFAULT_MODE
+
     def __init__(
         self,
         llm_client: OllamaClient,
@@ -272,6 +304,11 @@ class Orchestrator:
         self._state_listeners: List[Callable[[AgentState], None]] = []
         self._preapproved_this_turn = False
         self._checked_watches_this_session = False
+        # This turn's reading of the request and its budget, replaced at the start
+        # of every turn. The class defaults above are what a turn costs if either
+        # ever fails, or when something builds an orchestrator without __init__.
+        self._intent = _DEFAULT_INTENT
+        self._mode = _DEFAULT_MODE
         # One turn at a time. The desktop window, a phone, and the voice loop are all
         # clients of the same orchestrator, and a turn mutates shared state (the memory
         # buffer, the agent state machine, the one-shot pre-approval flag). Two
@@ -313,6 +350,16 @@ class Orchestrator:
         self._set_state(AgentState.THINKING)
         self.session_memory.add_turn("user", user_text, session_id)
 
+        # What this request IS, read deterministically before anything is sent -
+        # no model call, tens of microseconds (core/intent.py) - and what that
+        # means this turn may spend (core/performance.py). Both are hints: they
+        # change what the model is shown, never what it is allowed to do.
+        self._intent = intent_reader.read(
+            user_text, self.session_memory.get_recent_messages())
+        self._mode = performance.for_turn(self._intent)
+        if self._mode.under_pressure:
+            logger.info(f"Adaptive mode: {self._mode.reason}")
+
         # In voice mode, if what the user said already reads as clear approval/intent to
         # proceed (and doesn't also contain a denial, e.g. "no wait"), the interactive
         # confirmation prompt can be skipped for ONE risky tool call - there's no natural
@@ -342,6 +389,14 @@ class Orchestrator:
             pass
 
         self.session_memory.add_turn("assistant", final_answer, session_id)
+        # If this answer was a list, remember its order, so "compare the first
+        # three" next turn points at the same three. Purely a reading of the text
+        # Leti just produced; nothing is asked and nothing is stored that was not
+        # already in the buffer.
+        try:
+            self.session_memory.note_referents(_enumerated_items(final_answer))
+        except Exception:
+            logger.debug("Couldn't note what this answer listed.")
         await self._maybe_persist_to_long_term(user_text, final_answer)
 
         if self.speak_callback:
@@ -395,8 +450,54 @@ class Orchestrator:
             })
             self._checked_watches_this_session = True
 
+        # A request that refers back to something ("compare the first three") is
+        # told what it is pointing at, from the list Leti itself produced last
+        # turn. When there is nothing to point at, the note says to ask rather
+        # than to pick - which is the whole difference between continuity and
+        # confabulation.
         try:
-            recalled = await self.vector_memory.search(user_text)
+            note = intent_reader.continuity_note(
+                self._intent, self.session_memory.recent_referents())
+            if note:
+                messages.append({"role": "system", "content": note})
+        except Exception as e:
+            logger.debug(f"Continuity note skipped: {e}")
+
+        # One line for a genuinely complex request, naming the stages it implies
+        # and that it is not done until it has been checked. Empty for everything
+        # else, which is most things.
+        try:
+            note = intent_reader.system_note(self._intent)
+            if note:
+                messages.append({"role": "system", "content": note})
+        except Exception as e:
+            logger.debug(f"Objective note skipped: {e}")
+
+        # Anything worth mentioning that the user has not asked about - a task
+        # waiting on them, a watch that fired, work about to run. Read from the
+        # stores that already hold it, at the level they chose, and phrased as
+        # something to MENTION. Nothing here starts anything; see core/proactive.py.
+        try:
+            if self._mode.recall_memory:          # the same optional-work budget
+                pending = proactive.items()
+                note = proactive.turn_note(pending)
+                if note:
+                    messages.append({"role": "system", "content": note})
+                    proactive.mark_raised(pending)
+        except Exception as e:
+            logger.debug(f"Proactive note skipped: {e}")
+
+        if self._intent.question_to_ask:
+            messages.append({"role": "system", "content": (
+                "Something needed to answer this is missing and guessing it would "
+                f"change the result. Ask: \"{self._intent.question_to_ask}\" - unless "
+                "the conversation above already answers it, in which case carry on.")})
+
+        # Long-term recall is a vector search. It earns its cost on most turns and
+        # on none of them is it the difference between working and not, so it is
+        # the first thing to go when the machine is under real pressure.
+        try:
+            recalled = await self.vector_memory.search(user_text) if self._mode.recall_memory else []
             if recalled:
                 memory_context = "\n".join(f"- {m['text']}" for m in recalled)
                 messages.append(
@@ -426,7 +527,8 @@ class Orchestrator:
         # pass. Routing never raises and its worst case is the full registry, which
         # is exactly what this line used to be.
         _routing_started = time.perf_counter()
-        routing = select_tools_for(last_user_message(messages), self.tool_registry)
+        routing = select_tools_for(last_user_message(messages), self.tool_registry,
+                                   budget=self._mode.tool_budget)
         tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
         # Timings for the diagnostics panel, taken while doing the real work rather
         # than by measuring anything extra. Never allowed to affect the turn.
@@ -488,7 +590,8 @@ class Orchestrator:
                 # deliberately made. Everything else is marked as an offer and appears
                 # as one line in the activity log, openable if it turns out to be
                 # wanted. Answering in words is the normal case.
-                if result.success and self.visual_callback and isinstance(result.output, dict):
+                if (result.success and self.visual_callback and self._mode.derive_visuals
+                        and isinstance(result.output, dict)):
                     visual = result.output.get("visual") or artifacts.derive(result.output)
                     if visual:
                         visual = dict(visual)

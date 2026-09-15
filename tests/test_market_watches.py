@@ -1118,3 +1118,135 @@ def test_what_the_feed_report_claims_is_only_what_is_configured(market):
     assert "not used" in report["streaming"]
     # The key itself is never in anything this returns.
     assert "secret" not in json.dumps(report).lower()
+
+
+# --- Cross-domain: several signals, one answer ---------------------------------------
+#
+# "Tell me when at least two of these three move" is a real question about a
+# market, a story and the attention around it, and neither all-of-them nor
+# any-of-them asks it.
+
+def at_least_watch(minimum=2):
+    return watches.save_new(watches.create("cross", "combined", {
+        "mode": "at_least", "minimum": minimum,
+        "parts": [
+            {"condition_type": "market",
+             "condition": {"symbol": "TTWO", "metric": "change_percent",
+                           "comparison": "abs_above", "threshold": 5.0}},
+            {"condition_type": "news_event", "condition": {"topic": "GTA VI"}},
+            {"condition_type": "trend", "condition": {"topic": "GTA VI",
+                                                      "acceleration": 1.6}},
+        ]}, cooldown_minutes=0))
+
+
+def test_one_signal_out_of_three_is_not_two(market, searches):
+    searches["articles"] = []
+    watch = at_least_watch(minimum=2)          # only the market moves
+    assert watches.check(watch["id"])["outcome"] == "false"
+
+
+def test_two_signals_out_of_three_is(market, searches):
+    searches["articles"] = [article("Rockstar announces GTA VI release date", "reuters.com")]
+    watch = at_least_watch(minimum=2)
+    assert watches.check(watch["id"])["outcome"] == "triggered"
+
+    evidence = watches.get_watch(watch["id"])["history"][-1]["evidence"]
+    assert evidence["mode"] == "at_least"
+    met = [s["signal"] for s in evidence["signals"] if s.get("met")]
+    assert set(met) == {"market", "news_event"}
+    # And the ones that did NOT fire are still shown, which is what makes the
+    # trigger explicable rather than just true.
+    assert len(evidence["signals"]) == 3
+
+
+def test_enough_unmeasurable_signals_to_change_the_answer_is_not_an_answer(market, searches):
+    """Two of three, with two of them failing, is not "no" - it is "cannot tell",
+    and saying no would be reading a provider outage as a fact about the world."""
+    searches["fail"] = RuntimeError("search unavailable")
+    watch = at_least_watch(minimum=2)
+
+    outcome = watches.check(watch["id"])
+    assert outcome["outcome"] == "error"
+    assert "could not be measured" in outcome["error"]
+    assert watches.get_watch(watch["id"])["condition_was_true"] is False
+
+
+def test_a_failure_that_cannot_change_the_answer_does_not_stop_the_watch(market, searches):
+    """One failed signal when one is already enough: the answer is the same either
+    way, so it is given rather than withheld."""
+    searches["fail"] = RuntimeError("search unavailable")
+    watch = at_least_watch(minimum=1)          # the market alone satisfies it
+    assert watches.check(watch["id"])["outcome"] == "triggered"
+
+
+def test_a_minimum_bigger_than_the_signals_is_refused():
+    problems = watches.validate(watches.create("c", "combined", {
+        "mode": "at_least", "minimum": 5,
+        "parts": [{"condition_type": "market",
+                   "condition": {"symbol": "X", "metric": "price",
+                                 "comparison": "above", "threshold": 1}},
+                  {"condition_type": "news_event", "condition": {"topic": "t"}}]}))
+    assert any("between 1 and 2" in p for p in problems)
+
+
+def test_a_cross_domain_watch_reads_as_a_sentence(market, searches):
+    watch = at_least_watch(minimum=2)
+    reads = watches.describe_condition(watches.get_watch(watch["id"]))
+    assert reads.startswith("at least 2 of:")
+    assert "TTWO" in reads and "GTA VI" in reads
+
+
+@pytest.mark.asyncio
+async def test_three_signals_can_be_asked_for_in_one_sentence(market, searches):
+    """The brief's example: watch the stock, the news and the interest, and tell
+    me when at least two of them move."""
+    from tools.watch_tools import CreateWatchTool
+
+    result = await CreateWatchTool().run(
+        name="TTWO, GTA VI and the interest", condition_type="market", symbol="TTWO",
+        threshold=5, topic="GTA VI", also_watch=["news", "trend"],
+        combine="at_least", minimum=2)
+
+    assert result.success
+    stored = watches.get_watch(result.output["watch"]["id"])
+    assert stored["condition_type"] == "combined"
+    assert stored["condition"]["minimum"] == 2
+    assert [p["condition_type"] for p in stored["condition"]["parts"]] == [
+        "market", "news_event", "trend"]
+
+
+@pytest.mark.asyncio
+async def test_a_single_extra_signal_still_works_as_it_did(market, searches):
+    from tools.watch_tools import CreateWatchTool
+
+    result = await CreateWatchTool().run(
+        name="two signals", condition_type="market", symbol="TTWO", threshold=5,
+        topic="GTA VI", also_watch="news")
+    assert result.success
+    stored = watches.get_watch(result.output["watch"]["id"])
+    assert stored["condition"]["mode"] == "all"
+    assert len(stored["condition"]["parts"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_same_signal_twice_is_refused(market):
+    from tools.watch_tools import CreateWatchTool
+
+    result = await CreateWatchTool().run(
+        name="x", condition_type="market", symbol="TTWO", threshold=5,
+        also_watch=["market"])
+    assert result.success is False
+    assert "different kinds" in result.error
+
+
+@pytest.mark.asyncio
+async def test_a_combined_watch_still_asks_for_what_it_needs(market):
+    """Folding in a news signal needs a topic, and inventing one would be worse
+    than asking for it."""
+    from tools.watch_tools import CreateWatchTool
+
+    result = await CreateWatchTool().run(
+        name="x", condition_type="market", symbol="TTWO", threshold=5,
+        also_watch=["news"])
+    assert result.success is False
+    assert "topic" in result.error.lower()

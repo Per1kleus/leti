@@ -72,6 +72,12 @@ OFFERED_CONDITION_TYPES = ("market", "news_event", "trend", "cpu_above",
 DEFAULT_INTERVALS = {"news_event": 30.0, "trend": 60.0, "market": 15.0, "combined": 30.0}
 MAX_COMBINED_PARTS = 4
 
+# How several signals add up to one event. "at_least" is the one that makes a
+# cross-domain watch worth having: "tell me when two of these three move" is a
+# real question about a market, a story and the attention around it, and neither
+# all-of-them nor any-of-them asks it.
+COMBINE_MODES = ("all", "any", "at_least")
+
 # Asked for often enough to be worth refusing by name rather than with a generic
 # "unsupported", so the answer explains itself.
 UNSUPPORTED = {
@@ -209,8 +215,16 @@ def validate(watch: Dict[str, Any]) -> List[str]:
             errors.append("A combined watch needs at least two signals to combine.")
         if len(parts) > MAX_COMBINED_PARTS:
             errors.append(f"A combined watch takes at most {MAX_COMBINED_PARTS} signals.")
-        if str(condition.get("mode", "all")).lower() not in ("all", "any"):
-            errors.append("A combined watch's mode is 'all' or 'any'.")
+        mode = str(condition.get("mode", "all")).lower()
+        if mode not in COMBINE_MODES:
+            errors.append(f"A combined watch's mode is one of: {', '.join(COMBINE_MODES)}.")
+        if mode == "at_least":
+            try:
+                minimum = int(condition.get("minimum", 2))
+            except (TypeError, ValueError):
+                minimum = 0
+            if not 1 <= minimum <= max(1, len(parts)):
+                errors.append(f"'at least' needs a number between 1 and {len(parts)}.")
         for part in parts[:MAX_COMBINED_PARTS]:
             inner = part.get("condition_type")
             if inner in ("combined", None) or inner not in CONDITION_TYPES:
@@ -360,11 +374,15 @@ def describe_condition(watch: Dict[str, Any]) -> str:
 
         return signals.describe_trend(c)
     if kind == "combined":
-        joiner = " and " if str(c.get("mode", "all")).lower() == "all" else " or "
-        return joiner.join(
-            describe_condition({"condition_type": p.get("condition_type"),
-                                "condition": p.get("condition") or {}})
-            for p in (c.get("parts") or [])[:MAX_COMBINED_PARTS]) or "nothing yet"
+        mode = str(c.get("mode", "all")).lower()
+        parts = [describe_condition({"condition_type": p.get("condition_type"),
+                                     "condition": p.get("condition") or {}})
+                 for p in (c.get("parts") or [])[:MAX_COMBINED_PARTS]]
+        if not parts:
+            return "nothing yet"
+        if mode == "at_least":
+            return f"at least {c.get('minimum', 2)} of: " + "; ".join(parts)
+        return (" and " if mode == "all" else " or ").join(parts)
     return str(kind)
 
 
@@ -521,7 +539,23 @@ def _combined(condition: Dict[str, Any], state: Dict[str, Any]) -> Tuple[bool, D
 
     if not results:
         raise ConditionError("none of that watch's signals could be measured")
-    met = all(results) if mode == "all" else any(results)
+    if mode == "at_least":
+        try:
+            minimum = max(1, int(condition.get("minimum", 2)))
+        except (TypeError, ValueError):
+            minimum = 2
+        # A signal that could not be measured is not a signal that said no. If
+        # enough of them failed that the answer could still go either way, the
+        # watch reports that it could not tell rather than quietly deciding on
+        # the ones that happened to work.
+        measured = sum(1 for e in evidence if e.get("problem") is None)
+        if sum(results) < minimum and measured < len(parts) and sum(results) + (len(parts) - measured) >= minimum:
+            raise ConditionError(
+                f"{len(parts) - measured} of this watch's {len(parts)} signals could not "
+                "be measured, and they are enough to change the answer")
+        met = sum(results) >= minimum
+    else:
+        met = all(results) if mode == "all" else any(results)
     keys = [s.get("event_key") for s in new_states if isinstance(s, dict) and s.get("event_key")]
     return met, {"parts": new_states,
                  "event_key": "+".join(keys) or None,

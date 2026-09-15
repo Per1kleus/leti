@@ -157,8 +157,16 @@ def test_a_tool_that_supplies_its_own_visual_still_wins():
 
 
 def test_the_hook_is_still_only_reached_for_successful_results():
+    """Each guard on the hook, checked separately: a failed result, a missing
+    surface or output that is not a mapping must each still stop it. Asserted as
+    three conditions rather than one line of source so that adding a fourth guard
+    is allowed and dropping any of these three is not."""
     loop = (PROJECT_ROOT / "core" / "orchestrator.py").read_text()
-    assert "if result.success and self.visual_callback and isinstance(result.output, dict):" in loop
+    hook = re.search(r"if \(?result\.success[^\n]*(\n[^\n]*)?\):", loop)
+    assert hook, "the visual hook's condition has gone"
+    condition = hook.group(0)
+    for guard in ("result.success", "self.visual_callback", "isinstance(result.output, dict)"):
+        assert guard in condition, f"the hook no longer requires {guard}"
 
 # --- Whether it is worth a window --------------------------------------------------
 # Recognising a table is not a reason to put one on screen. These are the rules that

@@ -158,6 +158,21 @@ async def test_an_unexpected_screen_stops_the_errand_rather_than_guessing():
         steps=["open the dialog", "change the setting"])
     session_id = started.output["session_id"]
 
+    # The first unexpected screen does not act on it: the look is spent, so the
+    # errand has to go and look again before anything can happen. A dialog that
+    # had not finished drawing is recoverable; clicking into it is not.
+    first = await VerifyScreenTool().run(
+        session_id, expected="the Settings dialog, General tab",
+        observed="a modal asking whether to save unsaved changes",
+        next_action="click General")
+    assert first.success is False
+    assert first.output["look_again"] is True
+    session = computer_use.get_session(session_id)
+    assert session.closed is False
+    assert session.steps_taken == 0, "it acted on a screen it did not expect"
+    assert session.may_act("click", "General")[0] is False, "it may still act"
+
+    # The second one is the errand being somewhere else than Leti thinks it is.
     result = await VerifyScreenTool().run(
         session_id, expected="the Settings dialog, General tab",
         observed="a modal asking whether to save unsaved changes",
@@ -165,6 +180,7 @@ async def test_an_unexpected_screen_stops_the_errand_rather_than_guessing():
     assert result.success is False
     assert "Stopping" in result.error
     assert computer_use.get_session(session_id).closed is True
+    assert computer_use.get_session(session_id).steps_taken == 0
 
     # And it will not act after that, whatever it is told.
     again = await VerifyScreenTool().run(session_id, expected="anything",

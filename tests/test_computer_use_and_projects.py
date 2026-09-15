@@ -371,13 +371,24 @@ async def test_a_verification_that_failed_is_never_a_success():
     from tools.computer_use import VerifyScreenTool
 
     session = computer_use.open_session("open Settings")
-    result = await VerifyScreenTool().run(
+    first = await VerifyScreenTool().run(
         session.id, expected="the Settings window, General tab",
         observed="an unsaved-changes dialog", next_action="click Save")
 
+    # Never a success, and never an action: the first mismatch spends the look and
+    # sends the errand back to read_screen rather than into a window it did not
+    # predict.
+    assert first.success is False and first.output["matches"] is False
+    assert first.output["look_again"] is True
+    assert session.steps_taken == 0 and session.may_act("click", "Save")[0] is False
+
+    result = await VerifyScreenTool().run(
+        session.id, expected="the Settings window, General tab",
+        observed="an unsaved-changes dialog", next_action="click Save")
     assert result.success is False and result.output["matches"] is False
-    # And the session is over rather than carrying on into a window it did not predict.
+    # Twice is the errand being lost, and the session is over.
     assert computer_use.get_session(session.id).closed is True
+    assert session.steps_taken == 0
     assert "Do not carry on clicking" in result.output["note"]
 
 
@@ -561,3 +572,72 @@ def test_a_workflow_can_belong_to_a_project():
 
     assert workflow["project"] == "Parot Automations"
     assert workflows.describe(workflow)["project"] == "Parot Automations"
+
+
+# --- Reading a screen that is not written the way the expectation was ----------------
+#
+# The check is the point of the whole system, so its failure mode matters. Too
+# strict and every synonym stops a working errand; too loose and it approves a
+# screen Leti is not actually on. These are the line between the two.
+
+def test_a_screen_described_differently_is_still_the_same_screen():
+    """"Settings - General" and "the Settings window, General tab" are one screen.
+    Failing the first for not containing the word "window" stops an errand for a
+    synonym rather than for a mismatch."""
+    session = computer_use.open_session("open settings")
+    session.observe("Settings - General")
+
+    assert session.expectation_holds("the Settings window, General tab")[0] is True
+
+
+def test_the_words_that_say_which_screen_it_is_are_still_all_required():
+    session = computer_use.open_session("open settings")
+    session.observe("The Preferences pane is showing Appearance")
+
+    holds, why = session.expectation_holds("Settings window General tab")
+    assert holds is False
+    assert "settings" in why and "general" in why
+
+
+def test_an_expectation_made_only_of_generic_words_is_not_an_expectation():
+    """"The window is open" is true of nearly any screen. Accepting it would be
+    checking nothing while appearing to check."""
+    session = computer_use.open_session("open settings")
+    session.observe("A ransomware warning is covering the screen")
+
+    holds, why = session.expectation_holds("the window is open")
+    assert holds is False
+    assert "generic" in why
+
+
+def test_the_first_unexpected_screen_is_looked_at_again_and_never_clicked():
+    session = computer_use.open_session("open settings")
+    session.observe("Settings window, General tab")
+    assert session.may_act("click", "Save")[0] is True
+
+    session.observe("A crash reporter has appeared")
+    assert session.expectation_holds("Settings window General tab")[0] is False
+    assert session.mismatch() is True                  # look again
+
+    assert session.closed is False
+    assert session.may_act("click", "Save")[0] is False, "it may act on a screen it did not expect"
+    assert "look" in session.may_act("click", "Save")[1].lower()
+
+
+def test_the_second_unexpected_screen_ends_it():
+    session = computer_use.open_session("open settings")
+    session.observe("A crash reporter has appeared")
+    assert session.mismatch() is True
+    session.observe("A different crash reporter")
+    assert session.mismatch() is False
+    assert session.summary()["unexpected_screens"] == 2
+
+
+def test_looking_again_is_not_an_extra_step_or_an_extra_life():
+    """Recovery is bounded: it buys one more look, not a fresh session."""
+    session = computer_use.open_session("open settings")
+    for _ in range(computer_use.MAX_MISMATCHES):
+        session.observe("something else entirely")
+        session.mismatch()
+    assert session.steps_taken == 0
+    assert session.mismatch() is False

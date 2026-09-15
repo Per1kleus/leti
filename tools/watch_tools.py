@@ -48,8 +48,9 @@ class CreateWatchTool(BaseTool):
         "news_event needs a topic and how strong the reporting must be. trend needs a "
         "topic and/or symbol and measures whether attention is accelerating, which is "
         "always an estimate, never a prediction. also_watch combines two of these in one "
-        "watch ('moves unusually AND there is major news'). Ask which symbol or topic if "
-        "the user did not say. Leti CANNOT watch a calendar."
+        "watch: 'moves unusually AND there is major news', or combine=at_least with "
+        "minimum=2 for 'when at least two of these three signals move'. Ask which "
+        "symbol or topic if the user did not say. Leti CANNOT watch a calendar."
     )
     parameters = [
         ToolParameter(name="name", type="string", description="Short name for the watch."),
@@ -82,12 +83,14 @@ class CreateWatchTool(BaseTool):
         ToolParameter(name="official_domains", type="array", items_type="string", required=False,
                       description="For news_event: domains that count as official, e.g. "
                                   "['rockstargames.com']."),
-        ToolParameter(name="also_watch", type="string", required=False,
-                      description="Combine a second signal into this watch.",
+        ToolParameter(name="also_watch", type="array", items_type="string", required=False,
+                      description="Other signals to fold in: news, trend, market.",
                       enum=["news", "trend", "market"]),
         ToolParameter(name="combine", type="string", required=False,
-                      description="With also_watch: all (default) or any.",
-                      enum=["all", "any"]),
+                      description="With also_watch: all (default), any, or at_least.",
+                      enum=list(watches.COMBINE_MODES)),
+        ToolParameter(name="minimum", type="number", required=False,
+                      description="With combine=at_least: how many must be true, e.g. 2."),
         ToolParameter(name="percent", type="number", required=False,
                       description="For cpu_above: the threshold."),
         ToolParameter(name="for_minutes", type="number", required=False,
@@ -120,7 +123,7 @@ class CreateWatchTool(BaseTool):
                   comparison: str = "", threshold: Any = None, window: Any = None,
                   topic: str = "", min_sources: Any = None,
                   require_confirmation: bool = False, official_domains: Any = None,
-                  also_watch: str = "", combine: str = "all",
+                  also_watch: Any = None, combine: str = "all", minimum: Any = None,
                   action: str = "notify", action_target: str = "",
                   interval_minutes: Any = None, expires_in_days: Any = None,
                   reason: str = "", project: str = "", **kwargs) -> ToolResult:
@@ -135,22 +138,27 @@ class CreateWatchTool(BaseTool):
             return ToolResult(success=False, error=missing)
 
         condition = _condition_for(condition_type, arguments)
-        if also_watch:
-            second_type = {"news": "news_event", "trend": "trend",
-                           "market": "market"}.get(also_watch)
-            if second_type == condition_type:
-                return ToolResult(success=False, error=(
-                    f"also_watch='{also_watch}' is the same kind of signal the watch "
-                    "already is. Combine two different kinds, or leave it out."))
-            missing = _what_is_missing(second_type, arguments)
-            if missing:
-                return ToolResult(success=False, error=missing)
-            condition = {
-                "mode": (combine or "all").lower(),
-                "parts": [{"condition_type": condition_type, "condition": condition},
-                          {"condition_type": second_type,
-                           "condition": _condition_for(second_type, arguments)}],
-            }
+        extra = [str(s).strip().lower() for s in _as_list(also_watch) if str(s).strip()]
+        if extra:
+            parts = [{"condition_type": condition_type, "condition": condition}]
+            for wanted in extra:
+                kind = {"news": "news_event", "trend": "trend", "market": "market"}.get(wanted)
+                if kind is None:
+                    return ToolResult(success=False, error=(
+                        f"'{wanted}' is not a signal to combine. Use news, trend or market."))
+                if any(p["condition_type"] == kind for p in parts):
+                    return ToolResult(success=False, error=(
+                        f"also_watch lists '{wanted}' twice, or the watch is already that "
+                        "kind. Combine different kinds of signal."))
+                missing = _what_is_missing(kind, arguments)
+                if missing:
+                    return ToolResult(success=False, error=missing)
+                parts.append({"condition_type": kind,
+                              "condition": _condition_for(kind, arguments)})
+            mode = (combine or "all").lower()
+            condition = {"mode": mode, "parts": parts[:watches.MAX_COMBINED_PARTS]}
+            if mode == "at_least":
+                condition["minimum"] = int(_number(minimum, 2))
             condition_type = "combined"
 
         every = float(interval_minutes) if interval_minutes else watches.DEFAULT_INTERVALS.get(
@@ -179,6 +187,13 @@ class CreateWatchTool(BaseTool):
                      f"{described['action']}. Checked every {described['every']}."),
             "warning": _setup_warning(watch),
         })
+
+
+def _as_list(value) -> List[Any]:
+    """One signal or several. The model sends either, and both mean the same."""
+    if value is None or value == "":
+        return []
+    return list(value) if isinstance(value, (list, tuple, set)) else [value]
 
 
 def _number(value, fallback):

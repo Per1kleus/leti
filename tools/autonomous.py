@@ -45,7 +45,8 @@ class StartAutonomousTaskTool(BaseTool):
         "steps, each one a single instruction you could have been asked directly. The "
         "task keeps its own state, survives a restart, and can be paused, resumed or "
         "cancelled. Steps that need permission you cannot give while working alone "
-        "(sending mail, deleting things) stop the task and wait for the user. Use this "
+        "(sending mail, deleting things) stop the task and wait for the user. Give "
+        "success_criteria too - Leti checks the finished work against it. Use this "
         "instead of trying to do everything in one answer."
     )
     parameters = [
@@ -55,12 +56,22 @@ class StartAutonomousTaskTool(BaseTool):
                       description="Ordered plain-language steps, each a single instruction."),
         ToolParameter(name="name", type="string", required=False,
                       description="Short name for the task, e.g. 'Greek engineering research'."),
+        ToolParameter(name="success_criteria", type="string", required=False,
+                      description="How to tell the task actually worked, in checkable "
+                                  "terms - 'report.md has a row per laptop with its "
+                                  "price'. Leti verifies this before reporting it done."),
+        ToolParameter(name="expected_results", type="array", items_type="string",
+                      required=False,
+                      description="What each step should have produced, in the same order."),
     ]
 
     async def run(self, objective: str, steps: List[str], name: str = "",
+                  success_criteria: str = "", expected_results: Optional[List[str]] = None,
                   **kwargs) -> ToolResult:
         try:
-            task = task_manager.create_task(objective, steps, name)
+            task = task_manager.create_task(objective, steps, name,
+                                            expected=expected_results,
+                                            success_criteria=success_criteria)
         except ValueError as e:
             return ToolResult(success=False, error=str(e))
 

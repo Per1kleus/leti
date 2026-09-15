@@ -161,6 +161,13 @@ searches and pages you explicitly ask it to visit.
 - **Long tasks you can watch and stop** - a task that runs on its own shows its real steps,
   which are done and which is running, and can be paused, resumed, retried or cancelled
   from the interface. When one stops to ask permission it says exactly what for.
+  A task that said what "done" means is checked against it before anyone is told
+  it worked - a file existing is not the same as a file with the right contents.
+- **It reads the request before it answers it** - deterministically, with no extra
+  model call, so "what time is it" stays a one-line question and "find five
+  laptops, compare them and write a file" is understood as four things in order.
+  A small request is shown fewer tools; an ambiguous one gets a question rather
+  than a guess. See [Reading the request](#reading-the-request).
 - **The interface** - three columns with a calligraphic capital L at the centre, the machine
   and the day down the left, five controls and a live activity log down the right, and
   floating panels that appear only when a sentence genuinely cannot carry the answer. See
@@ -235,7 +242,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **129 tools serialise to 88,628 characters, roughly 22,200 tokens**,
+back: **129 tools serialise to 89,298 characters, roughly 22,300 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -785,6 +792,78 @@ and options data needs an OPRA one. Leti reports what it actually has rather
 than implying full coverage, and when a feed is refused it says that instead of
 guessing. Set `trading.data_feed` in the Connections settings.
 
+## Reading the request
+
+Before anything is sent to the model, Leti reads what was asked. This costs no
+model call and about 70 microseconds: it is regex and word lists over the text
+you typed (`core/intent.py`), not a classifier in front of every turn.
+
+What it works out is the *shape* of the request - a question, a lookup, a file
+job, a message, something on screen, a watch, or several of those in order - and
+from that, how much of Leti this turn needs:
+
+- **A simple request is shown fewer tools.** "What's the price of AAPL" does not
+  need thirty schemas in front of it. The adaptive engine (`core/performance.py`)
+  hands the router a tighter budget, and the router applies it with its own
+  scoring rather than by counting to a number. That distinction is the whole
+  feature: an earlier version counted, and dropped `list_files` from "what files
+  are in this folder". Measured across ten ordinary requests, exposure falls from
+  30.4 tools to 24.4 with no request losing the tool it needed.
+- **A complex request is not rationed at all.** "Research five companies and write
+  a report" gets everything the router chose, plus one line naming the stages it
+  implies and reminding Leti that finishing includes checking.
+- **Under real resource pressure** — CPU above 90%, memory above 92% — the two
+  pieces of optional work go: the long-term memory search, and deriving a visual
+  from a tool result. Nothing Leti can *do* is ever switched off to save CPU, and
+  the log says when something was skipped.
+
+**References back are resolved, not guessed.** Ask for five laptops, then say
+"compare the first three", and Leti knows which three: the order it listed them
+in is kept for the next turn. When there is nothing to point at, the instruction
+is to ask which one rather than to pick — "the winner" with no winner on the
+table is a question, not a coin flip. The same applies to a missing piece that
+would change the answer: "watch that stock" with no symbol anywhere in the
+conversation asks which symbol.
+
+**A long task is not done until it has been checked.** Give
+`start_autonomous_task` a `success_criteria` and the last thing the task does is
+verify itself against it — by opening the file and reading it, not by
+remembering writing it. A check that fails produces one bounded correction and
+one more check; a task that still cannot satisfy its own criteria is reported as
+failed with the reason, never quietly completed. The check is an ordinary step,
+so it meets SafetyGuard the ordinary way: if verifying something needs
+permission, the task waits for you like any other step.
+
+## When Leti brings something up first
+
+Leti can raise things you did not ask about: a task that stopped and is waiting
+for you, a watch that fired, an errand left with something unchecked, scheduled
+work about to run. All four are read from the stores that already hold them —
+there is no second notification system and no background process looking for
+things to say.
+
+**Noticing has never been permission.** Proactive mode produces sentences. It
+cannot run a tool, and the most forward setting lets Leti *offer* to look into
+something — an offer being a question. If you say yes, what happens next is an
+ordinary turn, authorised call by call by SafetyGuard exactly as if you had
+thought of it yourself.
+
+Four levels, in the settings you already have (`/settings`, "Proactive
+assistant"):
+
+| Level | What may come up on its own |
+|---|---|
+| `off` | Nothing at all. |
+| `suggestions` | Only while you are already talking. |
+| `notifications` | Watches and scheduled work may come up unprompted (the default). |
+| `active` | And Leti may offer the obvious next step. |
+
+The same thing is not raised twice within ten minutes, at most three things are
+raised at once, and an approval you are blocking on comes before anything else.
+One thing Leti deliberately does **not** offer is "you have a meeting in 30
+minutes": that needs to read a calendar, and Leti can create events but has no
+tool that reads one back.
+
 ## Working with files
 
 "Read these PDFs and compare the offers" is an ordinary thing to ask and an
@@ -997,6 +1076,9 @@ leti/
 │   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
 │   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
 │   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
+│   ├── intent.py              # What the request IS, read deterministically before it is sent
+│   ├── performance.py         # What a turn may spend, from what it is and what the machine has
+│   ├── proactive.py           # What is worth bringing up unasked - sentences only, never actions
 │   ├── watches.py             # Watch a condition, act when it changes (uses the scheduler below)
 │   ├── signals.py             # What a watch can measure: market, news events, attention
 │   ├── system_scheduler.py    # Registers the periodic check with cron/launchd/schtasks

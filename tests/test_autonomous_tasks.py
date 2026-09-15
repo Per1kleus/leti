@@ -387,3 +387,152 @@ def test_recovery_leaves_everything_else_alone():
 
     assert task_manager.recover_interrupted() == []
     assert task_manager.get_task(done["id"])["status"] == COMPLETED
+
+
+# --- PLAN -> EXECUTE -> VERIFY -> CORRECT -> VERIFY -> COMPLETE ---------------------
+#
+# The failure this exists to stop: "create a report" reported as done because a
+# file exists. A task that said what done means is checked against it, by looking
+# rather than by remembering, before anyone is told it worked.
+
+def _checked_task(criteria="report.md exists and lists all five laptops with prices"):
+    return task_manager.create_task(
+        "write the laptop report", ["research the laptops", "write report.md"],
+        "Laptop report", success_criteria=criteria,
+        expected=["five candidates with prices", "report.md written"])
+
+
+@pytest.mark.asyncio
+async def test_a_task_with_criteria_is_checked_before_it_is_called_done():
+    answers = ["found five", "wrote it", "VERIFIED - report.md has all five with prices"]
+    orchestrator = FakeOrchestrator(lambda text, n: answers[n - 1])
+    task = _checked_task()
+
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+
+    finished = task_manager.get_task(task["id"])
+    assert finished["status"] == task_manager.COMPLETED
+    assert finished["verification"]["passed"] is True
+    # The check is a step through the orchestrator, like every other step.
+    assert "VERIFIED" in orchestrator.seen[-1] or "NOT VERIFIED" in orchestrator.seen[-1]
+    assert "report.md exists and lists all five" in orchestrator.seen[-1]
+    # And the result the user gets is the work, not the verdict on it.
+    assert finished["result"] == "wrote it"
+
+
+@pytest.mark.asyncio
+async def test_a_task_that_fails_its_own_check_is_corrected_and_checked_again():
+    answers = ["found five", "wrote it",
+               "NOT VERIFIED - the prices are missing",
+               "added the prices",
+               "VERIFIED - every row has a price now"]
+    orchestrator = FakeOrchestrator(lambda text, n: answers[n - 1])
+    task = _checked_task()
+
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+
+    finished = task_manager.get_task(task["id"])
+    assert finished["status"] == task_manager.COMPLETED
+    assert finished["verification"]["passed"] is True
+    kinds = [s.get("kind") for s in finished["steps"]]
+    assert kinds == [None, None, "verify", "correct", "verify"]
+    # The correction was told exactly what was wrong, and told not to widen.
+    correction = orchestrator.seen[3]
+    assert "the prices are missing" in correction
+    assert "and nothing else" in correction
+
+
+@pytest.mark.asyncio
+async def test_a_task_that_cannot_satisfy_its_criteria_fails_rather_than_completing():
+    """Bounded: two rounds, then the user is told plainly. A machine that will not
+    admit defeat is worse than one that says what is wrong."""
+    orchestrator = FakeOrchestrator(
+        lambda text, n: "NOT VERIFIED - still no prices" if "Reply with the word" in text
+        else "had a go")
+    task = _checked_task()
+
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+
+    finished = task_manager.get_task(task["id"])
+    assert finished["status"] == task_manager.FAILED
+    assert "did not meet its own success criteria" in finished["error"]
+    assert "still no prices" in finished["error"]
+    assert finished["verify_rounds"] <= task_manager.MAX_VERIFY_ROUNDS
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_answers_neither_way_is_not_a_pass():
+    """Silence is not verification. A task is finished when something says it is."""
+    orchestrator = FakeOrchestrator(
+        lambda text, n: "I had a look at some things" )
+    task = _checked_task()
+
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+    assert task_manager.get_task(task["id"])["status"] == task_manager.FAILED
+
+
+@pytest.mark.parametrize("answer,passed", [
+    ("VERIFIED - all good", True),
+    ("NOT VERIFIED - missing prices", False),
+    ("not verified, the file is empty", False),
+    ("Not_Verified", False),
+    ("The report is verified and complete", True),
+    ("", False),
+])
+def test_not_verified_is_never_read_as_verified(answer, passed):
+    """'not verified' contains 'verified'; reading it the other way round would
+    turn every failed check into a pass."""
+    assert task_manager.read_verdict(answer)[0] is passed
+
+
+@pytest.mark.asyncio
+async def test_a_task_with_no_criteria_behaves_exactly_as_before():
+    orchestrator = FakeOrchestrator()
+    task = _task()
+
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+
+    finished = task_manager.get_task(task["id"])
+    assert finished["status"] == task_manager.COMPLETED
+    assert len(finished["steps"]) == 2, "an unasked-for check was added"
+    assert finished["verification"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_needs_permission_stops_the_task_like_any_other_step():
+    """Verification is an ordinary step, so it meets SafetyGuard the ordinary way.
+    It must not become a way to do something the task itself could not."""
+    from core.safety_guard import ConfirmationDenied
+
+    def behaviour(text, n):
+        if "Reply with the word" in text:
+            raise ConfirmationDenied("opening that needs your confirmation")
+        return "did it"
+
+    task = _checked_task()
+    await task_manager.TaskRunner(FakeOrchestrator(behaviour), FakeGuard()).run(task["id"])
+
+    stopped = task_manager.get_task(task["id"])
+    assert stopped["status"] == task_manager.WAITING_FOR_USER
+    assert "confirmation" in (stopped.get("blocked_reason") or "")
+
+
+@pytest.mark.asyncio
+async def test_each_step_is_told_what_it_should_have_produced():
+    orchestrator = FakeOrchestrator()
+    task = _checked_task()
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(task["id"])
+
+    assert "This step is done when: five candidates with prices" in orchestrator.seen[0]
+    assert "This step is done when: report.md written" in orchestrator.seen[1]
+
+
+@pytest.mark.asyncio
+async def test_the_check_is_told_to_look_rather_than_to_remember():
+    orchestrator = FakeOrchestrator(lambda text, n: "VERIFIED")
+    await task_manager.TaskRunner(orchestrator, FakeGuard()).run(_checked_task()["id"])
+
+    check = orchestrator.seen[-1]
+    assert "open the file you wrote and read it" in check
+    assert "not the same as a file with the right contents" in check
+    assert "Do not fix anything in this step" in check

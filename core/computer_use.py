@@ -36,6 +36,10 @@ logger = logging.getLogger("leti.computer_use")
 
 MAX_STEPS = 20                 # a GUI errand, not an afternoon
 MAX_IDENTICAL_ACTIONS = 2      # twice is a retry; three times is a loop
+# How many unexpected screens end a session. The first is allowed to be a dialog
+# that had not finished drawing; the second is the errand being somewhere else
+# than Leti thinks it is, which is when to stop. Neither one ever acts.
+MAX_MISMATCHES = 2
 SESSION_IDLE_TIMEOUT = 600     # a forgotten session should not stay open
 # How old a look at the screen may be before it is no longer a reason to click.
 # Separate from, and much shorter than, the session timeout: a session can sit for
@@ -51,6 +55,16 @@ _CONSEQUENTIAL = re.compile(
     r"\b(send|submit|confirm|delete|remove|buy|purchase|pay|order|publish|post|"
     r"install|uninstall|overwrite|replace|sign|accept|apply|save|upload|share|"
     r"transfer|discard)\b", re.I)
+
+
+# Words that describe almost any screen. They carry no information about WHICH
+# screen is in front of Leti, so requiring them verbatim rejects correct screens
+# for wording - the failure mode that makes people stop writing expectations.
+FURNITURE = frozenset({
+    "the", "and", "with", "showing", "shows", "should", "window", "dialog", "screen",
+    "page", "tab", "panel", "view", "app", "application", "open", "opened", "visible",
+    "displayed", "currently", "menu", "box", "area", "section", "list", "item",
+})
 
 
 def is_consequential(action: str) -> bool:
@@ -137,6 +151,8 @@ class Session:
         self.observed_at: Optional[float] = None
         self.closed = False
         self.closed_reason: Optional[str] = None
+        # How many times the screen has not been what was expected. See mismatch().
+        self.mismatches = 0
         # The errand written down before it starts: "open the site", "find the
         # invoice", "download it", "move it into the project". It is a list of
         # intentions, not a program - nothing here executes a plan step. What it
@@ -224,17 +240,49 @@ class Session:
         Plain substring matching over the words of the expectation, deliberately:
         a fuzzy match here would be a confident wrong answer about what is on the
         user's screen, and the whole point of checking is not to guess.
+
+        The one concession to real interfaces is FURNITURE below. "The Settings
+        window, General tab" and "Settings - General" are the same screen, and
+        failing the second because it does not contain the word "window" stops a
+        session for a synonym rather than for a mismatch. The words that say WHICH
+        screen this is - Settings, General - are still all required, and a screen
+        missing any of them still fails. Only the words that would be true of
+        almost any screen are optional, and an expectation made entirely of those
+        is not an expectation at all.
         """
         if self.last_observation is None:
             return False, "nothing has been looked at yet"
-        wanted = [w for w in re.findall(r"[a-z0-9]+", str(expectation).lower()) if len(w) > 2]
+        words = [w for w in re.findall(r"[a-z0-9]+", str(expectation).lower()) if len(w) > 2]
+        wanted = [w for w in words if w not in FURNITURE]
         if not wanted:
-            return False, "no expectation was given to check"
+            return False, ("that expectation is only generic words"
+                           if words else "no expectation was given to check")
         seen = self.last_observation.lower()
         missing = [w for w in wanted if w not in seen]
         if missing:
             return False, f"expected to see {', '.join(missing)} on screen, and did not"
         return True, "the screen matches what was expected"
+
+    def mismatch(self) -> bool:
+        """The screen was not what was expected. Whether to look again or stop.
+
+        A real interface is not always where it was a second ago: a dialog that
+        had not finished drawing, a page still loading, a notification on top of
+        the window. Ending the errand for that loses work that was going fine,
+        and doing it twice in a row is not that - it is the errand being lost.
+
+        So the FIRST mismatch spends the look and asks for another, and the second
+        stops the session. What does not change is the part that matters: this
+        clears observed_at, so may_act refuses until the screen has been looked at
+        again, and nothing can act on a screen that was not what was expected.
+        Recovering means looking again, never clicking anyway.
+        """
+        self.mismatches += 1
+        self.observed_at = None
+        if self.mismatches >= MAX_MISMATCHES:
+            return False
+        _announce(self, "the screen was not what was expected - looking again")
+        return True
 
     # -- acting -----------------------------------------------------------------
 
@@ -295,6 +343,7 @@ class Session:
             "steps_left": self.steps_left,
             "closed": self.closed,
             "closed_reason": self.closed_reason,
+            "unexpected_screens": self.mismatches,
             "progress": self.plan_progress(),
             "actions": [{"n": s["n"], "action": s["action"], "detail": s["detail"],
                          "consequential": s.get("consequential", False),
