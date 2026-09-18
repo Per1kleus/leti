@@ -127,6 +127,41 @@ def test_nothing_is_asked_when_the_conversation_already_said_it():
     assert intent.read("watch that stock", history).question_to_ask == ""
 
 
+@pytest.mark.parametrize("earlier", [
+    "read the PDF and summarise it",
+    "laptops under 1100 EUR",
+    "OK, the USB drive is mounted",
+    "the best laptop for MATLAB",
+    "the CSV has 400 rows",
+])
+def test_an_acronym_in_the_conversation_is_not_a_ticker(earlier):
+    """Found by running a real turn: the antecedent check was "any two-to-five
+    letter capitalised word", so a conversation that had said PDF, EUR, OK, USB
+    or MATLAB silently suppressed "which symbol do you mean?" - the question that
+    makes "watch that stock" answerable at all."""
+    history = [{"role": "user", "content": earlier}]
+    assert intent.read("watch that stock", history).question_to_ask
+
+
+@pytest.mark.parametrize("earlier", [
+    "how is TTWO doing",
+    "is bitcoin up today",
+    "BTC/USD looks volatile",
+    "what's the price of AAPL",
+])
+def test_a_symbol_in_the_conversation_still_answers_it(earlier):
+    history = [{"role": "user", "content": earlier}]
+    assert intent.read("watch that stock", history).question_to_ask == ""
+
+
+def test_a_folder_is_not_a_filename():
+    """"Open the thesis project" says where a file might be, not which one."""
+    assert intent.read("read that file",
+                       [{"role": "user", "content": "open the thesis project"}]).question_to_ask
+    assert intent.read("read that file",
+                       [{"role": "user", "content": "I saved report.pdf"}]).question_to_ask == ""
+
+
 def test_an_unambiguous_request_is_never_questioned():
     for text in ("watch TTWO and tell me if it drops", "read report.pdf and summarise it",
                  "email maria@example.com about tomorrow"):

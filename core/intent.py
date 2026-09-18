@@ -118,16 +118,70 @@ _BARE_PRONOUN = re.compile(r"^\W*(do|put|send|save|open|compare|use|run)\s+(it|t
 # Things that make a request ambiguous in a way that CHANGES the answer, each with
 # the question to ask instead of guessing. A request missing something harmless -
 # no filename for a file Leti is about to invent - is not in here.
+#
+# The second element is what counts as the answer being already known, and it is a
+# function rather than a pattern for a reason. It used to be "any two-to-five
+# letter capitalised word" for the symbol case, which meant a conversation
+# containing PDF, EUR, OK or USB silently suppressed "which symbol do you mean?".
+# An antecedent has to actually look like the thing, in context.
+
+_CRYPTO = re.compile(r"\b(bitcoin|btc|ethereum|eth|solana|doge)\b", re.I)
+_MARKET_WORD = re.compile(r"\b(stock|stocks|share|shares|ticker|symbol|price|market|"
+                          r"trading|traded|nasdaq|nyse|crypto|coin)\b", re.I)
+_PAIR = re.compile(r"\b[A-Z]{2,5}/[A-Z]{3,4}\b")
+_UPPER_TOKEN = re.compile(r"\b[A-Z]{2,5}\b")
+
+# Capitalised words that are never a ticker. Without this, a conversation that
+# said PDF, EUR, OK or USB looked like one that had already named a symbol, and
+# "watch that stock" stopped asking which. Short and concrete on purpose: the
+# cost of a wrong entry is one unnecessary question, and the cost of leaving the
+# list out entirely was no question at all.
+_NOT_TICKERS = frozenset({
+    "PDF", "CSV", "TSV", "XLS", "DOC", "TXT", "JSON", "XML", "HTML", "HTTP", "URL",
+    "API", "SQL", "USB", "SSD", "HDD", "RAM", "CPU", "GPU", "VRAM", "OS", "PC", "TV",
+    "AI", "ID", "UI", "IP", "OK", "AM", "PM", "FAQ", "PIN", "GB", "MB", "KB", "TB",
+    "EUR", "USD", "GBP", "JPY", "CHF", "UK", "US", "EU", "USA", "CEO", "CTO", "HR",
+    "PR", "QA", "VPN", "DNS", "SSH", "FTP", "CLI", "GUI", "IDE", "RSS", "PNG", "JPG",
+    "SVG", "MP3", "MP4", "ZIP", "OCR", "STT", "TTS", "LLM", "MATLAB", "IMAP", "SMTP",
+})
+
+
+def _names_a_symbol(text: str) -> bool:
+    """Whether this text actually names a tradeable thing.
+
+    A capitalised acronym on its own is not one - "read the PDF", "under 1100 EUR"
+    and "the USB drive" all contain one, and treating any of them as a symbol
+    suppressed the question that makes "watch that stock" answerable. A pair
+    (BTC/USD) or a coin by name always counts; a bare acronym counts when it is
+    not one of the common ones, or when a market word is in the same breath.
+    """
+    if _PAIR.search(text) or _CRYPTO.search(text):
+        return True
+    tokens = [tok for tok in _UPPER_TOKEN.findall(text) if tok not in _NOT_TICKERS]
+    if tokens:
+        return True
+    return bool(_UPPER_TOKEN.search(text) and _MARKET_WORD.search(text))
+
+
+def _names_a_file(text: str) -> bool:
+    """A filename or a path. "the project" is where a file might be, not which one."""
+    return bool(_FILENAME.search(text))
+
+
+def _names_a_person(text: str) -> bool:
+    return bool(_ADDRESSEE.search(text))
+
+
+_FILENAME = re.compile(r"[\w~][\w/\\.-]*\.(?:pdf|docx|xlsx|csv|txt|md|json|py|xls|pptx)\b", re.I)
+_ADDRESSEE = re.compile(r"\S+@\S+\.\w+|\bcontact\b", re.I)
+
 _MISSING = [
     (re.compile(r"\b(that|this|the) (stock|share|ticker|symbol)\b", re.I),
-     re.compile(r"\b[A-Z]{2,5}\b|\b(?i:bitcoin|btc|ethereum|eth|crypto)\b"),
-     "Which symbol do you mean?"),
+     _names_a_symbol, "Which symbol do you mean?"),
     (re.compile(r"\b(that|this|the) (file|document|report|spreadsheet)\b", re.I),
-     re.compile(r"[\w/\\.-]+\.(pdf|docx|xlsx|csv|txt|md|json)\b|\b(project|folder)\b", re.I),
-     "Which file do you mean?"),
+     _names_a_file, "Which file do you mean?"),
     (re.compile(r"\bemail\s+(him|her|them)\b", re.I),
-     re.compile(r"@|\b(contact|address)\b", re.I),
-     "Who should Leti email?"),
+     _names_a_person, "Who should Leti email?"),
 ]
 
 _QUANTITY = re.compile(r"\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b", re.I)
@@ -271,8 +325,8 @@ def _what_is_missing(text: str, history: Sequence[Dict[str, Any]]) -> str:
     TTWO is not ambiguous, and asking anyway is its own kind of unhelpful.
     """
     recent = " ".join(str(m.get("content", "")) for m in list(history)[-6:])
-    for trigger, supplied, question in _MISSING:
-        if trigger.search(text) and not supplied.search(text) and not supplied.search(recent):
+    for trigger, already_named, question in _MISSING:
+        if trigger.search(text) and not already_named(text) and not already_named(recent):
             return question
     return ""
 
