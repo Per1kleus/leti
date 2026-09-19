@@ -51,8 +51,20 @@ def registry():
 
 
 def test_documents_quote_the_real_tool_count_and_schema_size(registry):
-    real_tools = len(registry.names())
-    real_chars = len(json.dumps(registry.all_schemas()))
+    """The numbers in the docs are the ones a turn actually pays.
+
+    Both are measured over the biggest MODE rather than the registry: since
+    core/modes.py, the registry holds more tools than any single turn is shown,
+    and quoting the registry would size num_ctx for a request that cannot happen.
+    """
+    from core import modes
+
+    widest = max(modes.MODES,
+                 key=lambda m: len(json.dumps(registry.schemas_for(
+                     modes.visible_tools(registry, m)))))
+    visible = modes.visible_tools(registry, widest)
+    real_tools = len(visible)
+    real_chars = len(json.dumps(registry.schemas_for(visible)))
 
     checked = 0
     for path in DOCUMENTS:
@@ -73,15 +85,41 @@ def test_documents_quote_the_real_tool_count_and_schema_size(registry):
     )
 
 
-def test_num_ctx_still_fits_the_whole_tool_list(registry):
-    """Routing sends a subset, but the fallback sends everything - size for the fallback."""
+def test_num_ctx_still_fits_every_modes_tool_list(registry):
+    """Routing sends a subset, but the fallback sends everything the MODE allows.
+
+    Per mode rather than per registry, because the registry as a whole is never
+    sent: Default Mode is not shown the coding tools and Coding Mode is not shown
+    the weather. Every mode still has to fit on its own, so this checks each.
+    """
+    from core import modes
+
     num_ctx = int(get_settings().get("ollama", {}).get("num_ctx", 0))
-    needed = registry.approx_schema_tokens() + HEADROOM_TOKENS
-    assert num_ctx >= needed, (
-        f"ollama.num_ctx is {num_ctx:,} but a full-fallback turn needs about {needed:,} "
-        f"tokens ({registry.approx_schema_tokens():,} of schemas plus {HEADROOM_TOKENS:,} "
-        "for everything else). Ollama truncates instead of erroring, so raise num_ctx."
-    )
+    for name in modes.MODES:
+        visible = modes.visible_tools(registry, name)
+        tokens = len(json.dumps(registry.schemas_for(visible))) // 4
+        assert num_ctx >= tokens + HEADROOM_TOKENS, (
+            f"ollama.num_ctx is {num_ctx:,} but a full-fallback turn in {name} mode needs "
+            f"about {tokens + HEADROOM_TOKENS:,} tokens ({tokens:,} of schemas plus "
+            f"{HEADROOM_TOKENS:,} for everything else). Ollama truncates instead of "
+            "erroring, so raise num_ctx."
+        )
+
+
+def test_the_documented_size_is_the_biggest_mode_not_the_registry(registry):
+    """The number in the docs has to be the one that matters, which is the largest
+    thing a turn can actually send. Registering a tool no mode shows would
+    otherwise inflate a figure that decides num_ctx."""
+    from core import modes
+
+    widest = max(len(json.dumps(registry.schemas_for(modes.visible_tools(registry, m))))
+                 for m in modes.MODES)
+    assert widest <= len(json.dumps(registry.all_schemas()))
+    claimed = [c for path in DOCUMENTS for c in CLAIM.findall(_flatten(path.read_text()))]
+    assert claimed, "no document states the measured size"
+    for _, chars in claimed:
+        assert int(chars.replace(",", "")) == widest, (
+            f"the documents quote {chars} characters; the largest mode sends {widest:,}.")
 
 
 def test_readme_quotes_the_configured_num_ctx():

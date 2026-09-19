@@ -131,6 +131,14 @@
     color:var(--ice-dim); text-transform:uppercase; margin-top:4px;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
+  /* Coding Mode's badge. The same mono/letter-spaced language as the readouts,
+     shown only while the mode is on - Default Leti looks exactly as it did. */
+  .mode-badge{
+    font-family:var(--mono); font-size:9px; letter-spacing:2px; text-transform:uppercase;
+    color:var(--cyan); border:1px solid var(--cyan); border-radius:3px;
+    padding:3px 8px; margin-left:12px; white-space:nowrap; opacity:0.9;
+  }
+  .mode-badge[hidden]{ display:none; }
   .topbar-center{ display:flex; gap:36px; margin:0 auto; }
   .readout{ text-align:center; }
   .readout .k{
@@ -1031,6 +1039,7 @@
         <div class="brand-name">LETI</div>
         <div class="brand-tag">Local Enhanced Terminal Intelligence</div>
       </div>
+      <div class="mode-badge" id="modeBadge" hidden>Coding Mode</div>
     </div>
 
     <div class="topbar-center">
@@ -1506,6 +1515,8 @@
       if(msg.type === 'auth_ok'){
         wsAuthed = true;
         flushReadyQueue();
+        // The badge on connect, so a window opened while Coding Mode is on says so.
+        if(typeof refreshMode === 'function') refreshMode();
       } else if(msg.type === 'result' && pendingCalls[msg.id]){
         pendingCalls[msg.id].resolve(msg.value);
         delete pendingCalls[msg.id];
@@ -2892,6 +2903,8 @@
             row('Queued', a.queued) + row('Waiting for approval', a.waiting_for_approval) +
             row('Recovery attempts', a.recovery_attempts);
 
+    html += renderMode();
+
     const pro = d.proactive || {};
     if((pro.items || []).length || pro.level){
       html += '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
@@ -2983,6 +2996,19 @@
   }
 
   diagnosticsContent.addEventListener('click', async (event) => {
+    const modeButton = event.target.closest('[data-mode]');
+    if(modeButton){
+      modeButton.disabled = true;
+      try {
+        modeState = await callApi('set_mode', modeButton.getAttribute('data-mode'));
+        const badge = document.getElementById('modeBadge');
+        badge.hidden = modeState.mode !== 'coding';
+        badge.textContent = modeState.label || 'Coding Mode';
+        rtLog('mode', modeState.note || ('Mode: ' + modeState.mode));
+      } catch(e){ rtLog('error', e.message); }
+      refreshDiagnostics();
+      return;
+    }
     const button = event.target.closest('[data-watch-action]');
     if(!button) return;
     const id = button.getAttribute('data-watch');
@@ -3005,6 +3031,45 @@
     } catch(e){ rtLog('error', e.message); }
     refreshDiagnostics();
   });
+
+  // Which Leti this is. Read when the panel refreshes and when the mode changes;
+  // nothing polls for it.
+  let modeState = {mode: 'default'};
+
+  async function refreshMode(){
+    try {
+      modeState = await callApi('get_mode');
+      const badge = document.getElementById('modeBadge');
+      badge.hidden = modeState.mode !== 'coding';
+      badge.textContent = modeState.label || 'Coding Mode';
+    } catch(e){ /* the badge is cosmetic; a failure here changes nothing */ }
+  }
+
+  function renderMode(){
+    const m = modeState || {};
+    let html = '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
+               'Mode</div></div></div>';
+    html += row('Active', m.label || m.mode) +
+            row('Tools available', (m.tools_available || '') + ' of ' + (m.tools_registered || ''));
+    if(m.since) html += row('Since', m.since);
+    const c = m.coding || null;
+    if(c){
+      html += row('Working in', c.project_root || 'nothing open yet') +
+              row('Repository', c.repository || 'none selected') +
+              row('Branch', c.branch || '-') +
+              row('GitHub', c.github) +
+              row('Checkpoint', c.checkpoint || 'none taken');
+    }
+    html += '<div class="task-actions" style="margin:6px 0 12px">' +
+            (m.modes || []).map(x =>
+              '<button class="settings-btn" data-mode="' + esc(x.name) + '"' +
+              (x.name === m.mode ? ' disabled' : '') + '>' + esc(x.label) + '</button>'
+            ).join('') + '</div>';
+    html += '<div class="audio-detail">Switching keeps memory, projects, tasks and ' +
+            'permissions exactly as they are. Coding Mode shows a smaller, ' +
+            'coding-shaped tool set - the general tools come back when you leave it.</div>';
+    return html;
+  }
 
   async function refreshDiagnostics(){
     // An expanded watch is re-read with the rest of the panel: a detail that

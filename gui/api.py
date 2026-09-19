@@ -46,7 +46,7 @@ SYNC_METHODS = {
     "get_audio_setup", "set_window_mode",
     "get_personality", "set_personality", "get_activity",
     "get_tasks", "control_task", "get_computer_use",
-    "get_watch", "control_watch", "get_proactive",
+    "get_watch", "control_watch", "get_proactive", "get_mode", "set_mode",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
@@ -405,6 +405,32 @@ class LetiAPI:
             if runner is not None:
                 started = bool(runner.start_in_background(task_id))
         return {"ok": True, "started": started, "task": task_manager.detail(updated)}
+
+    # ---- Which Leti this is. A VIEW of core/modes.py: the mode selector calls
+    # the same enter()/leave() the coding_mode tool does, and switching changes a
+    # string, a tool list and a system note - not the model, the memory, the
+    # projects, the running tasks or the permissions. ----
+
+    def get_mode(self) -> dict:
+        from core import modes
+
+        registry = getattr(self.orchestrator, "tool_registry", None)
+        return modes.describe(registry)
+
+    def set_mode(self, name: str) -> dict:
+        from core import modes
+
+        result = modes.leave() if name == modes.DEFAULT else modes.enter(name)
+        if result.get("ok") and name == modes.CODING:
+            from core import coding
+            from tools.projects import get_active_project, project_dir
+
+            try:
+                active = get_active_project()
+                coding.open_workspace(root=str(project_dir(active)) if active else "")
+            except Exception as e:
+                logger.debug(f"No project folder for the coding workspace: {e}")
+        return {**result, **self.get_mode()}
 
     # ---- What Leti would bring up on its own. A VIEW of the four stores that
     # already hold it (tasks, watches, GUI sessions, the scheduler) at the level

@@ -11,6 +11,7 @@ before starting, and make sure `ollama serve` is running.
 """
 from __future__ import annotations
 
+import json
 import argparse
 import asyncio
 import logging
@@ -171,6 +172,12 @@ from tools.computer_use import (
     CompleteComputerStepTool,
     EndComputerSessionTool,
     VerifyScreenTool,
+)
+from tools.coding_agent import (
+    CodeMapTool,
+    CodingModeTool,
+    GitHubTool,
+    GitWorkspaceTool,
 )
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
@@ -400,6 +407,15 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(VerifyScreenTool())
     registry.register(EndComputerSessionTool())
 
+    # Coding Mode. Registered like everything else - they exist, they are
+    # permissioned, they are runnable - but core/modes.py hides them from Default
+    # Mode, so a general assistant turn is never shown them and never pays for
+    # their schemas. See core/modes.py for why that matters at this tool count.
+    registry.register(CodingModeTool())
+    registry.register(CodeMapTool())
+    registry.register(GitWorkspaceTool())
+    registry.register(GitHubTool())
+
     registry.register(ArchiveProjectTool())
     registry.register(PursueGoalTool())
 
@@ -423,15 +439,25 @@ def _warn_if_context_is_too_small(registry: ToolRegistry) -> None:
     been sized for it, and nothing anywhere said so. This is the thing that says
     so - once, at startup, naming the two numbers.
     """
+    from core import modes
+
     settings = get_settings().get("ollama", {})
     num_ctx = int(settings.get("num_ctx", 16384))
-    tool_tokens = registry.approx_schema_tokens()
+    # The worst case is the biggest MODE, not the registry: a turn is only ever
+    # shown the tools its mode allows, and the fallback is scoped the same way.
+    # Registering a coding tool therefore cannot make a Default Mode turn bigger.
+    tool_tokens, widest = 0, ""
+    for name in modes.MODES:
+        visible = modes.visible_tools(registry, name)
+        tokens = len(json.dumps(registry.schemas_for(visible))) // 4
+        if tokens > tool_tokens:
+            tool_tokens, widest = tokens, name
     # The rest of a turn - system prompt, personality, profile, recalled memories,
     # the rolling buffer, and every tool result appended during the loop.
     headroom = 6000
     if tool_tokens + headroom > num_ctx:
         logger.warning(
-            f"{len(registry.names())} tools serialise to roughly {tool_tokens:,} tokens, and "
+            f"{widest} mode's tools serialise to roughly {tool_tokens:,} tokens, and "
             f"ollama.num_ctx is {num_ctx:,}. Ollama truncates rather than erroring, so tools "
             f"will go missing and Leti will look like it has forgotten them. Raise num_ctx to "
             f"at least {tool_tokens + headroom:,} in config/settings.yaml, or use a model with "

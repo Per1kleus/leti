@@ -242,7 +242,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **129 tools serialise to 89,298 characters, roughly 22,300 tokens**,
+back: **130 tools serialise to 90,183 characters, roughly 22,500 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -792,6 +792,71 @@ and options data needs an OPRA one. Leti reports what it actually has rather
 than implying full coverage, and when a feed is refused it says that instead of
 guessing. Set `trading.data_feed` in the Connections settings.
 
+## Coding Mode
+
+Leti has two modes, and starts in the general one every time.
+
+**Default Mode** is the assistant this README describes everywhere else: voice,
+watches, files, research, the lot, routed per request. **Coding Mode** is a
+software-development workspace — repository and symbol search, git checkpoints,
+targeted test runs, GitHub — and it is only on when you put it on. Say "enter
+coding mode", or use the selector in the Diagnostics panel. A request full of
+programming words does **not** switch modes; that is your decision.
+
+Switching changes three things: which tools the turn is shown, one line of system
+prompt, and how deliberate the workflow is. It changes nothing else — the model
+stays loaded, Ollama is not touched, and memory, projects, running tasks and
+permissions carry straight across. A switch takes about 0.1 ms.
+
+**Default Leti does not become a coding agent.** That is measurable rather than a
+promise: `code_map`, `git_workspace` and `github` are not in Default Mode's
+routing, not in its fallback and not in its prompt. Only the mode switch itself
+is visible from the general side, because "enter coding mode" is said by someone
+who is not in it yet. Coding Mode is *smaller* than Default Mode, not larger —
+62 tools against 130, roughly 11,600 tokens of schemas against 22,500 — because
+a coding turn has no business being offered the weather or a paper trade.
+
+What Coding Mode adds:
+
+- **Codebase and symbol intelligence.** `code_map` ranks the files a request is
+  about, lists what a file defines (Python is parsed; other languages are matched
+  with patterns and say so), finds where a name is used, and works out which
+  tests relate to a change. Nothing is indexed, scanned in the background or
+  watched — it walks once, per request, and forgets.
+- **Git checkpoints that cannot eat your work.** Before a substantial change,
+  `git_workspace checkpoint` records where the repository was and, crucially,
+  *which files you were already editing*. A rollback then undoes only what Leti
+  changed after that point, and refuses a file that was already dirty even if
+  asked for it by name. Nothing is stashed, reset or moved.
+- **Test → diagnose → fix.** Tests are chosen from what changed rather than run
+  wholesale, and a failure is classified before anything is edited: caused by the
+  change, pre-existing, unrelated, environment, dependency, or ambiguous. A test
+  that was already failing is reported, not adopted.
+- **GitHub.** Browse a repository, read files, inspect branches, commits and pull
+  requests, create a branch, open a pull request. Reading is staged the same way
+  File Intelligence reads a document — discover, identify, read only what matters
+  — so reviewing a repository never pulls it into the context window.
+- **Coding-specific verification.** Syntax, secrets, debug leftovers and scope,
+  each answered `VERIFIED`, `NOT VERIFIED`, `FAILED` or `NOT APPLICABLE`. Not
+  applicable means Leti could not check it, which is not the same as fine — and a
+  test that was not run has not passed.
+
+**More capable, not less safe.** Every coding tool goes through the same
+SafetyGuard as everything else, and reading a repository is classified separately
+from writing to one: `git_workspace status` does not ask, `git_workspace push`
+does. Pushing checks the remote first and stops if somebody else's commit is
+there. Leti will not force-push, `reset --hard`, or delete a branch at all —
+those are refused in code, whoever asks. It opens pull requests and never merges
+them.
+
+**GitHub credentials** go in the Connections panel (`/settings`), as a
+fine-grained personal access token — no password, no classic token. A
+fine-grained token is scoped to the repositories you pick and the permissions you
+tick, which is narrower than any OAuth scope; `Contents: read` is enough to
+review a repository. The token is stored in `config/settings.local.yaml` at 0600,
+echoed back as "(currently set)", and never appears in a prompt, a log, a tool
+result or an error — anything token-shaped is scrubbed on the way out.
+
 ## Reading the request
 
 Before anything is sent to the model, Leti reads what was asked. This costs no
@@ -1076,6 +1141,10 @@ leti/
 │   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
 │   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
 │   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
+│   ├── modes.py               # Default vs Coding Mode: which tools exist for this turn
+│   ├── coding.py              # Coding Mode's brain: symbols, test selection, verification
+│   ├── git_ops.py             # Git, carefully - checkpoints that cannot eat your work
+│   ├── github_client.py       # GitHub over the API, with a token it never says
 │   ├── intent.py              # What the request IS, read deterministically before it is sent
 │   ├── performance.py         # What a turn may spend, from what it is and what the machine has
 │   ├── proactive.py           # What is worth bringing up unasked - sentences only, never actions
@@ -1126,6 +1195,7 @@ leti/
 │   ├── projects.py            # Persistent project workspaces (folder + metadata + context)
 │   ├── autonomous.py          # Start/inspect/control long-running objectives
 │   ├── workflow_tools.py      # Describe a workflow in words, then run it
+│   ├── coding_agent.py        # Coding Mode's four tools (hidden from Default Mode)
 │   ├── watch_tools.py         # Create/list/change/remove watches, and evaluate the due ones
 │   ├── scheduler.py           # In-app scheduled tasks (the one scheduler)
 │   ├── control_center.py      # Permission Center + Diagnostics panel tools (read-only views)

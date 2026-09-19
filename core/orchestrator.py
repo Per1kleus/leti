@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
 from core import intent as intent_reader
-from core import performance, proactive
+from core import modes, performance, proactive
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core import artifacts, diagnostics
@@ -412,6 +412,12 @@ class Orchestrator:
     async def _build_messages(self, user_text: str) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+        # Which Leti this is. One line, and only when it is not the ordinary one:
+        # Default Mode's prompt is exactly what it was before modes existed.
+        note = modes.system_note()
+        if note:
+            messages.append({"role": "system", "content": note})
+
         try:
             messages.append({"role": "system", "content": describe_personality()})
         except Exception as e:
@@ -528,7 +534,8 @@ class Orchestrator:
         # is exactly what this line used to be.
         _routing_started = time.perf_counter()
         routing = select_tools_for(last_user_message(messages), self.tool_registry,
-                                   budget=self._mode.tool_budget)
+                                   budget=self._mode.tool_budget,
+                                   allowed=modes.visible_tools(self.tool_registry))
         tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
         # Timings for the diagnostics panel, taken while doing the real work rather
         # than by measuring anything extra. Never allowed to affect the turn.

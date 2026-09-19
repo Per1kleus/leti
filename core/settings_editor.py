@@ -78,6 +78,15 @@ SECTION_SCHEMAS: Dict[str, Dict[str, Any]] = {
              "default": "iex", "required": False},
         ],
     },
+    "github": {
+        "kind": "connection",
+        "label": "GitHub (Coding Mode)",
+        "fields": [
+            {"key": "token", "label": "Fine-grained personal access token", "secret": True},
+            {"key": "repository", "label": "Default repository (owner/name), optional",
+             "required": False, "example": "Per1kleus/leti"},
+        ],
+    },
     "weather": {
         "label": "Weather location",
         "fields": [

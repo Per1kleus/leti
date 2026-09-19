@@ -1,8 +1,8 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 129 tools serialise to 89,298 characters, roughly
-22,300 tokens, before the system prompt, personality, profile, recalled
+tool-calling loop. Measured: 130 tools serialise to 90,183 characters, roughly
+22,500 tokens, before the system prompt, personality, profile, recalled
 memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 
@@ -113,7 +113,13 @@ CATEGORIES: Dict[str, List[str]] = {
     "gui_control":   ["tools.computer_use", "tools.os_control", "tools.vision",
                       "tools.browser"],
     "social":        ["tools.social_media", "tools.social_login"],
-    "development":   ["tools.coding", "tools.projects"],
+    "development":   ["tools.coding", "tools.projects", "tools.coding_agent"],
+    # Coding Mode's own tools, and only those. Listing the file and shell modules
+    # here too would have quietly removed them from the "uncategorised modules are
+    # always exposed" safety net, which is what keeps a tool nobody told the router
+    # about from vanishing. Which OTHER tools Coding Mode sees is core/modes.py's
+    # decision, and does not belong in the category table twice.
+    "coding_agent":  ["tools.coding_agent"],
     "data":          ["tools.data_analysis", "tools.engineering"],
     "business":      ["tools.business", "tools.venture_scout", "tools.trading_platform"],
     "personal":      ["tools.user_profile", "tools.personality", "tools.contacts"],
@@ -372,14 +378,38 @@ def _tighten(index: _Index, module_score: Dict[str, float], chosen: Set[str],
 
 
 def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None,
-                     budget: Optional[int] = None) -> Routing:
-    """The entry point. `enabled` false restores the previous behaviour exactly."""
+                     budget: Optional[int] = None,
+                     allowed: Optional[Set[str]] = None) -> Routing:
+    """The entry point. `enabled` false restores the previous behaviour exactly.
+
+    `allowed` is the current mode's tool set (core/modes.py). It is applied to
+    every path including the fallback, because the fallback is what a mode's size
+    is measured by: Coding Mode's "everything" is sixty tools, not a hundred and
+    thirty. A tool outside the set is not hidden from the registry, only from this
+    turn - switching modes brings it straight back.
+    """
     if enabled is None:
         enabled = _routing_enabled()
+    if allowed is not None:
+        registry = _Scoped(registry, allowed)
     if not enabled:
         return Routing(tool_names=sorted(registry.names()), full_fallback=True,
                        reason="tool routing is switched off")
     return route(request, registry, budget)
+
+
+class _Scoped:
+    """The registry as one mode sees it. A view, never a copy of the tools."""
+
+    def __init__(self, registry: Any, allowed: Set[str]):
+        self._registry = registry
+        self._names = sorted(n for n in registry.names() if n in allowed)
+
+    def names(self) -> List[str]:
+        return list(self._names)
+
+    def get(self, name: str) -> Any:
+        return self._registry.get(name) if name in self._names else None
 
 
 def _routing_enabled() -> bool:

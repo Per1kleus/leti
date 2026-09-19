@@ -352,6 +352,30 @@ tools:
   run_workflow:
     action: execute
 
+  # --- Coding Mode ---
+  # These exist only when Coding Mode is on (core/modes.py); Default Mode is never
+  # shown them. Reading a repository and writing to one are different acts, so the
+  # two that can do both are classified per call - `git_workspace status` does not
+  # ask and `git_workspace push` does, through the same action_by_case the app
+  # launcher already uses.
+  coding_mode:
+    action: modify
+
+  code_map:
+    action: read
+
+  git_workspace:
+    action: read
+    action_by_case:
+      read: read
+      write: external
+
+  github:
+    action: read
+    action_by_case:
+      read: read
+      write: external
+
   # --- Watches ---
   # A watch only ever OBSERVES. Whatever it decides to do about what it saw goes
   # back through the orchestrator as a task, and is authorised there call by call -

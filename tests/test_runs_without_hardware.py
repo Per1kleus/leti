@@ -359,13 +359,23 @@ def test_the_context_window_holds_the_tool_list():
     import main
     from core.config_loader import get_settings
 
+    import json
+
+    from core import modes
+
     registry = main.build_tool_registry(MagicMock(), MagicMock(), MagicMock())
-    tool_tokens = registry.approx_schema_tokens()
     num_ctx = int(get_settings()["ollama"]["num_ctx"])
-    assert num_ctx >= tool_tokens + 6000, (
-        f"{len(registry.names())} tools need ~{tool_tokens} tokens but num_ctx is "
-        f"{num_ctx}; there is no room left for the prompt or the conversation"
-    )
+    # Per MODE, because a turn is only ever shown its mode's tools and the
+    # fallback is scoped the same way. Every mode has to fit, so this checks the
+    # biggest rather than the registry - which is larger than any single mode and
+    # is never sent as a whole.
+    for name in modes.MODES:
+        visible = modes.visible_tools(registry, name)
+        tokens = len(json.dumps(registry.schemas_for(visible))) // 4
+        assert num_ctx >= tokens + 6000, (
+            f"{name} mode's {len(visible)} tools need ~{tokens} tokens but num_ctx is "
+            f"{num_ctx}; there is no room left for the prompt or the conversation"
+        )
 
 
 def test_a_context_window_that_stops_fitting_says_so(caplog):
@@ -381,11 +391,23 @@ def test_a_context_window_that_stops_fitting_says_so(caplog):
         main._warn_if_context_is_too_small(registry)
     assert not caplog.records, "warned when the window is in fact big enough"
 
-    tiny = MagicMock()
-    tiny.approx_schema_tokens.return_value = 999_999
-    tiny.names.return_value = ["a"]
+    # A real registry holding one absurd tool, rather than a mock of the
+    # measurement: what is being tested is that the measurement is taken and
+    # acted on, and a mock that returns the answer tests neither.
+    from tools.base import BaseTool, ToolParameter, ToolRegistry
+
+    class Enormous(BaseTool):
+        name = "enormous"
+        description = "x" * 4_000_000
+        parameters = [ToolParameter(name="a", type="string", description="a")]
+
+        async def run(self, **kwargs):
+            raise AssertionError("never run")
+
+    huge = ToolRegistry()
+    huge.register(Enormous())
     with caplog.at_level(logging.WARNING):
-        main._warn_if_context_is_too_small(tiny)
+        main._warn_if_context_is_too_small(huge)
     assert any("num_ctx" in r.message for r in caplog.records), (
         "a context window too small for the tools passed without a word"
     )
