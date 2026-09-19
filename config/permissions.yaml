@@ -358,8 +358,17 @@ tools:
   # two that can do both are classified per call - `git_workspace status` does not
   # ask and `git_workspace push` does, through the same action_by_case the app
   # launcher already uses.
-  coding_mode:
+  # The one switch for all three modes. Changes which tools a turn is shown and
+  # one line of system prompt; it cannot run anything, and every tool it reveals
+  # keeps its own action class.
+  switch_mode:
     action: modify
+
+  # Business Mode's only new tool. It reads the records, tasks and contacts Leti
+  # already has - drafting, sending, updating a lead and booking anything remain
+  # the existing tools with the existing classes.
+  business_briefing:
+    action: read
 
   code_map:
     action: read

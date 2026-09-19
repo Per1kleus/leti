@@ -421,15 +421,21 @@ class LetiAPI:
         from core import modes
 
         result = modes.leave() if name == modes.DEFAULT else modes.enter(name)
-        if result.get("ok") and name == modes.CODING:
-            from core import coding
-            from tools.projects import get_active_project, project_dir
-
+        if result.get("ok"):
             try:
+                from tools.projects import get_active_project, project_dir
+
                 active = get_active_project()
-                coding.open_workspace(root=str(project_dir(active)) if active else "")
+                if name == modes.CODING:
+                    from core import coding
+
+                    coding.open_workspace(root=str(project_dir(active)) if active else "")
+                elif name == modes.BUSINESS:
+                    from core import business
+
+                    business.open_workspace(project=active or "")
             except Exception as e:
-                logger.debug(f"No project folder for the coding workspace: {e}")
+                logger.debug(f"No project folder for the workspace: {e}")
         return {**result, **self.get_mode()}
 
     # ---- What Leti would bring up on its own. A VIEW of the four stores that

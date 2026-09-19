@@ -40,17 +40,24 @@ logger = logging.getLogger("leti.modes")
 
 DEFAULT = "default"
 CODING = "coding"
-MODES = (DEFAULT, CODING)
+BUSINESS = "business"
+MODES = (DEFAULT, CODING, BUSINESS)
 
-# The tools that exist only in Coding Mode. Default Mode never sees these: not in
-# its routing, not in its fallback, not in its context.
+# The tools that exist only in a specialised mode. Default Mode never sees these:
+# not in its routing, not in its fallback, not in its context.
 #
-# coding_mode is deliberately NOT one of them. It is the switch, and the person
-# who says "enter coding mode" is by definition not in coding mode yet - a switch
-# only reachable from the far side of itself is not a switch. It is the one
-# coding tool a general turn pays for, and its description is short for that
-# reason.
+# switch_mode is in here too, and that is the important part. Entering a mode is
+# an explicit COMMAND, matched deterministically in core/intent.py before any
+# model call - so Default Mode does not need a tool for it, and not having one
+# means the model CANNOT change mode from there however the request is phrased.
+# "Check my customer emails" gets a Default Mode turn because there is no other
+# turn available, not because the model decided well. The tool stays visible
+# inside a specialised mode, where saying "what am I in" and "leave" are ordinary
+# things to want, and the GUI selector works from anywhere.
 CODING_ONLY_TOOLS = frozenset({"code_map", "git_workspace", "github"})
+BUSINESS_ONLY_TOOLS = frozenset({"business_briefing"})
+SWITCH_TOOL = "switch_mode"
+SPECIALISED_TOOLS = CODING_ONLY_TOOLS | BUSINESS_ONLY_TOOLS | {SWITCH_TOOL}
 
 # What Coding Mode is shown. Everything a software task reaches for, and nothing
 # else - a coding turn has no business being offered the weather, a paper trade
@@ -72,6 +79,33 @@ CODING_MODULES = (
     "tools.computer_use",       # still the last resort, still through the guard
     "tools.os_control",
     "tools.vision",
+)
+
+
+# What Business Mode is shown. The business layer Leti already has - the CRM, the
+# contact book, the calendar writer - plus the things business work is actually
+# made of: documents, spreadsheets, mail, research, tasks and reports. No coding
+# tools, no screen control, no market monitoring: a business turn that is offered
+# git and a paper-trading account is a turn whose tool list is not helping.
+BUSINESS_MODULES = (
+    "tools.business_agent",     # the briefing that ties the rest together
+    "tools.business",           # the CRM that already exists: leads, income, expenses
+    "tools.contacts",
+    "tools.meeting_scheduler",
+    "tools.email_client",
+    "tools.documents",          # File Intelligence: proposals, invoices, contracts
+    "tools.data_analysis",      # spreadsheets and CSVs, the existing way
+    "tools.file_manager",
+    "tools.projects",
+    "tools.todo_list",
+    "tools.autonomous",         # long tasks, with the verification that already exists
+    "tools.workflow_tools",     # recurring business work, on the existing scheduler
+    "tools.scheduler",
+    "tools.web_search",
+    "tools.browser",
+    "tools.venture_scout",
+    "tools.control_center",
+    "tools.user_profile",
 )
 
 
@@ -117,7 +151,35 @@ CODING_MODE = Mode(
     ),
 )
 
-_MODES = {DEFAULT: DEFAULT_MODE, CODING: CODING_MODE}
+BUSINESS_MODE = Mode(
+    name=BUSINESS,
+    label="Business Mode",
+    description="A business operations workspace: pipeline, follow-ups, documents, reporting.",
+    modules=list(BUSINESS_MODULES),
+    note=(
+        "You are in BUSINESS MODE: a business operations workspace, not the general "
+        "assistant. Work like somebody's operations manager.\n"
+        "For a simple question - today's priorities, one lead's stage, what a document "
+        "says - answer it directly. Do not build a plan for something that needs a "
+        "lookup.\n"
+        "For real work - 'review my leads, prepare follow-ups, send the approved ones' - "
+        "work in this order: understand what is being asked; gather what is actually "
+        "there with business_briefing, business_next_actions, list_business_data and the "
+        "document tools; plan before doing; execute; verify what you did by looking at "
+        "the result rather than remembering it; leave the follow-ups somewhere they will "
+        "be picked up; then report.\n"
+        "Rules that do not bend. Never invent a customer, a number, a deal or a date - if "
+        "the data is not there, say what is missing and where it would come from. Keep "
+        "observed figures, calculated figures, assumptions and your own interpretation "
+        "visibly apart, and say when a conclusion rests on too little data. Never say an "
+        "email was sent, a meeting was booked or a record was updated unless a tool "
+        "actually did it and said so. You are not a financial, legal, tax or employment "
+        "adviser: analyse, organise, prepare and explain, and leave decisions with real "
+        "regulated consequences to the user and their professionals."
+    ),
+)
+
+_MODES = {DEFAULT: DEFAULT_MODE, CODING: CODING_MODE, BUSINESS: BUSINESS_MODE}
 
 # The active mode, for this process. Deliberately not persisted to disk: Leti
 # starts as the general assistant every time, and entering a specialised
@@ -175,6 +237,8 @@ def enter(name: str) -> Dict[str, Any]:
         return {"ok": True, "mode": _current, "changed": False,
                 "note": f"Already in {_MODES[_current].label}."}
 
+    if _current != DEFAULT and wanted != _current:
+        _release_workspaces()
     previous, _current = _current, wanted
     _entered_at = time.time() if wanted != DEFAULT else None
     _MODES[wanted].entered_at = _entered_at
@@ -186,10 +250,22 @@ def enter(name: str) -> Dict[str, Any]:
 
 def leave() -> Dict[str, Any]:
     """Back to the general assistant, and stop paying for the workspace."""
-    from core import coding
+    _release_workspaces()
+    return enter(DEFAULT)
+
+
+def _release_workspaces() -> None:
+    """Whatever a specialised mode was holding, let go of it.
+
+    Both workspaces are in-process and hold nothing durable - what deserves to
+    outlive a mode is already in the stores it came from (Project Memory, the
+    business records, the task manager). Releasing here is what makes "the mode
+    stops costing anything when you leave it" true rather than aspirational.
+    """
+    from core import business, coding
 
     coding.release()
-    return enter(DEFAULT)
+    business.release()
 
 
 def visible_tools(registry: Any, name: Optional[str] = None) -> Set[str]:
@@ -201,9 +277,11 @@ def visible_tools(registry: Any, name: Optional[str] = None) -> Set[str]:
     active = mode(name)
     everything = set(registry.names())
     if active.modules is None:
-        return everything - CODING_ONLY_TOOLS
+        return everything - SPECIALISED_TOOLS
     allowed = set(active.modules)
-    return {n for n in everything if _module_of(registry, n) in allowed}
+    visible = {n for n in everything if _module_of(registry, n) in allowed}
+    # Every specialised mode can always be left from inside it.
+    return visible | ({SWITCH_TOOL} if SWITCH_TOOL in everything else set())
 
 
 def _module_of(registry: Any, name: str) -> str:
@@ -233,6 +311,10 @@ def describe(registry: Any = None) -> Dict[str, Any]:
         from core import coding
 
         out["coding"] = coding.status()
+    elif active.name == BUSINESS:
+        from core import business
+
+        out["business"] = business.status()
     return out
 
 

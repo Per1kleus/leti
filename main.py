@@ -165,6 +165,7 @@ from tools.control_center import (
     ChangePermissionTool,
     DiagnosticsTool,
     ReviewPermissionsTool,
+    SwitchModeTool,
 )
 from tools.control_center import set_registry as set_control_registry
 from tools.computer_use import (
@@ -173,12 +174,8 @@ from tools.computer_use import (
     EndComputerSessionTool,
     VerifyScreenTool,
 )
-from tools.coding_agent import (
-    CodeMapTool,
-    CodingModeTool,
-    GitHubTool,
-    GitWorkspaceTool,
-)
+from tools.business_agent import BusinessBriefingTool
+from tools.coding_agent import CodeMapTool, GitHubTool, GitWorkspaceTool
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
 from tools.workflow_tools import (
@@ -407,14 +404,16 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(VerifyScreenTool())
     registry.register(EndComputerSessionTool())
 
-    # Coding Mode. Registered like everything else - they exist, they are
-    # permissioned, they are runnable - but core/modes.py hides them from Default
-    # Mode, so a general assistant turn is never shown them and never pays for
-    # their schemas. See core/modes.py for why that matters at this tool count.
-    registry.register(CodingModeTool())
+    # The specialised modes. Registered like everything else - they exist, they
+    # are permissioned, they are runnable - but core/modes.py hides them from
+    # Default Mode, so a general assistant turn is never shown them and never
+    # pays for their schemas. See core/modes.py for why that matters at this tool
+    # count. The switch itself lives with Leti's other controls and is visible in
+    # every mode, because whoever asks for one is not in it yet.
     registry.register(CodeMapTool())
     registry.register(GitWorkspaceTool())
     registry.register(GitHubTool())
+    registry.register(BusinessBriefingTool())
 
     registry.register(ArchiveProjectTool())
     registry.register(PursueGoalTool())
@@ -422,6 +421,7 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     # The Permission Center and the Diagnostics panel, as tools so they can be
     # reached by asking as well as by the buttons.
     registry.register(ReviewPermissionsTool())
+    registry.register(SwitchModeTool())
     registry.register(ChangePermissionTool())
     registry.register(DiagnosticsTool())
 

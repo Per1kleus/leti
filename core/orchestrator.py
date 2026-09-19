@@ -379,6 +379,30 @@ class Orchestrator:
             and not contains_explicit_denial(user_text)
         )
 
+        # An explicit mode command is a command: handled here, deterministically,
+        # without a model round-trip. This is also what makes the rule that nothing
+        # ELSE switches modes enforceable - a regex cannot be talked into Business
+        # Mode by a sentence full of invoices, and "check my customer emails" gets
+        # the ordinary Default Mode turn it asked for.
+        if intent_reader.asks_which_mode(user_text):
+            answer = self._describe_mode()
+            self.session_memory.add_turn("assistant", answer, session_id)
+            if self.speak_callback:
+                self._set_state(AgentState.SPEAKING)
+                await self.speak_callback(answer)
+            self._set_state(AgentState.IDLE)
+            return answer
+
+        wanted_mode = intent_reader.mode_command(user_text)
+        if wanted_mode is not None:
+            answer = self._switch_mode(wanted_mode)
+            self.session_memory.add_turn("assistant", answer, session_id)
+            if self.speak_callback:
+                self._set_state(AgentState.SPEAKING)
+                await self.speak_callback(answer)
+            self._set_state(AgentState.IDLE)
+            return answer
+
         messages = await self._build_messages(user_text)
         _turn_started = time.perf_counter()
         final_answer = await self._tool_calling_loop(messages)
@@ -405,6 +429,36 @@ class Orchestrator:
 
         self._set_state(AgentState.IDLE)
         return final_answer
+
+    def _describe_mode(self) -> str:
+        active = modes.mode()
+        if active.name == modes.DEFAULT:
+            return ("Default Mode - the general assistant. Say \"enter coding mode\" or "
+                    "\"enter business mode\" to switch to a specialised workspace.")
+        return (f"{active.label}. {active.description} Say \"exit\" to go back to the "
+                "general assistant.")
+
+    def _switch_mode(self, wanted: str) -> str:
+        """Do what the mode command asked, and say so in one line.
+
+        Changes a string, a tool list and a system note. Nothing is restarted, the
+        model is not reloaded, memory and projects carry across, and running tasks
+        keep running - see core/modes.py.
+        """
+        result = modes.leave() if wanted == modes.DEFAULT else modes.enter(wanted)
+        if not result.get("ok"):
+            return result.get("error", "I couldn't switch to that mode.")
+        if not result.get("changed"):
+            return result.get("note", f"Already in {modes.mode().label}.")
+        try:
+            from tools.control_center import _open_workspace_for  # noqa: F401
+            from core import business
+
+            if wanted == modes.BUSINESS:
+                business.open_workspace()
+        except Exception as e:
+            logger.debug(f"Workspace setup on mode switch: {e}")
+        return result.get("note", f"{modes.mode().label} is on.")
 
     # ------------------------------------------------------------------ #
     # Message construction: system prompt + recalled memory + recent turns

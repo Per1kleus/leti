@@ -93,10 +93,18 @@ def test_default_mode_cannot_see_the_coding_tools(registry):
         assert registry.get(name) is not None, f"{name} should still be registered"
 
 
-def test_the_mode_switch_itself_is_reachable_from_default(registry):
-    """"Enter coding mode" is said by somebody who is not in coding mode. A switch
-    only reachable from the far side of itself is not a switch."""
-    assert "coding_mode" in modes.visible_tools(registry, modes.DEFAULT)
+def test_the_model_has_no_way_to_change_mode_from_default(registry):
+    """Stronger than "it should not": in Default Mode there is no mode tool at all,
+    so the model cannot switch however a request is phrased. Entering a mode is an
+    explicit command, matched deterministically before any model call
+    (core/intent.py), or the selector in the interface."""
+    assert modes.SWITCH_TOOL not in modes.visible_tools(registry, modes.DEFAULT)
+    assert registry.get(modes.SWITCH_TOOL) is not None, "the switch should still exist"
+
+
+def test_a_specialised_mode_can_always_be_left_from_inside_it(registry):
+    for name in (modes.CODING, modes.BUSINESS):
+        assert modes.SWITCH_TOOL in modes.visible_tools(registry, name)
 
 
 def test_coding_mode_is_smaller_than_default_not_larger(registry):
@@ -117,6 +125,7 @@ def test_no_general_assistant_tools_leak_into_coding_mode(registry):
 
 
 def test_every_registered_tool_is_reachable_in_some_mode(registry):
+    """Including the switch, which lives in the specialised modes."""
     covered = set()
     for name in modes.MODES:
         covered |= modes.visible_tools(registry, name)
@@ -661,7 +670,7 @@ def test_reading_a_repository_and_writing_to_one_are_classified_differently():
     from tools.coding_agent import GitHubTool, GitWorkspaceTool
 
     entries = get_permissions()["tools"]
-    for name in ("coding_mode", "code_map", "git_workspace", "github"):
+    for name in ("switch_mode", "code_map", "git_workspace", "github"):
         assert name in entries, f"{name} has no action class"
 
     for tool, read, write in ((GitWorkspaceTool(), "status", "push"),
@@ -712,15 +721,15 @@ async def test_coding_mode_does_not_start_itself(registry):
 
 @pytest.mark.asyncio
 async def test_entering_coding_mode_reports_the_workspace_without_a_token(repo, monkeypatch):
-    from tools.coding_agent import CodingModeTool
+    from tools.control_center import SwitchModeTool
 
     monkeypatch.setattr(github_client, "_settings", lambda: {})
-    result = await CodingModeTool().run("enter", path=str(repo))
+    result = await SwitchModeTool().run("coding", path=str(repo))
 
     assert result.success and modes.is_coding()
     assert result.output["git"]["branch"] == "main"
     assert "not connected" in result.output["github"]
-    assert "token" not in json.dumps(result.output).lower() or "ghp_" not in json.dumps(result.output)
+    assert "ghp_" not in json.dumps(result.output)
 
 
 # --- The remote is not where you left it ---------------------------------------------

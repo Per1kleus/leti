@@ -1,4 +1,4 @@
-"""Tools behind the Permission Center and the Diagnostics panel.
+"""Tools behind the Permission Center, the Diagnostics panel and the mode switch.
 
 Both read what already exists. The permission tools read and write
 config/permissions.yaml and safety.require_confirmation_for - the two things
@@ -15,6 +15,73 @@ from core import diagnostics, permission_center
 from tools.base import BaseTool, ToolParameter, ToolResult
 
 logger = logging.getLogger("leti.tools.control_center")
+
+
+class SwitchModeTool(BaseTool):
+    name = "switch_mode"
+    description = (
+        "Report which mode Leti is in, or leave the current one. Only for an explicit "
+        "request - 'what mode am I in', 'exit', 'switch to business mode'. Doing a coding "
+        "or business task is not asking for a mode; never switch because of what a "
+        "request is about."
+    )
+    parameters = [
+        ToolParameter(name="mode", type="string",
+                      description="Which mode to switch to. 'status' just reports.",
+                      enum=["default", "coding", "business", "status"]),
+        ToolParameter(name="project", type="string", required=False,
+                      description="Project to work in, for coding or business."),
+        ToolParameter(name="path", type="string", required=False,
+                      description="Folder to work in, for coding."),
+        ToolParameter(name="repository", type="string", required=False,
+                      description="GitHub repository as owner/name, for coding."),
+        ToolParameter(name="business_name", type="string", required=False,
+                      description="Which business this session is about, for business."),
+    ]
+
+    async def run(self, mode: str, project: str = "", path: str = "", repository: str = "",
+                  business_name: str = "", **kwargs) -> ToolResult:
+        from core import modes
+
+        wanted = str(mode or "status").strip().lower()
+        if wanted in ("status", ""):
+            return ToolResult(success=True, output=modes.describe(_REGISTRY))
+
+        if wanted in ("exit", "leave", "off", modes.DEFAULT):
+            result = modes.leave()
+            return ToolResult(success=True, output={
+                **result, "note": ("Back to the general assistant. The specialised "
+                                   "workspace is released; projects, memory, tasks and "
+                                   "permissions are untouched.")})
+
+        result = modes.enter(wanted)
+        if not result.get("ok"):
+            return ToolResult(success=False, error=result.get("error", "Couldn't switch mode."))
+
+        details = await _open_workspace_for(wanted, project=project, path=path,
+                                            repository=repository,
+                                            business_name=business_name)
+        return ToolResult(success=True, output={**result, **details})
+
+
+async def _open_workspace_for(mode_name: str, project: str = "", path: str = "",
+                              repository: str = "", business_name: str = "") -> dict:
+    """Set up whichever workspace the mode uses. Reads; starts nothing."""
+    from core import modes
+
+    if mode_name == modes.CODING:
+        from tools.coding_agent import open_coding_workspace
+
+        return await open_coding_workspace(path=path, project=project, repository=repository)
+    if mode_name == modes.BUSINESS:
+        from core import business
+
+        space = business.open_workspace(business_name=business_name, project=project)
+        return {"workspace": space.summary(), "sources": business.connected_sources(),
+                "note": ("Business Mode reads the records, contacts, documents and tasks "
+                         "Leti already has. Anything it cannot see is listed in "
+                         "'sources' rather than reported as empty.")}
+    return {}
 
 _REGISTRY: Optional[Any] = None
 

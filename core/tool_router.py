@@ -1,8 +1,8 @@
 """Which tools this request should be shown - not which it is allowed to run.
 
 Every tool schema was sent on every call, and on every iteration of the
-tool-calling loop. Measured: 130 tools serialise to 90,183 characters, roughly
-22,500 tokens, before the system prompt, personality, profile, recalled
+tool-calling loop. Measured: 129 tools serialise to 89,298 characters, roughly
+22,300 tokens, before the system prompt, personality, profile, recalled
 memories or the conversation get any of a 28,672-token window. This picks a
 relevant subset instead.
 
@@ -121,7 +121,8 @@ CATEGORIES: Dict[str, List[str]] = {
     # decision, and does not belong in the category table twice.
     "coding_agent":  ["tools.coding_agent"],
     "data":          ["tools.data_analysis", "tools.engineering"],
-    "business":      ["tools.business", "tools.venture_scout", "tools.trading_platform"],
+    "business":      ["tools.business", "tools.venture_scout", "tools.trading_platform",
+                      "tools.business_agent"],
     "personal":      ["tools.user_profile", "tools.personality", "tools.contacts"],
     "control":       ["tools.control_center"],
     "everyday":      ["tools.weather", "tools.todo_list", "tools.sketch"],

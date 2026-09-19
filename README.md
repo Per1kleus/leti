@@ -242,7 +242,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **130 tools serialise to 90,183 characters, roughly 22,500 tokens**,
+back: **129 tools serialise to 89,298 characters, roughly 22,300 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -792,29 +792,90 @@ and options data needs an OPRA one. Leti reports what it actually has rather
 than implying full coverage, and when a feed is refused it says that instead of
 guessing. Set `trading.data_feed` in the Connections settings.
 
-## Coding Mode
+## Modes
 
-Leti has two modes, and starts in the general one every time.
+Leti has three modes and starts in the general one every time.
 
-**Default Mode** is the assistant this README describes everywhere else: voice,
-watches, files, research, the lot, routed per request. **Coding Mode** is a
-software-development workspace — repository and symbol search, git checkpoints,
-targeted test runs, GitHub — and it is only on when you put it on. Say "enter
-coding mode", or use the selector in the Diagnostics panel. A request full of
-programming words does **not** switch modes; that is your decision.
+| Mode | What it is | How to enter |
+|---|---|---|
+| **Default** | The assistant this README describes everywhere else | where you start |
+| **Coding** | A software-development workspace | "enter coding mode" |
+| **Business** | A business operations workspace | "enter business mode" |
+
+**A coding task is not Coding Mode. A business task is not Business Mode.**
+"Check my customer emails", "analyse this invoice", "review my leads", "debug
+this Python file" are all ordinary Default Mode work and stay there. Only an
+explicit command changes mode — "enter business mode", "switch to coding mode",
+"exit", or the selector in the Diagnostics panel.
+
+That rule is structural rather than a matter of good behaviour. Explicit mode
+commands are matched deterministically before any model call (`core/intent.py`,
+about half a microsecond), and **Default Mode has no mode tool at all** — so the
+model there has nothing to call however a request is phrased. A regex cannot be
+talked into Business Mode by a sentence full of invoices.
 
 Switching changes three things: which tools the turn is shown, one line of system
-prompt, and how deliberate the workflow is. It changes nothing else — the model
-stays loaded, Ollama is not touched, and memory, projects, running tasks and
-permissions carry straight across. A switch takes about 0.1 ms.
+prompt, and how deliberate the workflow is. Nothing else — the model stays
+loaded, Ollama is not touched, and memory, projects, running tasks and
+permissions carry straight across. A switch takes well under a millisecond and
+involves no model call at all.
+
+Both specialised modes are *smaller* than Default Mode, not larger:
+
+| | Tools shown | Schemas |
+|---|---|---|
+| Default | 129 | ~22,300 tokens |
+| Coding | 62 | ~11,600 tokens |
+| Business | 74 | ~13,100 tokens |
+
+**Business Mode costs Default Mode nothing.** Its tools are mode-only, and the
+mode switch lives in the specialised modes rather than the general one — so
+Default Leti's tool list, schemas and prompt are byte-identical to what they were
+before either specialised mode existed.
+
+## Business Mode
+
+A business operations workspace: pipeline, follow-ups, documents, reporting.
+
+Almost everything it uses, Leti already had — the CRM (`business_dashboard`,
+`business_next_actions`, `update_lead`), the contact book, mail, the calendar
+writer, File Intelligence for proposals and invoices, the data tools for
+spreadsheets, the task manager and the scheduler. **All of those stay available
+in Default Mode.** Business Mode is not a prerequisite for checking email or
+reading an invoice.
+
+What it adds is the thing that reads them together. `business_briefing` answers
+"what should I be doing today" from what is actually there: work waiting on your
+approval, leads that have gone quiet, tasks in flight, scheduled work about to
+run — and, importantly, **which sources it cannot see**. Leti can *create*
+calendar events but has no tool that reads one back, so a briefing says it cannot
+show your meetings rather than showing an empty list.
+
+It will not invent a customer, a figure or a date. Observed data, calculated
+figures, assumptions and interpretation are kept visibly apart — a weighted
+pipeline value says in as many words that it is a calculation, not money in.
+
+The **Business Workspace** (which business, which project, what the objectives
+are) lives for the session and is released when you leave. It is deliberately not
+a second memory system: anything that should outlive the session becomes a task,
+a lead, a project note or a scheduled workflow, all of which already have
+somewhere to live.
+
+**More capable, not less safe.** Being in Business Mode changes nothing about
+permissions. Sending an email is external and asks first, exactly as it does in
+Default Mode; updating a lead is a write; reading a briefing is a read. Business
+Mode is not a financial, legal, tax or employment adviser and says so — it
+analyses, organises, prepares and explains, and leaves regulated decisions to you.
+
+## Coding Mode
+
+**Coding Mode** is a software-development workspace — repository and symbol
+search, git checkpoints, targeted test runs, GitHub — and it is only on when you
+put it on.
 
 **Default Leti does not become a coding agent.** That is measurable rather than a
 promise: `code_map`, `git_workspace` and `github` are not in Default Mode's
-routing, not in its fallback and not in its prompt. Only the mode switch itself
-is visible from the general side, because "enter coding mode" is said by someone
-who is not in it yet. Coding Mode is *smaller* than Default Mode, not larger —
-62 tools against 130, roughly 11,600 tokens of schemas against 22,500 — because
-a coding turn has no business being offered the weather or a paper trade.
+routing, not in its fallback and not in its prompt.
 
 What Coding Mode adds:
 
@@ -1141,7 +1202,8 @@ leti/
 │   ├── console_input.py       # Single shared stdin reader (cancellable prompts)
 │   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
 │   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
-│   ├── modes.py               # Default vs Coding Mode: which tools exist for this turn
+│   ├── modes.py               # Default / Coding / Business: which tools exist for this turn
+│   ├── business.py            # Business Mode's brain: the briefing, the session workspace
 │   ├── coding.py              # Coding Mode's brain: symbols, test selection, verification
 │   ├── git_ops.py             # Git, carefully - checkpoints that cannot eat your work
 │   ├── github_client.py       # GitHub over the API, with a token it never says
@@ -1195,7 +1257,8 @@ leti/
 │   ├── projects.py            # Persistent project workspaces (folder + metadata + context)
 │   ├── autonomous.py          # Start/inspect/control long-running objectives
 │   ├── workflow_tools.py      # Describe a workflow in words, then run it
-│   ├── coding_agent.py        # Coding Mode's four tools (hidden from Default Mode)
+│   ├── business_agent.py      # Business Mode's one tool (hidden from Default Mode)
+│   ├── coding_agent.py        # Coding Mode's three tools (hidden from Default Mode)
 │   ├── watch_tools.py         # Create/list/change/remove watches, and evaluate the due ones
 │   ├── scheduler.py           # In-app scheduled tasks (the one scheduler)
 │   ├── control_center.py      # Permission Center + Diagnostics panel tools (read-only views)

@@ -44,67 +44,35 @@ def _root(path: str = "", project: str = "") -> Path:
     return working_directory(project, "")
 
 
-class CodingModeTool(BaseTool):
-    name = "coding_mode"
-    description = (
-        "Turn Coding Mode on or off, or report which mode Leti is in. Coding Mode is a "
-        "software workspace: repository and symbol search, git checkpoints, targeted "
-        "tests, GitHub. Only for 'enter/exit coding mode' or 'what mode are you in' - "
-        "never switch just because a request mentions code. Keeps memory, projects, "
-        "tasks and permissions as they are."
-    )
-    parameters = [
-        ToolParameter(name="action", type="string",
-                      description="enter, exit, or status.",
-                      enum=["enter", "exit", "status"]),
-        ToolParameter(name="project", type="string", required=False,
-                      description="Project to work in when entering."),
-        ToolParameter(name="path", type="string", required=False,
-                      description="Folder to work in when entering, if not a project."),
-        ToolParameter(name="repository", type="string", required=False,
-                      description="GitHub repository as owner/name, if one is in play."),
-    ]
+async def open_coding_workspace(path: str = "", project: str = "",
+                                repository: str = "") -> Dict[str, Any]:
+    """Point Coding Mode at a folder, and report what it found there.
 
-    async def run(self, action: str, project: str = "", path: str = "",
-                  repository: str = "", **kwargs) -> ToolResult:
-        action = str(action or "status").lower()
-        if action == "status":
-            return ToolResult(success=True, output=modes.describe())
+    Called by the one mode switch in tools/control_center.py. It reads: a git
+    status and whether a GitHub token exists. It starts nothing, clones nothing
+    and indexes nothing.
+    """
+    root = ""
+    try:
+        root = str(_root(path, project))
+    except Exception as e:
+        logger.debug(f"No working folder resolved on entering coding mode: {e}")
+    space = coding.open_workspace(root=root, repository=repository)
 
-        if action == "exit":
-            result = modes.leave()
-            return ToolResult(success=True, output={
-                **result, "note": "Back to the general assistant. The coding workspace is "
-                                  "released; projects, memory and tasks are untouched."})
-
-        if action != "enter":
-            return ToolResult(success=False, error=f"'{action}' is not enter, exit or status.")
-
-        result = modes.enter(modes.CODING)
-        if not result.get("ok"):
-            return ToolResult(success=False, error=result.get("error", "Couldn't switch mode."))
-
-        root = ""
+    details: Dict[str, Any] = {"working_in": space.root, "repository": space.repository}
+    if space.root and Path(space.root).is_dir():
         try:
-            root = str(_root(path, project))
-        except Exception as e:
-            logger.debug(f"No working folder resolved on entering coding mode: {e}")
-        space = coding.open_workspace(root=root, repository=repository)
-
-        details: Dict[str, Any] = {"working_in": space.root, "repository": space.repository}
-        if space.root and Path(space.root).is_dir():
-            try:
-                if await git_ops.is_repository(Path(space.root)):
-                    state = await git_ops.status(Path(space.root))
-                    details["git"] = {"branch": state["branch"], "dirty": state["dirty"],
-                                      "uncommitted_files": len(state["dirty_paths"])}
-                else:
-                    details["git"] = "not a git repository"
-            except git_ops.GitError as e:
-                details["git"] = str(e)
-        details["github"] = ("connected" if github_client.is_connected()
-                             else "not connected - add a token under Connections to use it")
-        return ToolResult(success=True, output={**result, **details})
+            if await git_ops.is_repository(Path(space.root)):
+                state = await git_ops.status(Path(space.root))
+                details["git"] = {"branch": state["branch"], "dirty": state["dirty"],
+                                  "uncommitted_files": len(state["dirty_paths"])}
+            else:
+                details["git"] = "not a git repository"
+        except git_ops.GitError as e:
+            details["git"] = str(e)
+    details["github"] = ("connected" if github_client.is_connected()
+                         else "not connected - add a token under Connections to use it")
+    return details
 
 
 class CodeMapTool(BaseTool):

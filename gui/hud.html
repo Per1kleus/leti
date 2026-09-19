@@ -3001,9 +3001,7 @@
       modeButton.disabled = true;
       try {
         modeState = await callApi('set_mode', modeButton.getAttribute('data-mode'));
-        const badge = document.getElementById('modeBadge');
-        badge.hidden = modeState.mode !== 'coding';
-        badge.textContent = modeState.label || 'Coding Mode';
+        paintBadge();
         rtLog('mode', modeState.note || ('Mode: ' + modeState.mode));
       } catch(e){ rtLog('error', e.message); }
       refreshDiagnostics();
@@ -3039,10 +3037,14 @@
   async function refreshMode(){
     try {
       modeState = await callApi('get_mode');
-      const badge = document.getElementById('modeBadge');
-      badge.hidden = modeState.mode !== 'coding';
-      badge.textContent = modeState.label || 'Coding Mode';
+      paintBadge();
     } catch(e){ /* the badge is cosmetic; a failure here changes nothing */ }
+  }
+
+  function paintBadge(){
+    const badge = document.getElementById('modeBadge');
+    badge.hidden = !modeState || modeState.mode === 'default';
+    badge.textContent = (modeState && modeState.label) || '';
   }
 
   function renderMode(){
@@ -3059,6 +3061,21 @@
               row('Branch', c.branch || '-') +
               row('GitHub', c.github) +
               row('Checkpoint', c.checkpoint || 'none taken');
+    }
+    const b = m.business || null;
+    if(b){
+      const w = b.workspace || {};
+      html += row('Business', w.business || 'not set') +
+              row('Project', w.project || 'none') +
+              row('Open leads', b.leads === null ? 'Unavailable' : b.leads);
+      if((w.objectives || []).length)
+        html += '<div class="audio-detail">Objectives: ' +
+                esc((w.objectives || []).join('; ')) + '</div>';
+      // What Leti can and cannot see, said per source - an empty section because
+      // nothing is connected is not the same as an empty section.
+      const sources = b.sources || {};
+      html += '<div class="audio-detail">' + Object.keys(sources).map(k =>
+                esc(k) + ': ' + esc(sources[k])).join('<br>') + '</div>';
     }
     html += '<div class="task-actions" style="margin:6px 0 12px">' +
             (m.modes || []).map(x =>

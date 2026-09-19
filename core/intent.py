@@ -196,6 +196,71 @@ _QUOTED = re.compile(r"[\"'“]([^\"'”]{2,60})[\"'”]")
 MAX_ENTITIES = 8
 
 
+# Entering a mode is a COMMAND, not a request that needs judgement - and the rule
+# that matters most about it is that nothing else may trigger it. "Check my
+# customer emails" is a business task and must stay in Default Mode; "enter
+# business mode" is the only kind of thing that changes modes.
+#
+# So it is matched here, deterministically, rather than left to the model to
+# notice. A regex cannot be talked into switching by a sentence full of invoices
+# and pipelines, which is exactly the failure this has to be immune to. It also
+# costs nothing: no schema, no model call, and it works identically by voice.
+_MODE_WORD = r"(?P<mode>coding|business|dev|developer|software|default|normal|assistant)"
+_MODE_COMMANDS = (
+    # "enter coding mode", "switch to business mode", "let's work in business mode"
+    re.compile(rf"\b(?:enter|activate|start|go(?:\s+in)?to|switch\s+(?:to|into)|"
+               rf"turn\s+on|use|work\s+in|let'?s\s+work\s+in|put\s+(?:you|yourself)\s+in)"
+               rf"\s+(?:the\s+)?{_MODE_WORD}\s+mode\b", re.I),
+    # "open my business workspace"
+    re.compile(rf"\b(?:open|start|enter)\s+(?:my\s+|the\s+)?{_MODE_WORD}\s+workspace\b", re.I),
+    # "coding mode on"
+    re.compile(rf"\b{_MODE_WORD}\s+mode\s+(?:on|please)\b", re.I),
+)
+_MODE_EXIT = re.compile(
+    r"\b(?:exit|leave|quit|stop|end|turn\s+off|close)\s+(?:the\s+)?"
+    r"(?:coding|business|dev|developer|software|this|that)?\s*mode\b|"
+    r"\b(?:back\s+to|return\s+to)\s+(?:the\s+)?(?:default|normal)(?:\s+mode)?\b", re.I)
+
+_MODE_ALIASES = {"coding": "coding", "dev": "coding", "developer": "coding",
+                 "software": "coding", "business": "business",
+                 "default": "default", "normal": "default", "assistant": "default"}
+
+
+_MODE_QUESTION = re.compile(
+    r"\b(?:what|which)\s+mode\b|\bwhat\s+mode\s+are\s+you\s+in\b|"
+    r"\b(?:are\s+you|am\s+i)\s+in\s+\w+\s+mode\b", re.I)
+
+
+def asks_which_mode(text: str) -> bool:
+    """A question about the current mode, as opposed to a command to change it."""
+    return bool(isinstance(text, str) and "mode" in text.lower()
+                and _MODE_QUESTION.search(text))
+
+
+def mode_command(text: str) -> Optional[str]:
+    """The mode this request explicitly asks for, or None.
+
+    None is the answer for every ordinary request, including every business or
+    coding TASK. Doing business work is not asking for Business Mode, and this is
+    the function that keeps those two apart.
+    """
+    # A cheap guard so the ordinary request costs one substring check, not four
+    # regexes. "back to default" carries none of the obvious words, so it is in
+    # here too rather than being silently unmatchable.
+    if not isinstance(text, str):
+        return None
+    lowered = text.lower()
+    if not any(hint in lowered for hint in ("mode", "workspace", "back to", "return to")):
+        return None
+    for pattern in _MODE_COMMANDS:
+        match = pattern.search(text)
+        if match:
+            return _MODE_ALIASES.get(match.group("mode").lower())
+    if _MODE_EXIT.search(text):
+        return "default"
+    return None
+
+
 @dataclass
 class Intent:
     """A reading of one request. Every field is a hint, never an instruction."""

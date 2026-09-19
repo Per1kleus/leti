@@ -43,27 +43,29 @@ ollama:
   # turn sends 15-30 schemas rather than all of them. That is the common case,
   # not the one to size for: when routing is not confident it falls back to the
   # whole list, and that fallback still has to fit. Measured, not estimated:
-  # 130 tools serialise to 90,183 characters, roughly 22,500 tokens. This
+  # 129 tools serialise to 89,298 characters, roughly 22,300 tokens. This
   # comment used to say 9,000 and 16384 used to be enough; the tool count grew
   # past it, which is exactly the silent failure described above. main.py logs a
   # warning at startup if this number stops being big enough again, so the next
   # time it happens it says so instead of looking like a stupid model.
   #
   # Raised from 24576 to 28672 when the tool count went 103 -> 119 (watches and
-  # the controlled GUI mode). At 130 tools a full-fallback turn is ~22,500
-  # tokens of schemas, leaving ~6,100 for the system prompt, personality, user
+  # the controlled GUI mode). At 129 tools a full-fallback turn is ~22,300
+  # tokens of schemas, leaving ~6,300 for the system prompt, personality, user
   # profile, recalled memories, the rolling conversation buffer and accumulated
   # tool results. Don't go below 28672 while the list is this size, and note
-  # that the margin above main.py's 6,000-token reserve is now about 130 tokens.
-  # These numbers are DEFAULT MODE's, which is the biggest a turn gets: since
-  # core/modes.py a turn is only shown its mode's tools, and Coding Mode's whole
-  # fallback is ~11,600 tokens. That is also why adding the coding tools cost
-  # Default Mode one schema rather than four - only the mode switch is visible
-  # from here.
+  # that the margin above main.py's 6,000-token reserve is about 350 tokens.
   #
-  # 130 tokens is thin. The next tool added to DEFAULT mode needs this raised
-  # rather than another description trimmed: descriptions are what the router
-  # matches on, and shaving them to fit is how it starts picking wrong.
+  # These numbers are DEFAULT MODE's, which is the biggest a turn gets: since
+  # core/modes.py a turn is only shown its mode's tools. Coding Mode's whole
+  # fallback is ~11,600 tokens and Business Mode's ~13,100, so neither of the
+  # specialised modes comes close. Adding Business Mode cost Default Mode
+  # NOTHING: its tools are mode-only, and entering a mode is an explicit command
+  # matched in core/intent.py rather than a tool the general assistant carries.
+  #
+  # 350 tokens is still thin. The next tool added to DEFAULT mode needs this
+  # raised rather than another description trimmed: descriptions are what the
+  # router matches on, and shaving them to fit is how it starts picking wrong.
   #
   # On a 12GB card this costs ~0.22 GiB more KV cache with qwen2.5:7b
   # (1.31 -> 1.53 GiB), which still leaves roughly 4 GiB spare. Raising it
