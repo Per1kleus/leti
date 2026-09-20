@@ -45,7 +45,15 @@ DEFAULT_STAGES: Dict[str, float] = {
     "lost": 0.00,
 }
 OPEN_STAGES = [s for s in DEFAULT_STAGES if s not in ("won", "lost")]
-RECORD_TYPES = ("lead", "income", "expense")
+# What the store holds. `goal` is here so load/save round-trip it - load_records
+# returns only these keys and save_records writes what it is given, so a type
+# missing from this tuple would be silently erased by the next write. It is
+# deliberately NOT in USER_RECORD_TYPES: the three below are what
+# record_business_data offers, and a goal is created through the goals layer
+# (core/business_goals.py) which knows what a goal needs. Same file, same
+# atomic write, no second store.
+RECORD_TYPES = ("lead", "income", "expense", "goal")
+USER_RECORD_TYPES = ("lead", "income", "expense")
 
 
 def _store_path() -> Path:
@@ -218,7 +226,7 @@ class RecordBusinessDataTool(BaseTool):
         "Stages, in order: new, contacted, qualified, proposal, negotiation, won, lost."
     )
     parameters = [
-        ToolParameter(name="record_type", type="string", enum=list(RECORD_TYPES),
+        ToolParameter(name="record_type", type="string", enum=list(USER_RECORD_TYPES),
                       description="lead, income, or expense."),
         ToolParameter(name="name", type="string", required=False,
                       description="Lead/company name, or what the income or expense was for."),
@@ -243,8 +251,8 @@ class RecordBusinessDataTool(BaseTool):
                   stage: str = "", source: str = "", service: str = "", category: str = "",
                   contact_id: str = "", date: str = "", notes: str = "", **kwargs) -> ToolResult:
         kind = (record_type or "").lower()
-        if kind not in RECORD_TYPES:
-            return ToolResult(success=False, error=f"record_type must be one of {RECORD_TYPES}.")
+        if kind not in USER_RECORD_TYPES:
+            return ToolResult(success=False, error=f"record_type must be one of {USER_RECORD_TYPES}.")
         if kind == "lead" and not name:
             return ToolResult(success=False, error="A lead needs a name.")
         if kind in ("income", "expense") and not amount:
@@ -336,7 +344,7 @@ class ListBusinessDataTool(BaseTool):
         "Use this to see the records behind a number before acting on it."
     )
     parameters = [
-        ToolParameter(name="record_type", type="string", enum=list(RECORD_TYPES) + ["all"],
+        ToolParameter(name="record_type", type="string", enum=list(USER_RECORD_TYPES) + ["all"],
                       required=False, description="What to list. Default leads."),
         ToolParameter(name="stage", type="string", required=False, description="Only leads in this stage."),
         ToolParameter(name="source", type="string", required=False, description="Only this lead source."),
@@ -349,11 +357,11 @@ class ListBusinessDataTool(BaseTool):
                   period: str = "all", **kwargs) -> ToolResult:
         records = load_records()
         since, until, label = period_bounds(period)
-        kinds = list(RECORD_TYPES) if record_type == "all" else [record_type or "lead"]
+        kinds = list(USER_RECORD_TYPES) if record_type == "all" else [record_type or "lead"]
         output: Dict[str, Any] = {"period": label}
 
         for kind in kinds:
-            if kind not in RECORD_TYPES:
+            if kind not in USER_RECORD_TYPES:
                 return ToolResult(success=False, error=f"Unknown record type '{kind}'.")
             field = "created_at" if kind == "lead" else "date"
             rows = within(records[kind], since, until, field=field)
@@ -411,7 +419,7 @@ class BusinessDashboardTool(BaseTool):
                                     "their_metrics": previous}
 
         records = load_records()
-        if not any(records[kind] for kind in RECORD_TYPES):
+        if not any(records[kind] for kind in USER_RECORD_TYPES):
             output["note"] = (
                 "There are no business records yet, so every figure is zero. Add leads, "
                 "income and expenses with record_business_data - these numbers only "

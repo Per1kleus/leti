@@ -174,7 +174,12 @@ from tools.computer_use import (
     EndComputerSessionTool,
     VerifyScreenTool,
 )
-from tools.business_agent import BusinessBriefingTool
+from tools.business_agent import (
+    BusinessBatchTool,
+    BusinessBriefingTool,
+    BusinessCalendarTool,
+    BusinessGoalsTool,
+)
 from tools.coding_agent import CodeMapTool, GitHubTool, GitWorkspaceTool
 from tools.image_search import SearchImagesTool
 from tools.sketch import CreateSketchTool
@@ -414,6 +419,9 @@ def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSessio
     registry.register(GitWorkspaceTool())
     registry.register(GitHubTool())
     registry.register(BusinessBriefingTool())
+    registry.register(BusinessCalendarTool())
+    registry.register(BusinessGoalsTool())
+    registry.register(BusinessBatchTool())
 
     registry.register(ArchiveProjectTool())
     registry.register(PursueGoalTool())

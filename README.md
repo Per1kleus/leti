@@ -826,7 +826,7 @@ Both specialised modes are *smaller* than Default Mode, not larger:
 |---|---|---|
 | Default | 129 | ~22,300 tokens |
 | Coding | 62 | ~11,600 tokens |
-| Business | 74 | ~13,100 tokens |
+| Business | 77 | ~14,300 tokens |
 
 **Business Mode costs Default Mode nothing.** Its tools are mode-only, and the
 mode switch lives in the specialised modes rather than the general one — so
@@ -844,22 +844,59 @@ spreadsheets, the task manager and the scheduler. **All of those stay available
 in Default Mode.** Business Mode is not a prerequisite for checking email or
 reading an invoice.
 
-What it adds is the thing that reads them together. `business_briefing` answers
-"what should I be doing today" from what is actually there: work waiting on your
-approval, leads that have gone quiet, tasks in flight, scheduled work about to
-run — and, importantly, **which sources it cannot see**. Leti can *create*
-calendar events but has no tool that reads one back, so a briefing says it cannot
-show your meetings rather than showing an empty list.
+What it adds is the things that read those together.
 
-It will not invent a customer, a figure or a date. Observed data, calculated
-figures, assumptions and interpretation are kept visibly apart — a weighted
-pipeline value says in as many words that it is a calculation, not money in.
+**The briefing.** `business_briefing brief` answers "what should I be doing
+today" from what is actually there: what needs your attention, today's meetings,
+leads that have gone quiet, active goals, work in flight, what is scheduled next,
+what is blocked — and **which sources it cannot see**. A source that fails to
+read becomes a named gap, because a section silently missing reads as "nothing to
+report there".
+
+**The calendar, now readable.** `business_calendar` reads the same CalDAV account
+`schedule_meeting` already writes to — today, tomorrow, a week, or a date range,
+with titles, times, durations, attendees and overlap detection. The rule it is
+built around: *a calendar Leti cannot reach is never an empty calendar*. If the
+server refuses, it says it could not look. Only a calendar that was actually read
+and had nothing in it is reported as empty.
+
+**Goals.** Goal → project → task → result, where the projects are Project
+Memory's and the tasks are the task manager's — a goal holds references, not
+copies, and deleting one never touches them. Progress is reported three ways and
+only three: measured (a recorded result against a target you set), by tasks (how
+many linked tasks are done, which it says is *work completed, not the goal
+achieved*), or **not at all**. A goal with no target and no linked tasks reports
+that its progress cannot be determined. It will not produce a percentage from
+nothing.
+
+**Batches, previewed before they happen.** "Follow up with every lead nobody has
+contacted for a month" is eight emails. `business_batch propose` builds the list
+and shows it — eight found, six with addresses, two without, *nothing sent* —
+and then only the items you approve come back to be performed. This is
+orchestration, not permission: approving a batch means "yes, these are the right
+eight", and each email is still sent by `send_email` and still asks SafetyGuard
+exactly as it would on its own. The queue cannot send, write or authorise
+anything, and a test asserts all three.
+
+**Entity resolution.** "The customer", "that lead", "the meeting tomorrow"
+resolve against the data that already exists — leads, contacts, goals, projects,
+tasks, calendar events. Three outcomes and no fourth: one match resolves, several
+matches *ask which*, and nothing matching says so. Acting on the wrong customer
+is worse than asking.
+
+**Numbers with their provenance.** `business_briefing metrics` labels every
+figure `observed` (counted from the records), `calculated` (arithmetic on them)
+or `assumed` (configuration, not fact) — and anything concluded on top is
+interpretation, offered as that. A rate with no denominator comes back as `null`,
+never as zero.
 
 The **Business Workspace** (which business, which project, what the objectives
-are) lives for the session and is released when you leave. It is deliberately not
-a second memory system: anything that should outlive the session becomes a task,
-a lead, a project note or a scheduled workflow, all of which already have
-somewhere to live.
+are) lives for the session and is released when you leave, along with any batch
+nobody acted on. It is deliberately not a second memory system: anything that
+should outlive the session becomes a task, a lead, a goal, a project note or a
+scheduled workflow, all of which already have somewhere to live. Goals are stored
+as a record type in the business file Leti already keeps — same path, same atomic
+write, no second database.
 
 **More capable, not less safe.** Being in Business Mode changes nothing about
 permissions. Sending an email is external and asks first, exactly as it does in
@@ -1203,7 +1240,9 @@ leti/
 │   ├── task_manager.py        # Objectives that outlive a turn: steps, pause/resume, bounded recovery
 │   ├── workflows.py           # Natural-language workflows: trigger + conditions + ordered steps
 │   ├── modes.py               # Default / Coding / Business: which tools exist for this turn
-│   ├── business.py            # Business Mode's brain: the briefing, the session workspace
+│   ├── business.py            # Business Mode's brain: briefing, entities, metrics, workspace
+│   ├── business_goals.py      # Goal -> project -> task -> result, over existing stores
+│   ├── business_approvals.py  # Preview a batch, approve items - never executes anything
 │   ├── coding.py              # Coding Mode's brain: symbols, test selection, verification
 │   ├── git_ops.py             # Git, carefully - checkpoints that cannot eat your work
 │   ├── github_client.py       # GitHub over the API, with a token it never says
@@ -1257,7 +1296,7 @@ leti/
 │   ├── projects.py            # Persistent project workspaces (folder + metadata + context)
 │   ├── autonomous.py          # Start/inspect/control long-running objectives
 │   ├── workflow_tools.py      # Describe a workflow in words, then run it
-│   ├── business_agent.py      # Business Mode's one tool (hidden from Default Mode)
+│   ├── business_agent.py      # Business Mode's four tools (hidden from Default Mode)
 │   ├── coding_agent.py        # Coding Mode's three tools (hidden from Default Mode)
 │   ├── watch_tools.py         # Create/list/change/remove watches, and evaluate the due ones
 │   ├── scheduler.py           # In-app scheduled tasks (the one scheduler)

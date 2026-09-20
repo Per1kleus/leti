@@ -229,6 +229,148 @@ async def _save_to_caldav(ics_text: str, calendar_name: str = "") -> None:
     )
 
 
+# --- Reading the calendar back ---------------------------------------------------
+#
+# The same CalDAV account, the same settings and the same client as the writer
+# above. Leti could create events for a long time before it could read one, which
+# meant a business briefing had to say "I cannot see your calendar" - true, but
+# only because nothing had asked the server the other question yet.
+#
+# Two rules this half is built on. Nothing is cached, watched or polled: an event
+# list is fetched when somebody asks and forgotten afterwards. And an unreachable
+# calendar is never an empty one - _read_events raises, and every caller turns
+# that into "Leti cannot see the calendar", which is a different sentence from
+# "you have no meetings" and the whole reason this exists.
+
+MAX_EVENTS = 60
+MAX_RANGE_DAYS = 90
+
+
+def _event_fields(component: Any) -> Dict[str, Any]:
+    """One VEVENT, reduced to what a person or a briefing actually needs."""
+    def value(name: str) -> Any:
+        try:
+            item = component.get(name)
+            return item.dt if hasattr(item, "dt") else (str(item) if item is not None else None)
+        except Exception:
+            return None
+
+    start, end = value("dtstart"), value("dtend")
+    attendees = []
+    try:
+        raw = component.get("attendee")
+        for entry in (raw if isinstance(raw, list) else [raw] if raw else []):
+            text = str(entry)
+            attendees.append(text.replace("mailto:", "").replace("MAILTO:", ""))
+    except Exception:
+        attendees = []
+
+    minutes = None
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        try:
+            minutes = int((end - start).total_seconds() // 60)
+        except Exception:
+            minutes = None
+
+    return {
+        "title": str(value("summary") or "(no title)"),
+        "starts": start.isoformat() if hasattr(start, "isoformat") else start,
+        "ends": end.isoformat() if hasattr(end, "isoformat") else end,
+        "duration_minutes": minutes,
+        "location": str(value("location")) if value("location") else None,
+        "organiser": (str(value("organizer")).replace("mailto:", "")
+                      if value("organizer") else None),
+        "attendees": attendees[:20],
+        "all_day": not isinstance(start, datetime) and start is not None,
+        "uid": str(value("uid")) if value("uid") else None,
+    }
+
+
+def _read_events_blocking(start: datetime, end: datetime,
+                          calendar_name: str = "") -> List[Dict[str, Any]]:
+    """Events between two moments, from the CalDAV account already configured.
+
+    Raises rather than returning [] when the calendar cannot be reached: every
+    caller depends on being able to tell "no meetings" from "no answer".
+    """
+    import caldav
+
+    cfg = _calendar_settings()
+    client = caldav.DAVClient(url=cfg["caldav_url"], username=cfg["username"],
+                              password=cfg["app_password"])
+    calendars = client.principal().calendars()
+    if not calendars:
+        raise RuntimeError("No calendars found for this CalDAV account.")
+
+    wanted = calendar_name or cfg.get("calendar_name", "")
+    targets = calendars
+    if wanted:
+        named = [c for c in calendars if c.name and c.name.lower() == wanted.lower()]
+        targets = named or calendars
+
+    found: List[Dict[str, Any]] = []
+    for calendar in targets:
+        try:
+            results = calendar.search(start=start, end=end, event=True, expand=True)
+        except TypeError:
+            # Older caldav clients: the same question, the older spelling.
+            results = calendar.date_search(start=start, end=end)
+        for item in results:
+            try:
+                for component in item.icalendar_instance.walk("vevent"):
+                    entry = _event_fields(component)
+                    entry["calendar"] = calendar.name
+                    found.append(entry)
+            except Exception:
+                continue
+            if len(found) >= MAX_EVENTS:
+                break
+    found.sort(key=lambda e: str(e.get("starts") or ""))
+    return found[:MAX_EVENTS]
+
+
+async def read_events(start: datetime, end: datetime,
+                      calendar_name: str = "") -> List[Dict[str, Any]]:
+    """Events in a window. Off the event loop, because caldav is synchronous HTTP."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _read_events_blocking, start, end, calendar_name)
+
+
+def calendar_is_configured() -> bool:
+    """Whether a CalDAV account exists. Says nothing about whether it answers."""
+    cfg = get_settings().get("calendar", {})
+    return all(cfg.get(k) for k in ("caldav_url", "username", "app_password"))
+
+
+def overlapping(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pairs of events that share time. Only where both have real timestamps.
+
+    An all-day event is not treated as a conflict with a meeting inside it: that
+    is normal, and flagging it would make the check noise.
+    """
+    timed = []
+    for event in events:
+        try:
+            if event.get("all_day"):
+                continue
+            starts = datetime.fromisoformat(str(event["starts"]))
+            ends = datetime.fromisoformat(str(event["ends"]))
+            timed.append((starts, ends, event))
+        except (TypeError, ValueError, KeyError):
+            continue
+
+    clashes = []
+    timed.sort(key=lambda item: item[0])
+    for i, (start_a, end_a, first) in enumerate(timed):
+        for start_b, end_b, second in timed[i + 1:]:
+            if start_b >= end_a:
+                break
+            if start_b < end_a and start_a < end_b:
+                clashes.append({"between": [first["title"], second["title"]],
+                                "starts": [first["starts"], second["starts"]]})
+    return clashes[:20]
+
+
 class ScheduleMeetingTool(BaseTool):
     name = "schedule_meeting"
     description = (

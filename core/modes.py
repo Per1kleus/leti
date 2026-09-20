@@ -55,7 +55,8 @@ MODES = (DEFAULT, CODING, BUSINESS)
 # inside a specialised mode, where saying "what am I in" and "leave" are ordinary
 # things to want, and the GUI selector works from anywhere.
 CODING_ONLY_TOOLS = frozenset({"code_map", "git_workspace", "github"})
-BUSINESS_ONLY_TOOLS = frozenset({"business_briefing"})
+BUSINESS_ONLY_TOOLS = frozenset({"business_briefing", "business_calendar",
+                                 "business_goals", "business_batch"})
 SWITCH_TOOL = "switch_mode"
 SPECIALISED_TOOLS = CODING_ONLY_TOOLS | BUSINESS_ONLY_TOOLS | {SWITCH_TOOL}
 

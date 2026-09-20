@@ -29,6 +29,7 @@ rather than a thing it guesses at.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -91,12 +92,16 @@ def open_workspace(business_name: str = "", project: str = "",
 def release() -> None:
     """Leaving Business Mode. Nothing business-specific stays in memory.
 
-    The stores are untouched: leads, tasks, contacts, projects and scheduled work
-    are exactly where they were, because none of them belonged to the workspace.
+    The stores are untouched: leads, goals, tasks, contacts, projects and
+    scheduled work are exactly where they were, because none of them belonged to
+    the workspace. What goes is the session framing and any batch nobody acted on.
     """
     global _workspace
 
     _workspace = None
+    from core import business_approvals
+
+    business_approvals.release()
 
 
 def status() -> Dict[str, Any]:
@@ -133,14 +138,12 @@ def connected_sources() -> Dict[str, str]:
     }
     sources["email"] = ("connected" if settings.get("email", {}).get("username")
                         else "not connected - add it under Connections to read or send mail")
-    # Leti can CREATE calendar events over CalDAV. It has no tool that reads one
-    # back, so a briefing cannot show today's meetings and says so rather than
-    # implying an empty calendar.
     sources["calendar"] = (
-        "write only - Leti can create events but has no tool that reads a calendar back, "
-        "so it cannot list your meetings"
-        if settings.get("calendar", {}).get("caldav_url")
-        else "not connected - add it under Connections to create events")
+        "connected (read and write over CalDAV)"
+        if all(settings.get("calendar", {}).get(k)
+               for k in ("caldav_url", "username", "app_password"))
+        else "not connected - add it under Connections to read or create events")
+    sources["goals"] = "built in"
     return sources
 
 
@@ -163,11 +166,13 @@ def briefing(now: Optional[float] = None) -> Dict[str, Any]:
                          ("work_in_flight", _work_in_flight),
                          ("leads_needing_attention", _stale_leads),
                          ("pipeline", _pipeline),
+                         ("goals", _goals),
+                         ("todays_meetings", _todays_meetings),
                          ("scheduled", _scheduled_soon)):
         try:
             sections[name] = gather(now)
         except Exception as e:
-            sections[name] = []
+            sections[name] = [] if name != "pipeline" else {}
             gaps.append(f"{name}: {e}")
             logger.debug(f"Briefing section {name} unavailable: {e}")
 
@@ -175,15 +180,106 @@ def briefing(now: Optional[float] = None) -> Dict[str, Any]:
     return {
         "as_of": time.strftime("%Y-%m-%d %H:%M", time.localtime(now)),
         "workspace": space.summary() if space else None,
+        # What a person should look at first, gathered from the sections rather
+        # than computed separately - one source of truth per fact.
+        "needs_your_attention": _attention(sections),
         **sections,
+        "blocked": _blocked(sections),
         "cannot_see": _cannot_see(),
         "gaps": gaps or None,
         "how_to_report": (
-            "Lead with what is waiting on the user, then what has gone quiet. Keep "
-            "observed figures separate from anything you worked out, and say when a "
-            "section is empty because there is nothing there rather than because Leti "
-            "cannot see it - 'cannot_see' lists the difference."),
+            "Lead with needs_your_attention, then today's meetings, then what has gone "
+            "quiet. Keep observed figures separate from anything you worked out, and say "
+            "when a section is empty because there is nothing there rather than because "
+            "Leti cannot see it - 'cannot_see' lists that difference and 'gaps' lists "
+            "sources that failed to read."),
     }
+
+
+def _goals(now: float) -> List[Dict[str, Any]]:
+    """Active goals, with progress only where progress is actually knowable."""
+    from core import business_goals
+
+    out = []
+    for goal in business_goals.load_goals():
+        if goal.get("status") in (business_goals.COMPLETED, business_goals.PAUSED):
+            continue
+        out.append(business_goals.describe(goal))
+    return out[:MAX_ITEMS]
+
+
+def _todays_meetings(now: float) -> Dict[str, Any]:
+    """Today's calendar, or why Leti cannot see it.
+
+    The two answers this must never confuse are "you have no meetings" and "Leti
+    could not reach your calendar". An unreachable calendar raises inside
+    read_events and lands in `problem` here; an empty day lands in `events` as an
+    empty list with available=True beside it.
+    """
+    from datetime import datetime, timedelta
+
+    from tools.meeting_scheduler import calendar_is_configured, overlapping
+
+    if not calendar_is_configured():
+        return {"available": False, "events": [],
+                "problem": ("No calendar is connected, so Leti cannot see your meetings. "
+                            "This is not the same as having none."),
+                "fix": "Add a CalDAV calendar under Connections."}
+
+    start = datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        from core.signals import run_blocking
+        from tools.meeting_scheduler import read_events
+
+        events = run_blocking(read_events(start, start + timedelta(days=1)), timeout=30)
+    except Exception as e:
+        return {"available": False, "events": [],
+                "problem": f"Leti could not read the calendar: {e}. That is not an empty day."}
+    return {"available": True, "events": events, "count": len(events),
+            "conflicts": overlapping(events)}
+
+
+def _attention(sections: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The short list, assembled from sections that were already gathered."""
+    from core import business_goals
+
+    attention: List[Dict[str, Any]] = []
+    for waiting in sections.get("waiting_on_you") or []:
+        attention.append({"what": waiting["what"], "why": waiting["why"],
+                          "kind": "waiting for your approval"})
+    quiet = sections.get("leads_needing_attention") or []
+    if quiet:
+        attention.append({
+            "what": f"{len(quiet)} lead(s) have gone quiet",
+            "why": "; ".join(f"{l['lead']} ({l['quiet_for_days']}d)" for l in quiet[:3]),
+            "kind": "follow-up"})
+    try:
+        for flagged in business_goals.needs_attention():
+            attention.append({"what": flagged["goal"], "why": flagged["why"],
+                              "kind": "goal"})
+    except Exception as e:
+        logger.debug(f"Goal attention unavailable: {e}")
+    meetings = sections.get("todays_meetings") or {}
+    if meetings.get("conflicts"):
+        attention.append({"what": f"{len(meetings['conflicts'])} overlapping meeting(s)",
+                          "why": "; ".join(" vs ".join(c["between"])
+                                           for c in meetings["conflicts"][:2]),
+                          "kind": "calendar"})
+    return attention[:MAX_ITEMS]
+
+
+def _blocked(sections: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Things that cannot move until somebody does something."""
+    blocked = []
+    for goal in sections.get("goals") or []:
+        tasks = goal.get("tasks") or {}
+        if goal.get("status") == "blocked" or tasks.get("blocked"):
+            blocked.append({"what": goal.get("name"), "kind": "goal",
+                            "why": (f"{tasks.get('blocked')} linked task(s) blocked"
+                                    if tasks.get("blocked") else "marked blocked")})
+    for waiting in sections.get("waiting_on_you") or []:
+        blocked.append({"what": waiting["what"], "kind": "task", "why": waiting["why"]})
+    return blocked[:MAX_ITEMS]
 
 
 def _waiting_on_you(now: float) -> List[Dict[str, Any]]:
@@ -341,4 +437,228 @@ def follow_ups(now: Optional[float] = None, stale_after_days: float = STALE_LEAD
         "no_way_to_reach": unreachable or None,
         "next": ("Draft each one, show the user, and send only the ones they approve - "
                  "sending is an external action and asks first."),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# "the customer", "that lead", "the project"
+# --------------------------------------------------------------------------- #
+#
+# Resolution over the data that already exists - leads and goals from the business
+# records, people from the contact book, projects from Project Memory, tasks from
+# the task manager, meetings from the calendar. No index and no new store: these
+# are small collections and this is a search, run when a sentence needs it.
+#
+# The rule is the one that makes it safe: several matches is an ANSWER, not a
+# problem to be resolved by picking the first. Acting on the wrong customer is
+# worse than asking which one.
+
+ENTITY_KINDS = ("lead", "contact", "goal", "project", "task", "meeting")
+MAX_CANDIDATES = 6
+
+_REFERENCE_WORDS = frozenset({
+    "the", "that", "this", "our", "my", "a", "an", "customer", "client", "lead",
+    "company", "contact", "person", "goal", "objective", "project", "task",
+    "meeting", "call", "appointment", "quotation", "quote", "proposal", "deal",
+    "opportunity", "we", "are", "working", "with", "previous", "last", "one",
+})
+
+
+def _significant(reference: str) -> List[str]:
+    words = re.findall(r"[A-Za-z0-9][\w'&.-]*", str(reference or "").lower())
+    return [w for w in words if w not in _REFERENCE_WORDS and len(w) > 1]
+
+
+def resolve(reference: str, kind: str = "", now: Optional[float] = None) -> Dict[str, Any]:
+    """What "the customer" refers to, or the candidates, or nothing.
+
+    Three honest outcomes and no fourth. One match resolves it. Several is
+    reported as several, with what distinguishes them, so the next question is
+    "which one". None says so rather than returning the closest thing to hand.
+    """
+    now = now if now is not None else time.time()
+    words = _significant(reference)
+    wanted = [k for k in ENTITY_KINDS if not kind or k == kind]
+    if kind and kind not in ENTITY_KINDS:
+        return {"resolved": None, "candidates": [], "problem":
+                f"'{kind}' is not a business entity. Known: {', '.join(ENTITY_KINDS)}."}
+
+    candidates: List[Dict[str, Any]] = []
+    unavailable: List[str] = []
+    for entity_kind in wanted:
+        try:
+            candidates.extend(_candidates_of(entity_kind, words, now))
+        except Exception as e:
+            unavailable.append(f"{entity_kind}: {e}")
+
+    # With something distinctive to go on, anything that matched none of it is not
+    # a candidate - returning every lead for "Wakanda Industries" would turn "I
+    # cannot find that" into "here are four things it might be".
+    #
+    # A bare reference ("the customer") has nothing to narrow by, so everything of
+    # that kind stays: the right answer when there is one and a question when
+    # there are five.
+    if words:
+        candidates = [c for c in candidates if c.get("score", 0) > 0]
+
+    if len(candidates) == 1:
+        return {"resolved": candidates[0], "candidates": candidates,
+                "how": "one match", "unavailable": unavailable or None}
+    if not candidates:
+        return {"resolved": None, "candidates": [],
+                "problem": (f"Nothing matches '{reference}'."
+                            + (" Sources that could not be read: "
+                               + "; ".join(unavailable) if unavailable else "")),
+                "unavailable": unavailable or None}
+
+    candidates.sort(key=lambda c: -c.get("score", 0))
+    top = candidates[:MAX_CANDIDATES]
+    if len(words) and top[0].get("score", 0) > 0 and (
+            len(top) == 1 or top[0]["score"] > top[1].get("score", 0) * 2):
+        return {"resolved": top[0], "candidates": top, "how": "clearly the best match",
+                "unavailable": unavailable or None}
+    return {"resolved": None, "candidates": top,
+            "ask": (f"'{reference}' could be any of these - which one?"),
+            "unavailable": unavailable or None}
+
+
+def _candidates_of(kind: str, words: List[str], now: float) -> List[Dict[str, Any]]:
+    """Everything of one kind that a reference could mean, scored by name overlap."""
+    def scored(name: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+        lowered = str(name or "").lower()
+        score = sum(2 for w in words if w in lowered)
+        return {"kind": kind, "name": name, "score": score, **extra}
+
+    if kind == "lead":
+        from tools.business import load_records
+
+        return [scored(l.get("name"), {"id": l.get("id"), "stage": l.get("stage"),
+                                       "value": l.get("value")})
+                for l in load_records().get("lead", [])]
+    if kind == "goal":
+        from core import business_goals
+
+        return [scored(g.get("name"), {"id": g.get("id"), "status": g.get("status")})
+                for g in business_goals.load_goals()]
+    if kind == "contact":
+        from tools.contacts import _load
+
+        return [scored(c.get("name"), {"id": c.get("id"), "company": c.get("company"),
+                                       "reachable": bool(c.get("email"))})
+                for c in _load()]
+    if kind == "project":
+        from tools.projects import list_projects
+
+        return [scored(p if isinstance(p, str) else p.get("name"), {})
+                for p in list_projects()]
+    if kind == "task":
+        from core import task_manager
+
+        return [scored(t.get("name"), {"id": t.get("id"), "status": t.get("status")})
+                for t in task_manager.load_tasks()
+                if t.get("status") in task_manager.ACTIVE_STATUSES]
+    if kind == "meeting":
+        from datetime import datetime, timedelta
+
+        from tools.meeting_scheduler import calendar_is_configured, read_events
+
+        if not calendar_is_configured():
+            raise RuntimeError("no calendar is connected")
+        from core.signals import run_blocking
+
+        start = datetime.fromtimestamp(now)
+        events = run_blocking(read_events(start, start + timedelta(days=14)), timeout=30)
+        return [scored(e.get("title"), {"starts": e.get("starts"),
+                                        "attendees": e.get("attendees")})
+                for e in events]
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# Numbers, and where each one came from
+# --------------------------------------------------------------------------- #
+
+OBSERVED = "observed"          # counted directly from a store
+CALCULATED = "calculated"      # arithmetic on observed values
+ASSUMED = "assumed"            # the user or the config said so
+INTERPRETED = "interpreted"    # a judgement, and labelled as one
+
+
+def metrics(now: Optional[float] = None, stale_after_days: float = STALE_LEAD_DAYS
+            ) -> Dict[str, Any]:
+    """Business numbers, each one labelled with how it came to exist.
+
+    The labelling is the feature. "You have 14 active leads" and "your conversion
+    rate is 23%" and "the pipeline looks healthy" are three different kinds of
+    claim, and a business tool that presents them identically is teaching its user
+    to trust the third as much as the first.
+    """
+    now = now if now is not None else time.time()
+    from tools.business import OPEN_STAGES, load_records, stage_weights
+
+    try:
+        records = load_records()
+    except Exception as e:
+        return {"problem": f"The business records could not be read: {e}",
+                "note": "No figures are given rather than figures from nothing."}
+
+    leads = records.get("lead", [])
+    weights = stage_weights()
+    stale_seconds = float(stale_after_days) * 86_400
+
+    open_leads = [l for l in leads if l.get("stage") in OPEN_STAGES]
+    won = [l for l in leads if l.get("stage") == "won"]
+    lost = [l for l in leads if l.get("stage") == "lost"]
+    quiet = [l for l in open_leads
+             if now - float(l.get("stage_changed_at") or l.get("created_at") or now)
+             > stale_seconds]
+
+    from core import task_manager
+
+    try:
+        tasks = task_manager.load_tasks()
+    except Exception:
+        tasks = []
+    completed_tasks = [t for t in tasks if t.get("status") == task_manager.COMPLETED]
+    blocked_tasks = [t for t in tasks if t.get("status") == task_manager.WAITING_FOR_USER]
+
+    observed = {
+        "leads_total": len(leads),
+        "leads_open": len(open_leads),
+        "leads_won": len(won),
+        "leads_lost": len(lost),
+        "leads_quiet": len(quiet),
+        "income_records": len(records.get("income", [])),
+        "expense_records": len(records.get("expense", [])),
+        "tasks_completed": len(completed_tasks),
+        "tasks_waiting_on_you": len(blocked_tasks),
+    }
+
+    decided = len(won) + len(lost)
+    calculated: Dict[str, Any] = {
+        "pipeline_value": round(sum(float(l.get("value", 0) or 0) for l in open_leads), 2),
+        "pipeline_weighted": round(
+            sum(float(l.get("value", 0) or 0) * weights.get(l.get("stage", "new"), 0)
+                for l in open_leads), 2),
+    }
+    if decided:
+        calculated["conversion_rate_percent"] = round(len(won) / decided * 100, 1)
+        calculated["conversion_counted_from"] = f"{len(won)} won of {decided} decided"
+    else:
+        calculated["conversion_rate_percent"] = None
+        calculated["conversion_counted_from"] = (
+            "no lead has been marked won or lost yet, so there is no rate to calculate")
+
+    return {
+        "as_of": time.strftime("%Y-%m-%d %H:%M", time.localtime(now)),
+        OBSERVED: observed,
+        CALCULATED: calculated,
+        ASSUMED: {"stale_after_days": stale_after_days,
+                  "stage_weights": weights,
+                  "where_from": "Leti's defaults unless business.stage_weights is set"},
+        "how_to_report": (
+            "Say which is which. 'observed' was counted from the records; 'calculated' is "
+            "arithmetic on them; 'assumed' is configuration, not fact; anything you "
+            "conclude on top is interpretation and should be offered as that. A figure "
+            "that is None is a figure Leti does not have - never fill one in."),
     }

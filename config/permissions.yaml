@@ -370,6 +370,23 @@ tools:
   business_briefing:
     action: read
 
+  # Reading the calendar the CalDAV account already writes to.
+  business_calendar:
+    action: read
+
+  # Goals are Leti's own records: listing one is a read, changing one is a write.
+  business_goals:
+    action: read
+    action_by_case:
+      read: read
+      write: modify
+
+  # Preparing a batch and recording what happened to it. It performs nothing -
+  # every approved action is carried out by its own tool, with that tool's class,
+  # so this stays a read.
+  business_batch:
+    action: read
+
   code_map:
     action: read
 
