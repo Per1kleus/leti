@@ -237,6 +237,12 @@ def asks_which_mode(text: str) -> bool:
                 and _MODE_QUESTION.search(text))
 
 
+# Exactly these, alone, and nothing that merely starts with them: "exit the
+# browser" is not a mode command.
+_BARE_EXIT = re.compile(r"^(?:exit|leave|go back|back to normal)[.!]?$", re.I)
+DEFAULT_MODE_NAME = "default"
+
+
 def mode_command(text: str) -> Optional[str]:
     """The mode this request explicitly asks for, or None.
 
@@ -250,6 +256,20 @@ def mode_command(text: str) -> Optional[str]:
     if not isinstance(text, str):
         return None
     lowered = text.lower()
+
+    # A bare "exit" while a specialised mode is on. The mode description tells the
+    # user to say exactly that, so it has to work - and it is scoped to a
+    # specialised mode on purpose: in Default Mode there is nothing to exit, and a
+    # one-word command that does something in one state and nothing in another is
+    # better than one that might mean "stop what you are doing".
+    if _BARE_EXIT.match(lowered.strip()):
+        try:
+            from core import modes
+
+            return DEFAULT_MODE_NAME if modes.current() != DEFAULT_MODE_NAME else None
+        except Exception:
+            return None
+
     if not any(hint in lowered for hint in ("mode", "workspace", "back to", "return to")):
         return None
     for pattern in _MODE_COMMANDS:

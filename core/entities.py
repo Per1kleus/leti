@@ -298,10 +298,11 @@ def choose(candidates: Sequence[Dict[str, Any]], reference: str,
     # A reference with something distinctive in it ("Wakanda Industries") rules
     # out everything that matches none of it. A bare one ("the customer") rules
     # out nothing, because there is nothing in it to rule anything out WITH -
-    # every entity of that kind stays a candidate and the answer below is either
-    # the only one there is, or a question.
-    supported = [c for c in scored if c["support"] > 0] if words else list(scored)
-    if not supported:
+    # every entity of that kind stays in play and the context below is what
+    # narrows it.
+    pointed_at = [c for c in scored if c["support"] > 0]
+    in_play = pointed_at if words else list(scored)
+    if not in_play:
         return {
             "resolved": None, "candidates": [],
             "problem": f"Nothing matches {what}.",
@@ -309,18 +310,21 @@ def choose(candidates: Sequence[Dict[str, Any]], reference: str,
             "context_missing": context.unavailable or None,
         }
 
-    # Exactly one candidate in play is not a choice between candidates, so the
-    # support threshold has nothing to say about it. The threshold and the margin
-    # exist for the case this module is really about: several plausible ones, where
+    # Exactly one candidate that anything points at, with nothing pointing
+    # anywhere else, is not a choice between candidates - it is the answer. So is
+    # one candidate full stop. The threshold and the margin below exist for the
+    # case this module is really about: several plausible ones at once, where
     # picking is the failure.
-    if len(supported) == 1:
-        only = supported[0]
+    only = (pointed_at[0] if len(pointed_at) == 1 else
+            in_play[0] if len(in_play) == 1 else None)
+    if only is not None:
         return {
-            "resolved": only, "candidates": supported,
+            "resolved": only, "candidates": in_play[:MAX_CANDIDATES_SHOWN],
             "how": "; ".join(only["because"]) or "it is the only one",
             "context_missing": context.unavailable or None,
         }
 
+    supported = in_play
     top = supported[0]
     runner_up = supported[1]["support"] if len(supported) > 1 else 0
     if top["support"] >= MIN_SUPPORT and (top["support"] - runner_up) >= MARGIN:

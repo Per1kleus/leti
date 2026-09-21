@@ -61,15 +61,22 @@ def worth_tracking(intent: intent_reader.Intent, text: str = "") -> Dict[str, An
     if explicit:
         return {"track": True, "why": f"the request says so ('{explicit}')",
                 "as": "goal"}
-    if intent.is_complex and len(intent.stages) >= MIN_STAGES:
+    # Two conditions, not one. Several stage verbs is not enough on its own:
+    # "write me an email to Chris" matches both `write` and `send` and is one
+    # errand, and treating it as an objective would bury a two-line reply under a
+    # plan. It also has to be SEQUENCED - said as more than one job - which is the
+    # same split core/intent.py uses to decide complexity, read here rather than
+    # restated.
+    clauses = [c for c in intent_reader._STAGE_SPLIT.split(str(text or "")) if c and c.strip()]
+    if intent.is_complex and len(intent.stages) >= MIN_STAGES and len(clauses) >= MIN_STAGES:
         return {"track": True,
                 "why": (f"{len(intent.stages)} distinct stages "
-                        f"({', '.join(intent.stages[:4])})"),
+                        f"({', '.join(intent.stages[:4])}) said as {len(clauses)} jobs"),
                 "as": "task"}
     return {"track": False,
             "why": ("this is one request, not an objective - answer it and stop"
                     if not intent.is_complex else
-                    "it is involved, but it is still one thing"),
+                    "it names several things but asks for one - answer it and stop"),
             "as": None}
 
 
