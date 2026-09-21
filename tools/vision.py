@@ -9,7 +9,7 @@ import base64
 import io
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import mss
 from PIL import Image

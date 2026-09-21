@@ -6,7 +6,6 @@ keeps its own copy, and nothing polls for it.
 """
 from __future__ import annotations
 
-import asyncio
 import re
 from pathlib import Path
 

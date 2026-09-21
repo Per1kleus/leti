@@ -997,6 +997,170 @@ failed with the reason, never quietly completed. The check is an ordinary step,
 so it meets SafetyGuard the ordinary way: if verifying something needs
 permission, the task waits for you like any other step.
 
+## Choosing the context, not accumulating it
+
+Everything above decides what Leti is shown. `core/context_engine.py` decides
+what it is *told*.
+
+A turn used to assemble everything available: the personality, the open
+project's instructions and its whole file list, the user profile, whatever a
+vector search turned up, the full conversation buffer - on a weather question as
+readily as on a code review. Now a request goes through six deterministic steps,
+none of which involves a model:
+
+    UNDERSTAND -> ENTITIES -> SOURCES -> RETRIEVE -> RANK -> PACKAGE
+
+Only the sources that could plausibly help this request are read. A weather
+question inside an open project no longer carries forty filenames. A request
+that stands on its own no longer carries the whole buffer - and one that points
+backwards at all ("compare the first three", "do it", "why?") carries every
+message, because dropping history that mattered costs more than keeping history
+that did not. The long-term memory search only happens when the request could be
+about something remembered; "convert 40 psi to bar" does not get one.
+
+Measured on a furnished install - open project, filled-in profile, ten exchanges
+of history - across ten ordinary requests: **11% less context per turn, about
+315 tokens**, assembled in 2.4 ms. `num_ctx` did not move.
+
+Nothing that lives on a network is ever fetched here. A request that needs the
+calendar, the web, the screen or the contact book is *named* in the package as
+needing a tool, which is honest and more useful than a silent five-second delay
+in front of every turn that mentions email.
+
+What the engine leaves out, it says it left out - the diagnostics panel shows
+the last turn's sources, what was skipped and why, what was dropped to fit, and
+what only a tool can reach.
+
+## Did it actually happen?
+
+A tool call that returns without raising has told you one thing: the call ran.
+Whether the email reached anybody, whether the file on disk holds what was meant
+to be in it, whether the button that was clicked did anything - those are
+different questions, and answering the first as if it were the second is how an
+assistant reports work it did not do.
+
+`core/verification.py` holds one vocabulary for all of it, the one Coding Mode
+has used since it existed:
+
+| | |
+|---|---|
+| **VERIFIED** | something was checked and it holds |
+| **NOT VERIFIED** | it could not be confirmed - which is not the same as fine |
+| **FAILED** | it was checked and it does not hold |
+| **NOT APPLICABLE** | there is nothing here to verify |
+
+Every verifier is free: it reads local state, or the other side's own receipt.
+A file write is checked by reading the file back. A pull request is believed
+because GitHub returned its number. A sent email is **never** reported as
+delivered - that happens on somebody else's machine, minutes later, and the only
+signal Leti could get is a bounce that has not arrived. A shell command exiting 0
+means it ran, not that it did what was wanted, and that is what it says.
+
+When something cannot be confirmed, the model is told inside the tool result,
+where it cannot be missed on the way to writing the answer - and only then. A
+confirmed call adds no text at all.
+
+## Which one did you mean?
+
+Name overlap gets "Acme" right and "the customer" wrong. `core/entities.py` adds
+the signals a person actually uses: it came up two turns ago, it is the project
+that is open, an active task names it, the date in the request lines up, the
+company or stage matches.
+
+The rule underneath is the one that makes it safe, and it lives in exactly one
+function: **one supported candidate resolves; two comparable ones is a question;
+nothing supported is "I cannot find that".** A winner inside one signal's margin
+of the runner-up counts as comparable - Leti asks rather than picks.
+
+This is deterministic matching against things already recorded, not semantics.
+There is no embedding, no similarity model and no learned ranking here, and
+`explain()` says so, because "context-aware resolution" reads like something the
+code cannot do.
+
+## When something does not work
+
+`core/world_state.py` keeps one small record per piece of work in flight - the
+mode, task, goal, project, where it is, the last action that worked, what the
+next one expects, what was actually seen - so a failure can be answered with the
+right response instead of the same response again:
+
+    OBSERVE -> UNDERSTAND -> ACT -> OBSERVE AGAIN -> COMPARE -> CONTINUE or RECOVER
+
+Failures are classified: a wrong action, a tool failure, an environment that
+changed, a stale observation, a permission problem, missing information, a
+missing dependency, somebody else's service, the user intervening, an ambiguous
+state - or **unknown**, which is a real answer here and is used.
+
+The classification decides what happens. A permission problem is never retried
+differently, because retrying a refusal differently is trying to get around it.
+A stale observation is re-observed before anything else is tried. An unknown
+cause is reported as unknown rather than given a plausible fix. Only the kinds
+where a different approach could genuinely work unlock the self-recovery budget
+the task manager already had - and that budget is still two attempts and five
+minutes, because the failure mode of automatic recovery is a machine that will
+not admit defeat.
+
+## Confirmations you can actually answer
+
+"Leti wants to send an email. This reaches outside your computer. Should I go
+ahead?" is a question nobody can answer. `core/autonomy.py` works out what a
+call means from its arguments:
+
+> Leti wants to send the prepared email. This means: 4 recipient(s):
+> a@x.com, b@x.com, c@x.com, d@x.com; subject: "Q3 follow-up". Worth knowing:
+> 2 of them have no usable email address and would be skipped. This cannot be
+> undone. Should I go ahead?
+
+It decides nothing. SafetyGuard still classifies every call, still reads
+`permissions.yaml`, still blocks what is forbidden, still refuses to let a
+critical action ride on an inferred approval. This is text. The other half of
+asking well is not asking: a low-risk action you have already allowed is not
+confirmed again out of politeness, and there is no way for this layer to add a
+prompt SafetyGuard did not want.
+
+Overwriting a file is deliberately *not* described as undoable. It is not,
+without a snapshot, and reassuring somebody about the one thing they should
+hesitate over is worse than saying nothing.
+
+## Run full Leti diagnostics
+
+Say it and Leti checks sixteen subsystems - core, model, Ollama, the tool
+registry, permissions, memory, Project Memory, both specialised modes, calendar,
+GitHub, voice, computer use, the scheduler, workflows and connections - and
+reports each one as PASS, WARNING, FAIL, NOT CONFIGURED, NOT AVAILABLE or
+**NOT TESTED**.
+
+That last one is the point. NOT TESTED outranks PASS in the summary, so a run
+where nothing could be exercised cannot come back "healthy". Nothing the check
+runs writes, sends or deletes anything, and by default nothing is contacted at
+all - the connection states come from settings, not from dialling out. Ask for a
+*deep* check and it will actually contact the model server.
+
+It runs when you ask and never otherwise. There is no background health monitor,
+no timer, and the panel's Run full check button is a button rather than part of
+its refresh.
+
+It is a command, matched deterministically like a mode command, not a tool.
+Every registered tool's schema sits in Default Mode's fallback, which has 348
+tokens of headroom left, and there is nothing here for a model to decide - so it
+costs zero tokens and works by voice.
+
+## Which accounts are set up
+
+`core/connections.py` answers "is that account even configured" in about 29
+microseconds by reading settings, with no network call and no credential leaving
+it. The Connections Manager - the `/settings` sections - still holds the
+credentials; this holds nothing.
+
+It remembers what happened the last time something really used a connection, so
+a repeatedly failing account reads as failing rather than as configured. One
+failure never stops Leti trying again: that would turn a transient error into a
+permanent one.
+
+A request that needs an account Leti has not got is told so before it is
+attempted, with the section to add it under - rather than attempted, failed, and
+reported as an empty result.
+
 ## When Leti brings something up first
 
 Leti can raise things you did not ask about: a task that stopped and is waiting
@@ -1201,9 +1365,28 @@ pip install pytest pytest-asyncio
 pytest
 ```
 
-The suite covers the authorization layer specifically: protected-path
-canonicalization, shell-command path checks, `dry_run`, voice pre-approval
-scoping, audit redaction, atomic state writes, and the subprocess runner.
+1,694 tests. The suite covers the authorization layer specifically:
+protected-path canonicalization, shell-command path checks, `dry_run`, voice
+pre-approval scoping, audit redaction, atomic state writes, and the subprocess
+runner.
+
+Most of the rest are written around a guarantee rather than a function — the
+context engine never drops history a request points back at, verification never
+infers "it happened" from "the call returned", entity resolution never picks
+between two comparable candidates, the failure classifier never retries a
+refusal, the full check never calls something healthy that it did not test.
+Those are checked by breaking them: each one has a mutation that removes it, and
+each mutation is confirmed to fail a test before the code goes back.
+
+Two suites are structural. One audits the architecture — that each capability
+still has one home, that no module defines a second orchestrator or builds its
+own store or calls the model, that mode activation is still deterministic and
+still unreachable from the model. The other pins the cost: no background work,
+no threads started at import, no permanent index, and Default Mode's tool
+fallback still exactly 89,298 characters, so nothing was paid for by raising
+`num_ctx`. `pyflakes` runs over the application on every test run — both bugs it
+found were functions that looked right, were covered by nothing, and raised
+`NameError` the first time a user reached them.
 - **The `/settings` command** — the easier way to actually configure something
   like email or calendar, instead of hand-editing `settings.yaml` and hunting
   for the right line. Type `/settings` in text mode or the GUI's chat box (not
@@ -1247,6 +1430,13 @@ leti/
 │   ├── git_ops.py             # Git, carefully - checkpoints that cannot eat your work
 │   ├── github_client.py       # GitHub over the API, with a token it never says
 │   ├── intent.py              # What the request IS, read deterministically before it is sent
+│   ├── context_engine.py      # Which context this request needs - chosen, not accumulated
+│   ├── verification.py        # VERIFIED / NOT VERIFIED / FAILED / NOT APPLICABLE, for every domain
+│   ├── entities.py            # Which one they meant, and when to ask instead of decide
+│   ├── world_state.py         # What Leti believed, and why something did not work
+│   ├── objectives.py          # GOAL -> PLAN -> ACTIONS -> RESULTS -> PROGRESS -> NEXT ACTION
+│   ├── connections.py         # Which accounts are set up - a view of settings, never a store
+│   ├── autonomy.py            # Turns a confirmation into a question somebody can answer
 │   ├── performance.py         # What a turn may spend, from what it is and what the machine has
 │   ├── proactive.py           # What is worth bringing up unasked - sentences only, never actions
 │   ├── watches.py             # Watch a condition, act when it changes (uses the scheduler below)
@@ -1397,3 +1587,14 @@ To add a new tool:
 - Push-to-talk in `main.py` currently uses silence detection rather than a
   true key-hold listener; wire in a hotkey library (e.g. `pynput`) for a more
   traditional press-and-hold experience if desired.
+- Entity resolution is deterministic signal matching, not semantics. It uses the
+  name, aliases, what was said earlier, the open project, active tasks, dates and
+  recorded relationships — it does not understand that "the turbine people" and
+  "Siemens Energy" are the same customer unless something recorded says so.
+- Verification is free by design, which bounds what it can confirm. A file write
+  is genuinely checked; a sent email is not, and cannot be. Where an external
+  read would be the only confirmation, Leti says NOT VERIFIED and names the call
+  that would settle it rather than making it on every turn.
+- The full diagnostics check does not exercise the microphone, the speakers, the
+  screen or any configured account. Those are reported as NOT TESTED, which is
+  accurate and is not the same as working.
