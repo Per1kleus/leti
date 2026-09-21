@@ -997,6 +997,139 @@ failed with the reason, never quietly completed. The check is an ordinary step,
 so it meets SafetyGuard the ordinary way: if verifying something needs
 permission, the task waits for you like any other step.
 
+## What the user is doing by saying it
+
+`shape` (above) says what a request is *about*. The Intent Layer says what the
+user is **doing** by making it, which is a different question and the one that
+decides whether anything should happen at all:
+
+    conversation - question - information request - command - single-step task
+    multi-step task - watch request - correction - cancellation - continuation
+    clarification
+
+It reports a confidence, whether an external side effect was asked for, whether
+a tool could be needed, whether clarification is required, and whether the
+message refers to work already running. All regex over the text, tens of
+microseconds, no model call.
+
+It has exactly one power, and it is structural rather than advisory: **a request
+that asked for nothing is shown no tools at all.**
+
+- *"That's interesting."* cannot become a web search, because there is nothing to
+  call.
+- *"Maybe we should open the project."* is a request for an opinion. The hedge is
+  the request.
+- *"Do you think we should open it?"* still gets a real answer - a hedged
+  question is a question.
+- *"Interesting - now open Spotify."* still opens Spotify. The imperative is
+  tested clause by clause, because reading from position zero loses the order.
+
+## Stop, pause, resume, skip
+
+Task controls are **cooperative**: a step already in flight finishes, because a
+tool call cannot be un-made by changing a status. So the states say so.
+
+    RUNNING -> PAUSING -> PAUSED
+    RUNNING -> CANCELLING -> CANCELLED
+    PAUSED  -> RESUMING -> RUNNING
+
+What cancellation *can* promise is that nothing further starts - checked before
+every remaining step and before the verification pass - and that the record says
+which steps had already run. A cancelled task is never reported as completed,
+and never as failed either: it did what it was told.
+
+"Stop" is matched deterministically, before any model call, and it outranks
+everything: with nothing named and several tasks running, it stops all of them,
+because a stop that asks a question while the thing it was meant to prevent goes
+ahead is a stop that did not work. Every other control resolves which task
+through the same resolve / ask / nothing-found rule as everything else, and says
+so when it cannot tell.
+
+"Skip this step" marks the step `skipped`, never `done`, so a plan with a hole
+in it looks like one.
+
+## What happened to that task
+
+The task store trims - a state file holding every task forever becomes a slow
+state file - and that trim is why "what happened to the task from yesterday" had
+no answer. Every status transition now also writes a compact record: the
+request, the plan, which steps finished, failed or were skipped, the recovery
+attempts, the verification result, the final result and the reason it stopped.
+No conversation is copied there; conversation lives in the session log.
+
+Records are bounded (200, about 120 KB at capacity) and a record that cannot
+support continuing says so. Asking Leti to carry on with something whose plan
+was never recorded gets what *is* known and a question, not a confident
+resumption of something it cannot describe.
+
+## Recovery that diagnoses
+
+`core/world_state.py` already answered "why did that fail". `core/recovery.py`
+answers the next question - what should the next attempt do differently, and is
+there any point:
+
+    FAILURE -> CLASSIFY -> DIAGNOSE -> RECOVERY OPTION -> ACT -> VERIFY
+            -> CONTINUE or ESCALATE
+
+It executes nothing; it returns text. A refusal is never retried - a different
+route to something that was refused is the thing that was refused. An unknown
+cause escalates rather than being given a plausible fix. A failure that comes
+back **identical** ends recovery rather than spending the budget discovering the
+same thing twice. The ceiling is three attempts and nothing may exceed it.
+
+When recovery stops, the report names five things: what failed, how it was
+classified, what was attempted, why it stopped, and whether a person is needed.
+Every attempt is on the record, so diagnostics never has to guess how many times
+something was tried.
+
+## Several tasks at once
+
+Up to three tasks run concurrently, and never two that would ruin each other's
+work. A task declares what it needs - `file:report.md`, `app:blender`, `screen` -
+read off its own plan, and a task wanting something another is holding stays
+queued with the reason written on it:
+
+> This task needs something another task is using: file:report.md (held by the
+> downloader). It will start when that one finishes, or you can stop the other
+> one.
+
+Reading the same file is not a conflict; writing it is. The screen and the
+keyboard are exclusive, because there is one of each. Nothing polls for a
+conflict to clear - a task finishing is the only thing that can clear one, so
+that is when it is checked.
+
+Ask *"what are you doing?"* and the answer comes from the task store, not the
+model. The interface shows one line when there is more than one task
+("3 active tasks - 1 needs you, 1 waiting, 1 running") and shows whichever task
+needs a person rather than whichever is first.
+
+## Aiming at a thing, not a pixel
+
+A coordinate is the weakest possible description of a target: wrong the moment
+anything moves, and impossible to check afterwards because a pixel has no
+identity. So a step that names something - "the Save button", "the tab called
+General" - is checked against what was actually read off the screen, and
+**refused when that thing is not there.** Clicking where a button used to be is
+the failure this prevents, and it is otherwise silent.
+
+Coordinates still work, and are reported as the weak description they are.
+Nothing here clicks or types: every action is still the existing tool,
+authorised by SafetyGuard exactly as if the user had asked for it directly.
+
+## Watches that say what they did
+
+A watch's action is one of three things and no others: tell you, run a workflow
+you already approved, or start a task - and a task's steps go through the
+orchestrator, which puts every tool call in front of SafetyGuard with the
+unattended rules applied. **There is no path from a watch to a tool that misses
+the guard**, and that is a property of the wiring rather than a promise.
+
+Each watch now reports what its action would need permission for, what its
+action last actually did (in the same VERIFIED / NOT VERIFIED / FAILED
+vocabulary as everything else), and whether it has gone stale - still switched
+on and not evaluated in ten of its own intervals, which usually means nothing is
+running the scheduler.
+
 ## Choosing the context, not accumulating it
 
 Everything above decides what Leti is shown. `core/context_engine.py` decides
@@ -1365,7 +1498,7 @@ pip install pytest pytest-asyncio
 pytest
 ```
 
-1,694 tests. The suite covers the authorization layer specifically:
+1,967 tests. The suite covers the authorization layer specifically:
 protected-path canonicalization, shell-command path checks, `dry_run`, voice
 pre-approval scoping, audit redaction, atomic state writes, and the subprocess
 runner.
@@ -1431,6 +1564,10 @@ leti/
 │   ├── github_client.py       # GitHub over the API, with a token it never says
 │   ├── intent.py              # What the request IS, read deterministically before it is sent
 │   ├── context_engine.py      # Which context this request needs - chosen, not accumulated
+│   ├── task_history.py        # What happened to a task after the store trimmed it
+│   ├── task_control.py        # "Stop" reaching the right task, through the one resolver
+│   ├── task_conflicts.py      # Two tasks, one file: which one waits
+│   ├── recovery.py            # What to try after a failure, and when to stop trying
 │   ├── verification.py        # VERIFIED / NOT VERIFIED / FAILED / NOT APPLICABLE, for every domain
 │   ├── entities.py            # Which one they meant, and when to ask instead of decide
 │   ├── world_state.py         # What Leti believed, and why something did not work
@@ -1598,3 +1735,17 @@ To add a new tool:
 - The full diagnostics check does not exercise the microphone, the speakers, the
   screen or any configured account. Those are reported as NOT TESTED, which is
   accurate and is not the same as working.
+- Task controls are cooperative, not pre-emptive. "Stop" prevents every future
+  action and cannot un-send an email that has already left, and the record says
+  which steps had already run rather than pretending otherwise.
+- Resource conflicts between tasks are declared from the plan's own text, so a
+  task that reaches a file it never mentioned is not protected. Declaring one
+  wrongly costs a needless wait rather than a corrupted file, which is the right
+  direction to be wrong in.
+- Computer Use checks a named target against what `read_screen` reported, which
+  is text. It has no accessibility-tree access, so it cannot tell two identically
+  labelled buttons apart, and a partial match is reported as partial rather than
+  treated as the same thing.
+- Concurrency is capped at three and is about not blocking on somebody else's
+  server, not throughput: every step of every task still goes through the one
+  orchestrator, which serialises turns.

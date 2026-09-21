@@ -45,6 +45,26 @@ def test_a_refusal_is_never_recovered_from(problem):
     assert decision["recover"] is False
     assert decision["decision"] == recovery.ESCALATE
     assert "around a refusal" in decision["say"] or "refused" in decision["diagnosis"]
+    # And the specific instruction, not just the refusal to retry: a different
+    # route to something that was refused is the thing that was refused.
+    assert "a way around a refusal" in decision["say"].lower()
+
+
+def test_a_refusal_stays_unrecoverable_even_without_its_own_entry(monkeypatch):
+    """Defence in depth. _NO_RETRY names refusals explicitly; plan() also fails
+    closed on any kind with no recovery option, so removing one does not remove
+    the guarantee. This pins the second mechanism, which a mutation of the
+    first would otherwise walk straight past."""
+    monkeypatch.setattr(recovery, "_NO_RETRY", {})
+    decision = recovery.plan(PermissionDenied("forbidden path"))
+    assert decision["recover"] is False and decision["decision"] == recovery.ESCALATE
+
+
+def test_an_unrecognised_kind_fails_closed(monkeypatch):
+    monkeypatch.setattr(recovery, "_NO_RETRY", {})
+    monkeypatch.setattr(recovery, "_OPTIONS", {})
+    for problem in (TimeoutError("timed out"), RuntimeError("anything at all")):
+        assert recovery.plan(problem)["recover"] is False
 
 
 @pytest.mark.parametrize("problem,expected", [

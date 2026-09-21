@@ -316,3 +316,106 @@ async def test_the_context_package_names_what_the_request_names(guard_factory):
     orch, _, _ = _orchestrator(guard_factory, [{"content": "ok"}])
     await orch.handle_user_input("read turbine.py and summarise it")
     assert "turbine.py" in orch._context.report()["entities"]
+
+
+# --- The Intent Layer's veto, end to end ------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_remark_is_shown_no_tools_at_all(guard_factory):
+    """The structural version of "don't act on that": there is nothing to call."""
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "Glad you think so."}])
+    await orch.handle_user_input("That's interesting.")
+    assert llm.seen[0]["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_hedged_suggestion_is_shown_no_tools(guard_factory):
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "We could."}])
+    await orch.handle_user_input("Maybe we should open the project.")
+    assert llm.seen[0]["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_real_instruction_still_gets_its_tools(guard_factory, tmp_path):
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "Done."}])
+    await orch.handle_user_input(f"write hello into {tmp_path / 'x.txt'}")
+    assert llm.seen[0]["tools"], "an instruction was shown no tools"
+
+
+@pytest.mark.asyncio
+async def test_an_instruction_behind_a_remark_still_gets_its_tools(guard_factory,
+                                                                   tmp_path):
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "Done."}])
+    await orch.handle_user_input(
+        f"interesting - now write hello into {tmp_path / 'x.txt'}")
+    assert llm.seen[0]["tools"], "the instruction behind the remark lost its tools"
+
+
+@pytest.mark.asyncio
+async def test_the_reading_reaches_the_diagnostics_panel(guard_factory):
+    from core import diagnostics
+
+    diagnostics.reset()
+    orch, _, _ = _orchestrator(guard_factory, [{"content": "ok"}])
+    await orch.handle_user_input("open the project")
+    section = diagnostics.intent_section()
+    assert section["status"] == "ok" and section["kind"] == "command"
+
+
+# --- Lifecycle commands, end to end -------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stop_never_reaches_the_model(guard_factory, tmp_path, monkeypatch):
+    from core import task_history, task_manager
+
+    monkeypatch.setattr(task_manager, "store_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(task_history, "store_path", lambda: tmp_path / "history.json")
+    task = task_manager.create_task("o", ["a"], "the download")
+
+    orch, llm, _ = _orchestrator(guard_factory, [])
+    answer = await orch.handle_user_input("stop")
+    assert llm.seen == [], "a stop went through the model"
+    assert task_manager.get_task(task["id"])["status"] == "cancelled"
+    assert "Nothing further will start" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_lifecycle_command_with_nothing_running_still_answers(guard_factory,
+                                                                     tmp_path,
+                                                                     monkeypatch):
+    from core import task_history, task_manager
+
+    monkeypatch.setattr(task_manager, "store_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(task_history, "store_path", lambda: tmp_path / "history.json")
+    orch, llm, _ = _orchestrator(guard_factory, [])
+    answer = await orch.handle_user_input("pause")
+    assert "nothing" in answer.lower() and llm.seen == []
+
+
+@pytest.mark.asyncio
+async def test_what_are_you_doing_is_answered_from_the_task_store(guard_factory,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+    from core import task_history, task_manager
+
+    monkeypatch.setattr(task_manager, "store_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(task_history, "store_path", lambda: tmp_path / "history.json")
+    task_manager.create_task("o", ["a"], "the download")
+    orch, llm, _ = _orchestrator(guard_factory, [])
+    answer = await orch.handle_user_input("what are you doing?")
+    assert "the download" in answer and llm.seen == []
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_request_mentioning_stopping_is_not_a_stop(guard_factory,
+                                                                     tmp_path,
+                                                                     monkeypatch):
+    from core import task_history, task_manager
+
+    monkeypatch.setattr(task_manager, "store_path", lambda: tmp_path / "tasks.json")
+    monkeypatch.setattr(task_history, "store_path", lambda: tmp_path / "history.json")
+    task = task_manager.create_task("o", ["a"], "the download")
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "Here's how."}])
+    await orch.handle_user_input("how do I stop a systemd service?")
+    assert llm.seen, "an ordinary question was swallowed as a lifecycle command"
+    assert task_manager.get_task(task["id"])["status"] != "cancelled"

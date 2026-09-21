@@ -366,6 +366,12 @@ LIFECYCLE_KINDS = (CANCELLATION, CONTINUATION)
 # be, because the user did not ask for anything to be.
 NO_ACTION_KINDS = (CONVERSATION,)
 
+# How sure a "this is only a remark" reading has to be before it is allowed to
+# withhold tools. The recognised shapes - a greeting, a reaction, a hedge - come
+# back at 0.85 and above; the fallback, which is only "nothing pointed
+# anywhere", comes back at 0.5 and keeps its tools. See Intent.wants_action.
+CONFIDENT_CONVERSATION = 0.8
+
 # A remark. Not a request, not a question, not an instruction - a person
 # reacting to what was just said. The failure this prevents is the expensive
 # one: "that's interesting" becoming a web search.
@@ -461,7 +467,12 @@ _IMPERATIVE = re.compile(
     r"turn|enable|disable|schedule|book|call|email|message|post|publish|deploy|"
     r"analyse|analyze|compare|research|summarise|summarize|explain|draft|"
     r"generate|convert|rename|switch|pause|resume|retry|cancel|watch|monitor|"
-    r"notify|remind|play|pause|restart)\b", re.I)
+    r"notify|remind|play|restart|"
+    r"remember|forget|note|record|log|track|keep|"
+    r"calculate|compute|count|measure|estimate|translate|"
+    r"plan|review|test|verify|confirm|sort|filter|merge|split|clean|"
+    r"print|describe|draw|plot|chart|sketch|clear|reset|sync|refresh|"
+    r"try|use|pick|choose|select|apply|attach|extract|import|export)\b", re.I)
 
 # An interrogative. A question mark is the clearest signal; a leading question
 # word is nearly as good.
@@ -700,8 +711,21 @@ class Intent:
         """Did the user actually ask for something to happen?
 
         The one question the execution path needs answered before it offers a
-        tool. False for a remark, a hedged suggestion and a bare question -
-        which is what stops "that's interesting" becoming a web search.
+        tool - and the answer is deliberately biased towards yes.
+
+        Withholding tools is a real power, so it needs POSITIVE EVIDENCE that
+        this was a remark: a greeting, a recognised reaction, a hedged
+        suggestion. It is never inferred from the absence of evidence that
+        something was a command, because that depends on a verb list being
+        complete and no verb list ever is. An earlier version did infer it, and
+        "remember that I prefer metric units", "calculate 40 psi in bar" and
+        "test the auth module" all came out as remarks with no tools - the
+        failure in the dangerous direction, where a real instruction is silently
+        disarmed and the user cannot tell why.
+
+        So the fallback reading, the one with nothing to go on, keeps its tools.
+        A remark that slips through is shown tools it will not use, which is
+        what Leti did before this layer existed and costs nothing.
         """
         return self.kind not in NO_ACTION_KINDS
 
@@ -808,8 +832,9 @@ def _read(text: str, history: Sequence[Dict[str, Any]]) -> Intent:
     # are deliberately conservative readings: the cost of withholding tools from
     # something that turns out to want one is the model saying so and the user
     # rephrasing; the cost of the reverse is Leti acting on a passing thought.
-    intent.may_need_tool = intent.kind not in (CONVERSATION, QUESTION, CORRECTION,
-                                               CLARIFICATION)
+    # A hint for the report, not a gate: wants_action above is what decides.
+    intent.may_need_tool = intent.wants_action and intent.kind not in (
+        QUESTION, CORRECTION, CLARIFICATION)
     return intent
 
 

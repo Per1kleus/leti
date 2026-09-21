@@ -206,3 +206,41 @@ def test_the_layer_makes_no_model_call():
                if isinstance(n, ast.ImportFrom) and n.module}
     assert "core.llm_client" not in imports
     assert not any("ollama" in (m or "").lower() for m in imports)
+
+
+# --- The veto needs positive evidence, not the absence of evidence -----------------------
+
+@pytest.mark.parametrize("text", [
+    "remember that I prefer metric units",
+    "note that the deadline moved to Friday",
+    "calculate 40 psi in bar",
+    "translate it to greek",
+    "plan the migration",
+    "review my leads",
+    "test the auth module",
+    "verify the build",
+    "track the shipment",
+    "export it to csv",
+])
+def test_an_instruction_is_never_silently_disarmed(text):
+    """An earlier version inferred "remark" from the absence of a known verb,
+    and every one of these came out as a remark with no tools. Withholding
+    tools needs evidence that something WAS a remark."""
+    assert ir.read(text).wants_action is True
+
+
+def test_the_fallback_reading_keeps_its_tools():
+    """Nothing pointed anywhere. That is not evidence of a remark."""
+    reading = ir.read("the flange is purple")
+    assert reading.kind == ir.CONVERSATION
+    assert reading.confidence < ir.CONFIDENT_CONVERSATION
+    assert reading.wants_action is True
+
+
+@pytest.mark.parametrize("text", ["hello", "That's interesting.", "I see",
+                                  "Maybe we should open the project."])
+def test_only_a_confident_remark_withholds_tools(text):
+    reading = ir.read(text)
+    assert reading.kind == ir.CONVERSATION
+    assert reading.confidence >= ir.CONFIDENT_CONVERSATION
+    assert reading.wants_action is False

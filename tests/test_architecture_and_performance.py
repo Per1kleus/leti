@@ -22,7 +22,8 @@ CORE = pathlib.Path("core")
 NEW_MODULES = [
     "core/context_engine.py", "core/verification.py", "core/entities.py",
     "core/world_state.py", "core/objectives.py", "core/connections.py",
-    "core/autonomy.py",
+    "core/autonomy.py", "core/task_history.py", "core/recovery.py",
+    "core/task_conflicts.py", "core/task_control.py",
 ]
 
 
@@ -84,12 +85,61 @@ def test_no_new_module_defines_a_second_orchestrator_or_task_manager():
             assert forbidden not in classes, f"{path} defines a second {forbidden}"
 
 
+# core/task_history.py is the one module here that writes, because a record that
+# outlives the task store's trim has to live somewhere. It is the SAME task
+# system - task_manager calls it on the transitions it was already making - and
+# it owns no lifecycle, which is what "not a second task manager" means.
+_MAY_WRITE = {"core/task_history.py"}
+
+
 def test_no_new_module_builds_its_own_store():
     """A store means a path, a writer and a format. These read what exists."""
     for path in NEW_MODULES:
+        if path in _MAY_WRITE:
+            continue
         calls = _calls(path)
         for forbidden in ("atomic_write_text", "write_text", "mkdir", "connect"):
             assert forbidden not in calls, f"{path} writes its own store ({forbidden})"
+
+
+def test_the_task_history_owns_no_lifecycle():
+    """It records what happened. It never decides what happens."""
+    names, _ = _code_names_of("core/task_history.py")
+    for forbidden in ("pause", "resume", "cancel", "retry", "start", "run",
+                      "_set_status", "skip_step"):
+        assert forbidden not in names, f"core/task_history.py defines or calls {forbidden}"
+
+
+def test_there_is_one_task_store_and_one_history():
+    import re as _re
+
+    stores = []
+    for path in pathlib.Path("core").glob("*.py"):
+        if _re.search(r'STORE_PATH\s*=\s*"\./data/(?:autonomous_tasks|task_history)',
+                      path.read_text()):
+            stores.append(path.name)
+    assert sorted(stores) == ["task_history.py", "task_manager.py"]
+
+
+def test_there_is_one_lifecycle_state_machine():
+    """ALLOWED_FROM is the table. Nothing else declares task statuses."""
+    task_manager = pathlib.Path("core/task_manager.py").read_text()
+    assert "ALLOWED_FROM" in task_manager
+    for path in NEW_MODULES:
+        source = pathlib.Path(path).read_text()
+        assert 'RUNNING = "running"' not in source, f"{path} redeclares task statuses"
+
+
+def _code_names_of(path):
+    names = set()
+    for node in ast.walk(_tree(path)):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+    return names, None
 
 
 def test_no_new_module_calls_the_model():
@@ -106,6 +156,15 @@ def test_there_is_one_verification_vocabulary():
         if re.search(r'^VERIFIED\s*=\s*["\']VERIFIED["\']', source, re.M):
             definitions.append(path.name)
     assert definitions == ["verification.py"], definitions
+
+
+def test_the_recovery_planner_reuses_the_one_classifier():
+    """core/recovery.py decides what to try; core/world_state.py decides why."""
+    names, _ = _code_names_of("core/recovery.py")
+    assert "world_state" in names, "core/recovery.py does not use the classifier"
+    assert "classify" in names, "core/recovery.py does not call classify()"
+    source = pathlib.Path("core/recovery.py").read_text()
+    assert "def classify(" not in source, "a second classifier"
 
 
 def test_there_is_one_failure_classifier():

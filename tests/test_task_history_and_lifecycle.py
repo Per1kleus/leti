@@ -324,6 +324,41 @@ async def test_a_cancelled_task_is_not_verified_afterwards(store):
     assert len(orchestrator.seen) == 1, "a cancelled task was still verified"
 
 
+def test_settle_stop_is_the_one_exit_from_a_transitional_state(store):
+    """The in-loop check and the finally block both call it, so a mutation of
+    either alone is invisible. This pins the function itself."""
+    runner = TaskRunner(FakeOrchestrator())
+
+    task = _task()
+    task_manager._set_status(task["id"], RUNNING)
+    task_manager.pause(task["id"])
+    assert runner._settle_stop(task["id"]) is True
+    assert task_manager.get_task(task["id"])["status"] == PAUSED
+
+    other = _task()
+    task_manager._set_status(other["id"], RUNNING)
+    task_manager.cancel(other["id"])
+    assert runner._settle_stop(other["id"]) is True
+    assert task_manager.get_task(other["id"])["status"] == CANCELLED
+
+    ordinary = _task()
+    task_manager._set_status(ordinary["id"], RUNNING)
+    assert runner._settle_stop(ordinary["id"]) is False
+
+
+def test_a_stop_requested_without_a_status_change_still_settles(store):
+    """The in-memory set is the fast path; it must be honoured on its own."""
+    runner = TaskRunner(FakeOrchestrator())
+    task = _task()
+    task_manager._set_status(task["id"], RUNNING)
+    task_manager._stop_requested.add(task["id"])
+    try:
+        assert runner._settle_stop(task["id"]) is True
+        assert task_manager.get_task(task["id"])["status"] == CANCELLED
+    finally:
+        task_manager.clear_stop(task["id"])
+
+
 # --- Restart -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("left_in,becomes", [
