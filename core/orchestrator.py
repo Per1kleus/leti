@@ -27,7 +27,7 @@ from core.intent_signals import contains_explicit_denial, contains_request_appro
 from core.llm_client import OllamaClient
 from core import artifacts, connections, diagnostics, verification
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
-from core.tool_router import last_user_message, select_tools_for
+from core.tool_router import Routing, last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
 from memory.vector_store import VectorMemory
 from tools.base import ToolRegistry, ToolResult
@@ -553,9 +553,22 @@ class Orchestrator:
         # pass. Routing never raises and its worst case is the full registry, which
         # is exactly what this line used to be.
         _routing_started = time.perf_counter()
-        routing = select_tools_for(last_user_message(messages), self.tool_registry,
-                                   budget=self._mode.tool_budget,
-                                   allowed=modes.visible_tools(self.tool_registry))
+        # The Intent Layer's one veto. A remark is not a request, and a hedged
+        # suggestion is a request for an opinion - so neither is shown a tool at
+        # all. Not "the model should know better": there is nothing to call, so
+        # "that's interesting" cannot become a web search however the sampler
+        # rolls. See core/intent.py's kinds.
+        #
+        # This narrows what is OFFERED and nothing else. Every permission, every
+        # guard and every tool stays exactly as it was; a request that turns out
+        # to need something says so and the next turn has the full list back.
+        if not self._intent.wants_action:
+            routing = Routing(tool_names=[], no_tools=True,
+                              reason=f"{self._intent.kind}: nothing was asked for")
+        else:
+            routing = select_tools_for(last_user_message(messages), self.tool_registry,
+                                       budget=self._mode.tool_budget,
+                                       allowed=modes.visible_tools(self.tool_registry))
         tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
         # Timings for the diagnostics panel, taken while doing the real work rather
         # than by measuring anything extra. Never allowed to affect the turn.

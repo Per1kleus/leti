@@ -30,11 +30,11 @@ import logging
 import re
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
-from core import world_state
+from core import recovery, task_history, world_state
 
 logger = logging.getLogger("leti.tasks")
 
@@ -57,8 +57,44 @@ FAILED = "failed"
 COMPLETED = "completed"
 CANCELLED = "cancelled"
 
-ACTIVE_STATUSES = (QUEUED, RUNNING, PAUSED, WAITING_FOR_USER)
+# Waiting on somebody else's machine rather than on the user - a build, a
+# download, a provider. Distinct from WAITING_FOR_USER because the answer to
+# "which task needs me" must not include it, and distinct from RUNNING because
+# nothing is being attempted.
+WAITING_FOR_EXTERNAL = "waiting_for_external"
+# A step that failed and is being attempted a different way. Visible as its own
+# state so "retrying" never reads as ordinary progress - see core/recovery.py.
+RETRYING = "retrying"
+
+# The in-between states. A task passes through one of these while a control it
+# was given takes effect, so the interface and the runner agree about what is
+# happening during the gap between asking and it being true.
+#
+# They exist because the controls are COOPERATIVE: pause and cancel do not
+# interrupt a step that is already running, so there is a real interval where
+# the task has been told to stop and has not stopped yet. Showing PAUSED during
+# that interval would be a lie, and showing RUNNING would hide the request.
+PAUSING = "pausing"
+CANCELLING = "cancelling"
+RESUMING = "resuming"
+
+TRANSITIONAL_STATUSES = (PAUSING, CANCELLING, RESUMING)
+ACTIVE_STATUSES = (QUEUED, RUNNING, PAUSED, WAITING_FOR_USER, WAITING_FOR_EXTERNAL,
+                   RETRYING) + TRANSITIONAL_STATUSES
 FINISHED_STATUSES = (FAILED, COMPLETED, CANCELLED)
+
+# Which statuses each control may be applied from. One table rather than a
+# condition per function, so the state machine is a thing you can read.
+ALLOWED_FROM = {
+    "pause": (QUEUED, RUNNING, RETRYING, WAITING_FOR_EXTERNAL),
+    "resume": (PAUSED, PAUSING, WAITING_FOR_USER, WAITING_FOR_EXTERNAL, FAILED),
+    "cancel": ACTIVE_STATUSES,
+    "retry": tuple(st for st in ACTIVE_STATUSES + FINISHED_STATUSES
+                   if st not in (RUNNING, COMPLETED)),
+    "skip": (PAUSED, WAITING_FOR_USER, WAITING_FOR_EXTERNAL, FAILED, RETRYING, QUEUED),
+    "approve": (WAITING_FOR_USER,),
+    "reject": (WAITING_FOR_USER,),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -213,7 +249,8 @@ def describe(task: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-STEP_STATES = ("pending", "running", "recovering", "done", "failed", "blocked")
+STEP_STATES = ("pending", "running", "recovering", "done", "failed", "blocked",
+               "skipped")
 
 
 def detail(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -296,7 +333,12 @@ _STATUS_WORDS = {
     QUEUED: "queued",
     RUNNING: "started",
     PAUSED: "paused",
+    PAUSING: "stopping after this step",
+    RESUMING: "resuming",
+    CANCELLING: "cancelling",
+    RETRYING: "retrying a step that failed",
     WAITING_FOR_USER: "waiting for your approval",
+    WAITING_FOR_EXTERNAL: "waiting on something outside this machine",
     FAILED: "failed",
     COMPLETED: "completed",
     CANCELLED: "cancelled",
@@ -313,6 +355,10 @@ def _set_status(task_id: str, status: str, **fields) -> Optional[Dict[str, Any]]
         task["completed_at"] = time.time()
     _replace(task)
     _mirror_to_activity(task, status)
+    # The record that outlives the store's own trim - see core/task_history.py.
+    # Written on every transition, not only at the end, so a task interrupted by
+    # a restart still has one. It never raises into here.
+    task_history.record(task)
     return task
 
 
@@ -380,30 +426,126 @@ def _mirror_to_activity(task: Dict[str, Any], status: str) -> None:
         logger.debug("Couldn't mirror a task status to the activity log.")
 
 
-def pause(task_id: str) -> Optional[Dict[str, Any]]:
-    """Stop after the step that is running. A running step is not interrupted -
-    half a tool call is a worse state to leave behind than one extra step."""
+# Tasks that have been told to stop, in memory, checked by the runner before it
+# does anything further. The STORE is still the source of truth - this is the
+# fast path, so a stop lands between two steps rather than after the next
+# reload - and everything here is mirrored into the store by the functions below.
+#
+# In memory on purpose: after a restart nothing is running, so there is nothing
+# for a stop request to still apply to, and the store already says CANCELLED.
+_stop_requested: Set[str] = set()
+
+
+def stop_requested(task_id: str) -> bool:
+    """Has this task been told to stop? The runner's cooperative check."""
+    if str(task_id) in _stop_requested:
+        return True
     task = get_task(task_id)
-    if task is None or task.get("status") not in (QUEUED, RUNNING):
+    return bool(task and task.get("status") in (CANCELLING, CANCELLED, PAUSING))
+
+
+def clear_stop(task_id: str) -> None:
+    _stop_requested.discard(str(task_id))
+
+
+def pause(task_id: str) -> Optional[Dict[str, Any]]:
+    """Stop after the step that is running.
+
+    A running step is not interrupted: half a tool call is a worse state to
+    leave behind than one extra step, and an external action that has already
+    left this machine cannot be recalled by changing a status. So a running task
+    goes to PAUSING, which says exactly that, and the runner moves it to PAUSED
+    when the step it was in the middle of comes back.
+    """
+    task = get_task(task_id)
+    if task is None or task.get("status") not in ALLOWED_FROM["pause"]:
         return None
-    return _set_status(task_id, PAUSED)
+    if task.get("status") == RUNNING:
+        _stop_requested.add(str(task_id))
+        return _set_status(task_id, PAUSING,
+                           blocked_reason="Pausing after the step that is running.")
+    return _set_status(task_id, PAUSED, blocked_reason=None)
 
 
 def resume(task_id: str) -> Optional[Dict[str, Any]]:
-    """Back to queued, from wherever it stopped. Nothing already done is redone."""
+    """Back in the queue, from wherever it stopped. Nothing already done is redone."""
     task = get_task(task_id)
-    if task is None or task.get("status") not in (PAUSED, WAITING_FOR_USER, FAILED):
+    if task is None or task.get("status") not in ALLOWED_FROM["resume"]:
         return None
-    return _set_status(task_id, QUEUED, blocked_reason=None, error=None)
+    clear_stop(task_id)
+    return _set_status(task_id, RESUMING, blocked_reason=None, error=None)
 
 
 def cancel(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
-    """Stop, and keep everything already done. A cancelled task is not a finished
-    one: its steps keep their own statuses so the history says what happened."""
+    """Stop, and keep everything already done.
+
+    A cancelled task is not a finished one: its steps keep their own statuses so
+    the history says what actually happened. A task that is mid-step goes to
+    CANCELLING first and the runner finalises it - which is the truth, because
+    the step that is running will finish, and claiming CANCELLED while a tool
+    call is in flight would be the status lying about the world.
+
+    What this CAN promise is that nothing further starts: the runner checks
+    stop_requested() before every remaining step and before the verification
+    pass, so cancellation prevents future actions even though it cannot undo the
+    one already under way.
+    """
     task = get_task(task_id)
     if task is None or task.get("status") in FINISHED_STATUSES:
         return None
-    return _set_status(task_id, CANCELLED, blocked_reason=reason or None)
+    _stop_requested.add(str(task_id))
+    if task.get("status") == RUNNING:
+        return _set_status(task_id, CANCELLING,
+                           blocked_reason=reason or "Cancelling after the step in flight.")
+    return finalise_cancel(task_id, reason)
+
+
+def finalise_cancel(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
+    """Move a cancelling task to CANCELLED, recording what already ran.
+
+    Called by the runner when the step in flight comes back, and directly by
+    cancel() when nothing was running. The record of what was already executed
+    is the point: a cancelled task that does not say what it did before it
+    stopped is worse than one that was never cancelled.
+    """
+    task = get_task(task_id)
+    if task is None or task.get("status") in FINISHED_STATUSES:
+        return task
+    executed = [s.get("n", i + 1) for i, s in enumerate(task.get("steps", []))
+                if s.get("status") == "done"]
+    already = (f"Steps already carried out before cancelling: "
+               f"{', '.join(str(n) for n in executed)}." if executed
+               else "Nothing had been carried out yet.")
+    clear_stop(task_id)
+    return _set_status(task_id, CANCELLED,
+                       blocked_reason=((reason + " " if reason else "") + already).strip(),
+                       cancelled_after_steps=executed)
+
+
+def skip_step(task_id: str, reason: str = "") -> Optional[Dict[str, Any]]:
+    """Leave the step that stopped undone and move to the next one.
+
+    The step is marked `skipped`, not `done`: a plan with a hole in it has to
+    look like a plan with a hole in it, both in the task panel and in the
+    history, and the final result says which steps were never carried out.
+    """
+    task = get_task(task_id)
+    if task is None or task.get("status") not in ALLOWED_FROM["skip"]:
+        return None
+    steps = task.get("steps", [])
+    if not steps:
+        return None
+    index = min(task.get("current_step", 0), len(steps) - 1)
+    step = steps[index]
+    step["status"] = "skipped"
+    step["error"] = None
+    step.pop("recovery_instruction", None)
+    _note(step, f"skipped by the user{': ' + reason if reason else ''}")
+    task["current_step"] = index + 1
+    task.setdefault("skipped_steps", []).append(step.get("n", index + 1))
+    _replace(task)
+    clear_stop(task_id)
+    return _set_status(task_id, RESUMING, blocked_reason=None, error=None)
 
 
 def retry(task_id: str) -> Optional[Dict[str, Any]]:
@@ -583,10 +725,13 @@ class TaskRunner:
         task = get_task(task_id)
         if task is None:
             return {"task_id": task_id, "status": "missing"}
-        if task.get("status") not in (QUEUED, RUNNING):
+        # RESUMING is a startable state: it is what resume() and skip_step() leave
+        # behind, and the runner picking it up is what turns it into RUNNING.
+        if task.get("status") not in (QUEUED, RUNNING, RESUMING):
             return describe(task)
 
         self._current = task_id
+        clear_stop(task_id)
         _set_status(task_id, RUNNING)
         # What this task believes about the world while it runs - see
         # core/world_state.py. In memory, one entry, dropped below whatever
@@ -599,15 +744,25 @@ class TaskRunner:
         restore_unattended = self._enter_unattended()
         try:
             while True:
+                # The cooperative stop, checked before anything else happens.
+                # This is what makes cancellation prevent FUTURE actions: the
+                # step in flight finishes, and nothing after it starts.
+                if self._settle_stop(task_id):
+                    break
                 task = get_task(task_id)
-                if task is None or task.get("status") != RUNNING:
-                    break                       # paused or cancelled between steps
+                # RETRYING is running - it is what a step looks like while it is
+                # being attempted a different way, and it exists so that "trying
+                # again" never reads as ordinary progress. Anything else here
+                # means the task was paused or cancelled between steps.
+                if task is None or task.get("status") not in (RUNNING, RETRYING):
+                    break
                 index = task.get("current_step", 0)
                 steps = task.get("steps", [])
                 if index >= len(steps):
                     # Every step is done. That is not the same as the task being
                     # done, and for a task that said what done means it is checked
-                    # rather than assumed.
+                    # rather than assumed. A cancelled task does not get verified:
+                    # verification is more work, and it was told to stop.
                     if not self._verify_or_finish(task_id):
                         break
                     continue
@@ -617,7 +772,41 @@ class TaskRunner:
             restore_unattended()
             self._current = None
             world_state.forget(task_id)
+            # Nothing is ever left mid-transition by the runner: whatever else
+            # happened, a task that was told to pause or cancel ends up in the
+            # state it was told to be in.
+            try:
+                self._settle_stop(task_id)
+            except Exception:
+                logger.exception("Couldn't settle a pending stop")
         return describe(get_task(task_id) or {})
+
+    def _settle_stop(self, task_id: str) -> bool:
+        """Turn a pending stop into the state it asked for. True means stop now.
+
+        The only place PAUSING becomes PAUSED and CANCELLING becomes CANCELLED,
+        so the interval where a task has been told to stop and has not stopped
+        yet has exactly one exit.
+        """
+        task = get_task(task_id)
+        if task is None:
+            return True
+        status = task.get("status")
+        if status == CANCELLING or (str(task_id) in _stop_requested and
+                                    status not in (PAUSING, PAUSED)):
+            finalise_cancel(task_id)
+            return True
+        if status == PAUSING:
+            clear_stop(task_id)
+            executed = [s.get("n", i + 1) for i, s in enumerate(task.get("steps", []))
+                        if s.get("status") == "done"]
+            _set_status(task_id, PAUSED, blocked_reason=(
+                f"Paused after step {max(executed)}." if executed
+                else "Paused before anything ran."))
+            return True
+        if status == PAUSED:
+            return True
+        return False
 
     def _enter_unattended(self) -> Callable[[], None]:
         guard = self.safety_guard
@@ -634,6 +823,10 @@ class TaskRunner:
         step["attempts"] = step.get("attempts", 0) + 1
         step.setdefault("first_attempt_at", time.time())
         step["status"] = "running"
+        if task.get("status") == RETRYING:
+            # Back to RUNNING for the duration of the attempt: RETRYING describes
+            # the gap between a failure and the next try, not the try itself.
+            task["status"] = RUNNING
         # One shot: the approval is consumed as the step starts, so a step that
         # fails for some other reason cannot quietly re-use the user's yes.
         approved = task.pop("approved_step", None) == index
@@ -667,15 +860,24 @@ class TaskRunner:
         if task is None:
             return False
         step = task["steps"][index]
-        if task.get("status") == CANCELLED:
-            # Cancelled while this step was running. The step finished anyway -
-            # the answer is in hand - so it is recorded as finished and the task
+        if task.get("status") in (CANCELLED, CANCELLING, PAUSING) or stop_requested(task_id):
+            # Stopped while this step was running. The step finished anyway - the
+            # answer is in hand - so it is recorded as finished and the task
             # stops. Leaving it as "running" would show a step frozen mid-flight
-            # forever and lose work that actually happened.
+            # forever and lose work that actually happened, and claiming it never
+            # ran would be the record lying about what this machine did.
             step["status"] = "done"
             step["result"] = (answer or "")[:MAX_RESULT_CHARS]
-            _note(step, "finished, but the task was cancelled before the next step")
+            _note(step, "finished, and the task stopped before the next step"
+                        if task.get("status") == PAUSING
+                        else "finished, but the task was cancelled before the next step")
+            # The step really did finish, so the cursor really does move past it.
+            # Leaving it where it was would mean a resumed task repeating a step
+            # whose side effects have already happened - the exact thing pausing
+            # between steps exists to avoid.
+            task["current_step"] = index + 1
             _replace(task)
+            world_state.observe(task_id, answer or "")
             return False
         step["status"] = "done"
         step["result"] = (answer or "")[:MAX_RESULT_CHARS]
@@ -774,28 +976,72 @@ class TaskRunner:
         # authorises it, and nothing here executes anything.
         recoveries = step.get("recoveries", 0)
         elapsed = time.time() - step.get("first_attempt_at", time.time())
-        if (is_recoverable(error) and recoveries < MAX_RECOVERIES_PER_STEP
-                and elapsed < MAX_RECOVERY_SECONDS):
+        # What to try, from core/recovery.py: the diagnosis and the different
+        # approach, or the reason there is no point trying one. It decides;
+        # this enforces. The budget stays here because the step state is here.
+        decision = recovery.plan(
+            error,
+            attempts_used=recoveries,
+            max_attempts=MAX_RECOVERIES_PER_STEP,
+            expected=step.get("expected") or "",
+            observed=(step.get("result") or "")[:500],
+            previous_failures=step.get("failure_fingerprints") or [],
+            cancelled=stop_requested(task_id),
+        )
+        step.setdefault("failure_fingerprints", []).append(decision["fingerprint"])
+        step["failure_fingerprints"] = step["failure_fingerprints"][-6:]
+        # Every attempt is on the record, recovered or not - diagnostics must
+        # never have to guess how many times something was tried.
+        step.setdefault("recovery_log", []).append({
+            "at": time.time(), "kind": decision["kind"],
+            "decision": decision["decision"], "diagnosis": decision["diagnosis"],
+            "error": message[:200],
+        })
+        step["recovery_log"] = step["recovery_log"][-8:]
+
+        if decision["recover"] and elapsed < MAX_RECOVERY_SECONDS:
             step["recoveries"] = recoveries + 1
             step["attempts"] = 0                  # the retries reset for the new approach
             step["status"] = "recovering"
             step["error"] = message
             step["recovery_instruction"] = (
-                world_state.recovery_note(task_id, error)
-                + " Try a different way of doing this same step - an alternative source, "
-                  "address or tool. Do not repeat the approach that just failed, and do "
-                  "not skip the step.")
+                world_state.recovery_note(task_id, error) + " "
+                + recovery.instruction(decision))
+            # The step must be re-checked after a recovered attempt, not assumed
+            # fixed because it did not raise the second time.
+            step["verify_after_recovery"] = decision.get("verify")
             _note(step, f"recovery {step['recoveries']} attempted after: {message}")
             _replace(task)
+            _set_status(task_id, RETRYING, error=None)
             logger.info(f"Task {task_id} step {index + 1}: recovery "
                         f"{step['recoveries']} after {message}")
             return True
 
+        # No recovery, or the budget or the clock is spent. What the user is
+        # told is the five things core/recovery.py names, not "it failed".
+        escalation = decision.get("escalation") or {}
+        if elapsed >= MAX_RECOVERY_SECONDS and decision["recover"]:
+            escalation = {**escalation,
+                          "why_it_stopped": "it had been recovering for too long"}
         step["status"] = "failed"
         step["error"] = message
+        step["escalation"] = escalation
         _replace(task)
-        _set_status(task_id, FAILED, error=f"Step {index + 1} failed: {message}")
-        self._announce(f"'{task['name']}' failed at step {index + 1}: {message}")
+        remaining = [s.get("n", i + 1) for i, s in enumerate(task.get("steps", []))
+                     if s.get("status") in ("pending", "recovering")]
+        # Deliberately FAILED, never WAITING_FOR_USER. The case where the user
+        # CAN unblock a step - the guard asking for a confirmation nobody was
+        # there to give - is handled above by _needs_approval, and it has a
+        # button behind it. Everything reaching here is something no approval
+        # fixes: a forbidden path, a missing package, an unknown cause. Parking
+        # one of those in WAITING_FOR_USER would show an Approve button that
+        # cannot work, which is worse than saying it failed.
+        _set_status(
+            task_id, FAILED,
+            error=f"Step {index + 1} failed: {message}",
+            escalation={**escalation, "still_incomplete": remaining,
+                        "what_to_tell_the_user": decision.get("say")})
+        self._announce(f"'{task['name']}' stopped at step {index + 1}: {message}")
         return False
 
     def _finish(self, task_id: str) -> None:
@@ -891,13 +1137,33 @@ def recover_interrupted() -> List[Dict[str, Any]]:
     tasks = load_tasks()
     recovered = []
     for task in tasks:
-        if task.get("status") == RUNNING:
+        status = task.get("status")
+        if status == RUNNING:
             task["status"] = PAUSED
             task["blocked_reason"] = (
                 "Leti restarted while this task was running. Nothing was repeated - "
                 "resume it when you are ready.")
-            task["updated_at"] = time.time()
-            recovered.append(task)
+        elif status == CANCELLING:
+            # It had been told to stop and the runner never got to finish the
+            # job. It is cancelled; that was the instruction.
+            task["status"] = CANCELLED
+            task["completed_at"] = time.time()
+            task["blocked_reason"] = (
+                (task.get("blocked_reason") or "Cancelled.")
+                + " Leti restarted before the step in flight came back, so whether "
+                  "that one step completed is not known.")
+        elif status in (PAUSING, RESUMING):
+            # Neither ever survives a restart: nothing is running for a pause to
+            # take effect on, and nothing picked the resume up.
+            task["status"] = PAUSED
+            task["blocked_reason"] = (
+                "Leti restarted before this took effect. Resume it when you are ready.")
+        else:
+            continue
+        task["updated_at"] = time.time()
+        recovered.append(task)
     if recovered:
         save_tasks(tasks)
+        for task in recovered:
+            task_history.record(task)
     return recovered

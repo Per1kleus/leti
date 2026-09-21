@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------- #
 # The shapes a request comes in
@@ -323,6 +323,350 @@ def asks_for_diagnostics(text: str) -> Optional[Dict[str, Any]]:
     return {"reach_out": bool(_DIAGNOSTICS_DEEP.search(text))}
 
 
+# --------------------------------------------------------------------------- #
+# What KIND of thing the user just said
+#
+# `shape` above is about what a request is ABOUT - files, mail, the screen - and
+# is what the router and the context engine read. This is the other question,
+# which nothing used to ask: what is the user DOING by saying it. A remark, a
+# question, an order, a correction, a cancellation.
+#
+# The two are orthogonal and both are kept. "Open the project" and "maybe we
+# should open the project" have the same shape and want completely different
+# treatment, and the difference is here rather than in the shape.
+#
+# Everything below is regex and word lists over the text, in tens of
+# microseconds. There is no model call: a classifier in front of every message
+# would double the cost of the cheapest turns to answer a question that the
+# words themselves already settle.
+# --------------------------------------------------------------------------- #
+
+CONVERSATION = "conversation"              # a remark; nothing is being asked for
+INFORMATION_REQUEST = "information_request"  # look something up and tell me
+COMMAND = "command"                        # do this, now, one action
+SINGLE_STEP_TASK = "single_step_task"      # one job, possibly a few tool calls
+MULTI_STEP_TASK = "multi_step_task"        # several distinct jobs in order
+WATCH_REQUEST = "watch_request"            # keep looking, tell me when
+CORRECTION = "correction"                  # that was wrong; here is what I meant
+CANCELLATION = "cancellation"              # stop, and do not continue
+CONTINUATION = "continuation"              # pick up what was already happening
+CLARIFICATION = "clarification"            # answering, or asking for, a question
+# QUESTION is defined above and is a kind as well as a shape: "what is a turbine"
+# is one thing to answer whichever way you look at it.
+
+KINDS = (CONVERSATION, QUESTION, INFORMATION_REQUEST, COMMAND, SINGLE_STEP_TASK,
+         MULTI_STEP_TASK, WATCH_REQUEST, CORRECTION, CANCELLATION, CONTINUATION,
+         CLARIFICATION)
+
+# Kinds that are ABOUT something already in flight rather than about new work.
+# The orchestrator routes these to the task they refer to instead of to the model.
+LIFECYCLE_KINDS = (CANCELLATION, CONTINUATION)
+
+# Kinds where nothing should be done. Not "nothing needs doing" - nothing SHOULD
+# be, because the user did not ask for anything to be.
+NO_ACTION_KINDS = (CONVERSATION,)
+
+# A remark. Not a request, not a question, not an instruction - a person
+# reacting to what was just said. The failure this prevents is the expensive
+# one: "that's interesting" becoming a web search.
+#
+# Anchored to the whole message on purpose. "Interesting - now open Spotify" is
+# not a remark, and treating it as one loses the request.
+_REACTION = re.compile(
+    r"^\W*(?:"
+    r"(?:that'?s|that is|this is|that was|it'?s|it is)\s+"
+    r"(?:really\s+|very\s+|quite\s+|so\s+|pretty\s+)?"
+    r"(?:interesting|cool|nice|neat|clever|useful|helpful|great|good|bad|odd|weird|"
+    r"strange|annoying|frustrating|true|fair|right|wrong|surprising|impressive|"
+    r"amazing|terrible|awful|funny|sad|unfortunate)"
+    r"|(?:i\s+)?(?:see|understand|agree|know|thought so|get it|like that)"
+    r"|makes sense|fair enough|good to know|got it|noted|understood|of course|"
+    r"no worries|never mind then|"
+    r"(?:wow|huh|oh|ah|hmm+|yikes|ouch|damn|nice one|well done|good job|"
+    r"interesting|lovely|brilliant|exactly|indeed|true|agreed|same here)"
+    r")"
+    r"[\s,.!?\u2026]*$", re.I)
+
+# Hedged suggestions. "Maybe we should open the project" names an action and
+# asks for none: the hedge IS the request, and it is a request for an opinion.
+# Acting on it is the model deciding the user was being coy, which they were not.
+_HEDGE = re.compile(
+    r"^\W*(?:"
+    r"maybe|perhaps|possibly|probably|i wonder|i was wondering|i think we|"
+    r"(?:we|you|i)\s+(?:could|might|may|should probably)|"
+    r"it (?:might|may|could) be (?:worth|good|better|a good idea)|"
+    r"(?:would|wouldn'?t) it be|"
+    r"(?:do you think|what do you think|any thoughts|thoughts on)|"
+    r"(?:i'?m|im) (?:thinking|considering|wondering)"
+    r")\b", re.I)
+
+# An explicit instruction beats a hedge in the same sentence: "maybe later, but
+# open it now" is an order with a hedge in front of it.
+_OVERRIDE_HEDGE = re.compile(
+    r"\b(?:just do it|do it now|go ahead|please do|right now|now(?:,| )?\s*(?:open|run|"
+    r"start|send|do)\b|actually,? (?:open|run|start|send|do)\b)", re.I)
+
+# Stop. The highest-priority reading there is, and deliberately the narrowest -
+# it takes precedence over a running task, so a false positive costs work.
+_CANCELLATION = re.compile(
+    r"^\W*(?:please\s+|leti,?\s+|now\s+|just\s+|ok(?:ay)?,?\s+)?"
+    r"(?:"
+    r"stop|halt|abort|cancel|quit|"
+    r"(?:stop|cancel|abort|kill|end)\s+(?:it|that|this|them|everything|all of it|"
+    r"the\s+[\w-]+(?:\s+[\w-]+)?|my\s+[\w-]+(?:\s+[\w-]+)?)|"
+    r"never ?mind|nevermind|forget (?:it|that|about it)|drop it|leave it|"
+    r"don'?t(?:\s+do)?\s+(?:that|it|bother)"
+    r")"
+    r"[\s,.!?]*$", re.I)
+
+# Carry on with something that already exists.
+_CONTINUATION = re.compile(
+    r"^\W*(?:"
+    r"continue|resume|carry on|keep going|go on|pick (?:it |that )?up|"
+    r"(?:continue|resume|finish|carry on with) (?:the|that|my|it)\b.*|"
+    r"where (?:were|was) (?:we|you|it)|what (?:were|was) (?:you|we) doing|"
+    r"back to (?:that|it|the)\b.*"
+    r")[\s,.!?]*$", re.I)
+
+# "No, I meant the other one." A correction points at something already said and
+# says it was read wrong. It is never new work on its own.
+_CORRECTION = re.compile(
+    r"^\W*(?:"
+    r"no,?\s+(?:i (?:meant|said)|not|that'?s not|wrong)|"
+    r"(?:i (?:meant|said))\b|"
+    r"that'?s (?:not (?:what|right|it)|wrong)|"
+    r"not (?:that|those|it|what i)\b|"
+    r"wrong (?:one|file|person|thing|project)\b|"
+    r"actually,?\s+i\b|"
+    r"i didn'?t (?:mean|say|ask)"
+    r")", re.I)
+
+# Asking for, or giving, a clarification.
+_CLARIFICATION = re.compile(
+    r"^\W*(?:"
+    r"what do you mean|which (?:one|of them|did you)|"
+    r"(?:can you )?(?:be more specific|clarify|explain what you)|"
+    r"i don'?t (?:understand|follow)|"
+    r"(?:the|i mean(?:t)? the) (?:first|second|third|last|other) one"
+    r")\b", re.I)
+
+# An imperative aimed at Leti. The leading verb is the signal; a sentence that
+# starts with one is an instruction in English, and one that does not, is not.
+_IMPERATIVE = re.compile(
+    r"^\W*(?:please\s+|now\s+|leti,?\s+|can you\s+|could you\s+|would you\s+|"
+    r"i(?:'| a)?m going to need you to\s+|i need you to\s+|i want you to\s+)?"
+    r"(?:go\s+)?(?:open|close|run|start|stop|launch|send|write|read|create|make|"
+    r"delete|remove|move|copy|save|find|search|look|check|show|list|tell|give|"
+    r"add|update|edit|fix|build|install|download|upload|click|type|press|set|"
+    r"turn|enable|disable|schedule|book|call|email|message|post|publish|deploy|"
+    r"analyse|analyze|compare|research|summarise|summarize|explain|draft|"
+    r"generate|convert|rename|switch|pause|resume|retry|cancel|watch|monitor|"
+    r"notify|remind|play|pause|restart)\b", re.I)
+
+# An interrogative. A question mark is the clearest signal; a leading question
+# word is nearly as good.
+_INTERROGATIVE = re.compile(
+    r"^\W*(?:what|who|when|where|why|how|which|is|are|was|were|do|does|did|can|"
+    r"could|should|would|will|has|have|had|am)\b", re.I)
+
+# Words that point at a piece of work already in flight.
+_ABOUT_A_TASK = re.compile(
+    r"\b(?:that task|the task|this task|the job|that job|it|the download|the build|"
+    r"the research|the analysis|yesterday'?s|from yesterday|earlier|the last one|"
+    r"the one (?:you|we) (?:were|was|started)|what (?:you|we) (?:were|was) doing)\b",
+    re.I)
+
+
+# Clause boundaries, for finding an instruction that arrives behind something
+# else. Deliberately punctuation and the plainest sequencing words only.
+_CLAUSE_SPLIT = re.compile(r"\s*(?:[-\u2013\u2014;.!?]+|,|\bthen\b|\band then\b)\s*")
+
+# What makes an answer depend on the world rather than on knowledge. A question
+# with one of these in it cannot be answered from the model alone.
+_NEEDS_CURRENT_DATA = re.compile(
+    r"\b(price|cost|worth|weather|status|now|today|tonight|tomorrow|current|currently|"
+    r"latest|recent|how much|how many|show me|list|when is|when does|schedule|"
+    r"calendar|stock|shares|news|running|open|installed|left|remaining|my\s+\w+)\b",
+    re.I)
+
+
+def _classify(text: str, intent: "Intent") -> Tuple[str, float]:
+    """What kind of thing this is, and how sure that reading is.
+
+    Order is the whole design. Cancellation comes first because "stop" has to
+    outrank everything, including a sentence that also looks like an
+    instruction. Conversation comes before the imperative test because "maybe we
+    should open it" contains "open" and is not an order.
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return CONVERSATION, 1.0
+
+    from core.tool_router import _PURE_CHAT
+
+    # Clause by clause, for the same reason the imperative test is: "cool,
+    # cancel the download" is a cancellation with a reaction in front of it.
+    # Both patterns require a clause to be ENTIRELY the command, so "don't
+    # cancel that" and "stop worrying about it" do not match either of them.
+    clauses = [c.strip() for c in _CLAUSE_SPLIT.split(stripped) if c.strip()]
+    if any(_CANCELLATION.match(c) for c in clauses):
+        return CANCELLATION, 1.0
+    if any(_CONTINUATION.match(c) for c in clauses):
+        return CONTINUATION, 0.95
+    if _PURE_CHAT.match(stripped) or _REACTION.match(stripped):
+        return CONVERSATION, 1.0
+    if _HEDGE.match(stripped) and not _OVERRIDE_HEDGE.search(stripped):
+        # A hedged sentence that ends in a question mark is still a question -
+        # "do you think we should open it?" wants an answer, not silence.
+        return (QUESTION if stripped.endswith("?") else CONVERSATION), 0.85
+    if _CORRECTION.match(stripped):
+        return CORRECTION, 0.9
+    if _CLARIFICATION.match(stripped):
+        return CLARIFICATION, 0.85
+
+    if intent.shape == MONITORING:
+        return WATCH_REQUEST, 0.9
+
+    # An instruction can arrive behind a remark: "interesting - now open
+    # Spotify" is an order with a reaction in front of it, and reading the whole
+    # string from position zero loses the order entirely. So each clause gets
+    # the test, and one imperative clause makes the message an instruction.
+    imperative = any(_IMPERATIVE.match(clause.strip())
+                     for clause in _CLAUSE_SPLIT.split(stripped) if clause.strip())
+    interrogative = stripped.endswith("?") or bool(_INTERROGATIVE.match(stripped))
+
+    if intent.complexity == COMPLEX and len(intent.stages) >= 2:
+        return MULTI_STEP_TASK, 0.9 if imperative else 0.7
+
+    if imperative:
+        # A one-action instruction is a command; anything with a stage verb in it
+        # is a job that will take a few calls.
+        if intent.stages or intent.shape in (RESEARCH, FILE_TASK, COMMUNICATION):
+            return SINGLE_STEP_TASK, 0.85
+        return COMMAND, 0.9
+
+    if interrogative:
+        # "What is the price of AAPL" needs a lookup; "what is a turbine" does
+        # not. The difference is whether the answer depends on the state of the
+        # world right now, which _NEEDS_CURRENT_DATA is the test for - the
+        # RETRIEVAL shape is too broad for it, because "what is" puts every
+        # question in that shape.
+        if _NEEDS_CURRENT_DATA.search(stripped) or intent.shape == RESEARCH:
+            return INFORMATION_REQUEST, 0.8
+        return QUESTION, 0.85
+
+    # Nothing pointed anywhere. A declarative sentence that named no action is a
+    # remark; one that named an action without asking for it is also a remark,
+    # and both are safer read that way than as work.
+    return CONVERSATION, 0.5
+
+
+# --------------------------------------------------------------------------- #
+# Lifecycle commands
+#
+# "Stop.", "Pause.", "Resume.", "Retry.", "Skip this step.", "What are you
+# waiting for?" - things said ABOUT work already running rather than requests
+# for new work. Matched here, deterministically, before any model call, for the
+# same reason mode commands are: a running task must not depend on a model
+# agreeing that "stop" means stop.
+#
+# The target hint is whatever came after the verb. It is passed to the existing
+# task resolution rather than being resolved here - which task is meant is a
+# question core/task_manager.py and core/entities.py already answer.
+# --------------------------------------------------------------------------- #
+
+STOP = "stop"
+PAUSE = "pause"
+RESUME = "resume"
+RETRY = "retry"
+SKIP = "skip"
+STATUS = "status"
+WAITING = "waiting"
+
+LIFECYCLE_ACTIONS = (STOP, PAUSE, RESUME, RETRY, SKIP, STATUS, WAITING)
+
+_LIFECYCLE = (
+    # Stop first, always. It outranks everything else that could be read out of
+    # the same sentence, because the cost of a missed stop is an action nobody
+    # wanted and the cost of a spurious one is a task that has to be resumed.
+    (STOP, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+|just\s+|now\s+|ok(?:ay)?,?\s+)?"
+        r"(?:stop|halt|abort|cancel|quit|kill)"
+        r"(?:\s+(?:it|that|this|them|everything|all of it|all tasks|"
+        r"the\s+[\w-]+(?:\s+[\w-]+)?|my\s+[\w-]+(?:\s+[\w-]+)?))?"
+        r"[\s,.!?]*$", re.I)),
+    (PAUSE, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+|just\s+)?"
+        r"(?:pause|hold|wait|hang on|suspend)"
+        r"(?:\s+(?:it|that|this|on|a moment|"
+        r"the\s+[\w-]+(?:\s+[\w-]+)?))?"
+        r"[\s,.!?]*$", re.I)),
+    (RESUME, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+|ok(?:ay)?,?\s+|now\s+)?"
+        r"(?:resume|continue|carry on|keep going|go on|unpause|pick up)"
+        r"(?:\s+(?:it|that|this|with\s+\w+|"
+        r"(?:the|my|that)\s+[\w-]+(?:\s+[\w-]+)?))?"
+        r"[\s,.!?]*$", re.I)),
+    (RETRY, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+|just\s+)?"
+        r"(?:retry|try again|try it again|do it again|run it again|"
+        r"retry\s+(?:it|that|this|the\s+[\w-]+(?:\s+[\w-]+)?))"
+        r"[\s,.!?]*$", re.I)),
+    (SKIP, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+|just\s+)?"
+        r"(?:skip|skip (?:it|this|that|this step|the step|ahead)|"
+        r"move on|next step|go to the next)"
+        r"[\s,.!?]*$", re.I)),
+    (WAITING, re.compile(
+        r"^\W*(?:what|who|why)\s+(?:are|is)\s+(?:you|it|that)\s+"
+        r"(?:waiting (?:for|on)|blocked (?:on|by)|stuck (?:on|at))"
+        r"[\s,.!?]*$", re.I)),
+    (STATUS, re.compile(
+        r"^\W*(?:"
+        r"what are you (?:doing|working on|up to)|"
+        r"(?:show|list)(?: me)?(?: my| the)? (?:active |running |current )?tasks|"
+        r"what(?:'s| is) running|what tasks|"
+        r"which task(?:s)? (?:needs?|wants?|requires?) (?:me|my attention|input)|"
+        r"what (?:needs|wants) (?:me|my attention)|"
+        r"(?:任务)|"
+        r"task status|status of (?:my |the )?tasks?"
+        r")[\s,.!?]*$", re.I)),
+)
+
+
+def lifecycle_command(text: str) -> Optional[Dict[str, Any]]:
+    """A command about work already in flight, or None.
+
+    None for every ordinary request. The hint is the words after the verb, left
+    exactly as the user said them so the existing task resolution can do what it
+    already does with "the research task".
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped or len(stripped) > 120:
+        return None
+    for action, pattern in _LIFECYCLE:
+        match = pattern.match(stripped)
+        if match:
+            hint = re.sub(
+                r"^\W*(?:please|leti,?|just|now|ok(?:ay)?,?)?\s*"
+                r"(?:stop|halt|abort|cancel|quit|kill|pause|hold|wait|hang on|suspend|"
+                r"resume|continue|carry on|keep going|go on|unpause|pick up|retry|"
+                r"try again|skip|move on)\s*",
+                "", stripped, flags=re.I)
+            hint = re.sub(r"^(?:it|that|this|them|the|my|with|on)\b\s*", "", hint,
+                          flags=re.I).strip(" ,.!?")
+            # status and waiting are about every task, not one of them, so a
+            # hint scraped off the question would only mislead the resolver.
+            if action in (STATUS, WAITING):
+                hint = ""
+            return {"action": action, "hint": hint,
+                    "everything": bool(re.search(r"\b(everything|all of it|all tasks)\b",
+                                                 stripped, re.I))}
+    return None
+
+
 @dataclass
 class Intent:
     """A reading of one request. Every field is a hint, never an instruction."""
@@ -338,9 +682,43 @@ class Intent:
     refers_back: bool = False
     question_to_ask: str = ""
 
+    # The Intent Layer. `shape` says what the request is about; these say what
+    # the user is doing by making it, and what may follow from that.
+    kind: str = CONVERSATION
+    confidence: float = 0.0
+    side_effect: bool = False          # something outside this machine is asked for
+    may_need_tool: bool = True         # a tool could plausibly be required
+    needs_clarification: bool = False  # proceeding would mean guessing
+    about_task: bool = False           # this refers to work already in flight
+
     @property
     def is_complex(self) -> bool:
         return self.complexity == COMPLEX
+
+    @property
+    def wants_action(self) -> bool:
+        """Did the user actually ask for something to happen?
+
+        The one question the execution path needs answered before it offers a
+        tool. False for a remark, a hedged suggestion and a bare question -
+        which is what stops "that's interesting" becoming a web search.
+        """
+        return self.kind not in NO_ACTION_KINDS
+
+    def as_dict(self) -> Dict[str, Any]:
+        """The Intent Layer's structured output, for diagnostics and tests."""
+        return {
+            "kind": self.kind,
+            "confidence": round(self.confidence, 2),
+            "shape": self.shape,
+            "complexity": self.complexity,
+            "side_effect_requested": self.side_effect,
+            "tool_possibly_required": self.may_need_tool,
+            "clarification_required": self.needs_clarification,
+            "belongs_to_existing_task": self.about_task,
+            "entities": list(self.entities),
+            "stages": list(self.stages),
+        }
 
     def as_objective(self) -> Dict[str, Any]:
         """The structured objective, for a task or for the system note below."""
@@ -354,7 +732,10 @@ def read(text: str, history: Optional[Sequence[Dict[str, Any]]] = None) -> Inten
     try:
         return _read(text or "", history or ())
     except Exception:            # a hint that fails is not a turn that fails
-        return Intent()
+        # An unreadable request is treated as an ordinary one that may need a
+        # tool, NOT as a remark: failing closed here would mean a parser bug
+        # silently making Leti refuse to act.
+        return Intent(kind=QUESTION, confidence=0.0, may_need_tool=True)
 
 
 def _read(text: str, history: Sequence[Dict[str, Any]]) -> Intent:
@@ -364,7 +745,8 @@ def _read(text: str, history: Sequence[Dict[str, Any]]) -> Intent:
     from core.tool_router import _PURE_CHAT     # one definition of "just chat"
 
     if _PURE_CHAT.match(text.strip()):
-        return Intent(shape=CHAT, complexity=SIMPLE)
+        return Intent(shape=CHAT, complexity=SIMPLE, kind=CONVERSATION,
+                      confidence=1.0, may_need_tool=False)
 
     matched = {name for name, pattern in _SIGNALS.items()
                if re.search(pattern, lowered, re.I)}
@@ -415,6 +797,19 @@ def _read(text: str, history: Sequence[Dict[str, Any]]) -> Intent:
         (not self_contained and (_ANAPHORA.search(text) or _BARE_PRONOUN.match(text)))
         or _ORDINAL_REFERENCE.search(text))
     intent.question_to_ask = _what_is_missing(text, history)
+
+    # The Intent Layer, last, because it reads what the shape pass worked out.
+    intent.kind, intent.confidence = _classify(text, intent)
+    intent.side_effect = bool(_EXTERNAL.search(text)) and intent.wants_action
+    intent.needs_clarification = bool(intent.question_to_ask) or (
+        intent.kind == CLARIFICATION)
+    intent.about_task = bool(_ABOUT_A_TASK.search(text)) or intent.kind in LIFECYCLE_KINDS
+    # A remark needs no tool, and neither does a question about the world. Both
+    # are deliberately conservative readings: the cost of withholding tools from
+    # something that turns out to want one is the model saying so and the user
+    # rephrasing; the cost of the reverse is Leti acting on a passing thought.
+    intent.may_need_tool = intent.kind not in (CONVERSATION, QUESTION, CORRECTION,
+                                               CLARIFICATION)
     return intent
 
 

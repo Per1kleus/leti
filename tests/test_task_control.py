@@ -26,7 +26,7 @@ sys.modules.setdefault("chromadb", types.ModuleType("chromadb"))
 
 from core import task_manager  # noqa: E402
 from core.safety_guard import ConfirmationDenied  # noqa: E402
-from core.task_manager import (  # noqa: E402
+from core.task_manager import (RESUMING,  # noqa: E402
     CANCELLED, COMPLETED, FAILED, PAUSED, QUEUED, RUNNING, WAITING_FOR_USER, TaskRunner,
 )
 
@@ -143,7 +143,7 @@ async def test_resuming_carries_on_and_does_not_redo_what_was_done():
     first_pass = list(orchestrator.seen)
 
     orchestrator.behaviour = lambda text, n: "ok"
-    assert task_manager.resume(task["id"])["status"] == QUEUED
+    assert task_manager.resume(task["id"])["status"] == RESUMING
     await runner.run(task["id"])
 
     stored = task_manager.get_task(task["id"])
@@ -180,7 +180,7 @@ def test_a_cancelled_task_is_not_a_completed_one():
     stored = task_manager.get_task(task["id"])
     assert stored["status"] == CANCELLED
     assert stored["result"] is None
-    assert stored["blocked_reason"] == "you stopped it"
+    assert stored["blocked_reason"].startswith("you stopped it")
 
 
 def test_what_a_task_can_be_told_depends_on_where_it_is():

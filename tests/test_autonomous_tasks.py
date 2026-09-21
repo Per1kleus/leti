@@ -15,7 +15,7 @@ sys.modules.setdefault("chromadb", types.ModuleType("chromadb"))
 
 from core import task_manager  # noqa: E402
 from core.safety_guard import ConfirmationDenied, PermissionDenied  # noqa: E402
-from core.task_manager import (  # noqa: E402
+from core.task_manager import (RESUMING,   # noqa: E402
     CANCELLED, COMPLETED, FAILED, PAUSED, QUEUED, RUNNING, WAITING_FOR_USER, TaskRunner,
 )
 
@@ -114,7 +114,7 @@ def test_progress_is_counted_from_real_steps_not_invented():
 def test_pause_resume_and_cancel_move_the_status():
     task = _task()
     assert task_manager.pause(task["id"])["status"] == PAUSED
-    assert task_manager.resume(task["id"])["status"] == QUEUED
+    assert task_manager.resume(task["id"])["status"] == RESUMING
     assert task_manager.cancel(task["id"])["status"] == CANCELLED
 
 
@@ -253,7 +253,7 @@ async def test_a_failed_task_keeps_its_state_and_can_be_resumed():
     assert failed["current_step"] == 1
 
     resumed = task_manager.resume(task["id"])
-    assert resumed["status"] == QUEUED and resumed["current_step"] == 1
+    assert resumed["status"] == RESUMING and resumed["current_step"] == 1
 
 
 @pytest.mark.asyncio

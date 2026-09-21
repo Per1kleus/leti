@@ -121,9 +121,15 @@ async def test_recovery_is_bounded_and_the_task_eventually_fails():
     result = await TaskRunner(FakeOrchestrator(always_down)).run(task["id"])
 
     assert result["status"] == FAILED
-    expected = task_manager.DEFAULT_MAX_ATTEMPTS * (task_manager.MAX_RECOVERIES_PER_STEP + 1)
-    assert len(calls) == expected, f"unbounded: {len(calls)} attempts"
-    assert result["recoveries"] == task_manager.MAX_RECOVERIES_PER_STEP
+    # The ceiling, which nothing may exceed.
+    ceiling = task_manager.DEFAULT_MAX_ATTEMPTS * (task_manager.MAX_RECOVERIES_PER_STEP + 1)
+    assert len(calls) <= ceiling, f"unbounded: {len(calls)} attempts"
+    # And the tighter rule core/recovery.py adds: a failure that comes back
+    # IDENTICAL is not transient, so the budget is not spent discovering that
+    # the same thing fails the same way a third time.
+    assert result["recoveries"] < task_manager.MAX_RECOVERIES_PER_STEP + 1
+    assert len(calls) < ceiling, (
+        "an identical repeated failure should stop recovery before the budget runs out")
 
 
 @pytest.mark.asyncio
