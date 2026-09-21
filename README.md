@@ -1498,7 +1498,7 @@ pip install pytest pytest-asyncio
 pytest
 ```
 
-1,967 tests. The suite covers the authorization layer specifically:
+2,006 tests. The suite covers the authorization layer specifically:
 protected-path canonicalization, shell-command path checks, `dry_run`, voice
 pre-approval scoping, audit redaction, atomic state writes, and the subprocess
 runner.

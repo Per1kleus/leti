@@ -727,7 +727,8 @@ class Intent:
         A remark that slips through is shown tools it will not use, which is
         what Leti did before this layer existed and costs nothing.
         """
-        return self.kind not in NO_ACTION_KINDS
+        return not (self.kind in NO_ACTION_KINDS
+                    and self.confidence >= CONFIDENT_CONVERSATION)
 
     def as_dict(self) -> Dict[str, Any]:
         """The Intent Layer's structured output, for diagnostics and tests."""
