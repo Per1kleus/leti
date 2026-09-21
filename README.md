@@ -242,7 +242,7 @@ searches and pages you explicitly ask it to visit.
 Leti routes tools per request — `core/tool_router.py` picks a relevant subset of
 the registry for each message — so a typical turn is shown 15–30 schemas rather
 than all of them. But the full set is still what has to fit when routing falls
-back: **129 tools serialise to 89,298 characters, roughly 22,300 tokens**,
+back: **129 tools serialise to 89,345 characters, roughly 22,300 tokens**,
 before the system prompt, personality, user profile, recalled memories,
 conversation buffer, or any tool results.
 `ollama.num_ctx` is 28672 to leave room for the rest.
@@ -1383,7 +1383,7 @@ still has one home, that no module defines a second orchestrator or builds its
 own store or calls the model, that mode activation is still deterministic and
 still unreachable from the model. The other pins the cost: no background work,
 no threads started at import, no permanent index, and Default Mode's tool
-fallback still exactly 89,298 characters, so nothing was paid for by raising
+fallback still exactly 89,345 characters, so nothing was paid for by raising
 `num_ctx`. `pyflakes` runs over the application on every test run — both bugs it
 found were functions that looked right, were covered by nothing, and raised
 `NameError` the first time a user reached them.

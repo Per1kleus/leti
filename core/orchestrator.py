@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
 from core import intent as intent_reader
-from core import context_engine, entities, modes, performance
+from core import context_engine, entities, modes, performance, task_control
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core import artifacts, connections, diagnostics, verification
@@ -271,6 +271,20 @@ def _enumerated_items(answer: str) -> List[str]:
 # The reading and the budget a turn falls back on. Class-level defaults so an
 # Orchestrator built without __init__ still has them: nothing here is mutated in
 # place, only ever replaced at the start of a turn.
+def _task_runner():
+    """Whatever is running tasks right now, or nothing.
+
+    Read through tools/autonomous.py, which is where the one runner has always
+    been registered - the orchestrator does not hold a second reference to it.
+    """
+    try:
+        from tools.autonomous import get_runner
+
+        return get_runner()
+    except Exception:
+        return None
+
+
 _DEFAULT_INTENT = intent_reader.Intent()
 _DEFAULT_MODE = performance.Mode()
 
@@ -407,6 +421,26 @@ class Orchestrator:
                 await self.speak_callback(answer)
             self._set_state(AgentState.IDLE)
             return answer
+
+        # A lifecycle command - "stop", "pause", "resume", "what are you waiting
+        # for" - is about work already running, and is answered here for the
+        # same reason a mode command is: a task that stops only if the model
+        # agrees that "stop" means stop is a task that does not reliably stop.
+        #
+        # It falls through when nothing matches: a command naming a task that
+        # does not exist gets an ordinary turn rather than an error, because the
+        # user may have meant something else entirely by it.
+        control = intent_reader.lifecycle_command(user_text)
+        if control is not None:
+            handled = task_control.apply(control, runner=_task_runner())
+            if handled is not None:
+                answer = handled["answer"]
+                self.session_memory.add_turn("assistant", answer, session_id)
+                if self.speak_callback:
+                    self._set_state(AgentState.SPEAKING)
+                    await self.speak_callback(answer)
+                self._set_state(AgentState.IDLE)
+                return answer
 
         # "Run full Leti diagnostics" is a command too, and answered the same way:
         # deterministically, here, without a model round trip and without costing

@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
-from core import recovery, task_history, world_state
+from core import recovery, task_conflicts, task_history, world_state
 
 logger = logging.getLogger("leti.tasks")
 
@@ -48,6 +48,12 @@ MAX_RECOVERIES_PER_STEP = 2
 MAX_RECOVERY_SECONDS = 300        # a step that has been recovering for five minutes has failed
 MAX_RESULT_CHARS = 4000
 MAX_TASKS_KEPT = 50
+# How many tasks may run at once. Small on purpose: every step of every task
+# goes through the one orchestrator, which serialises turns anyway, so the
+# benefit of concurrency is that a task waiting on somebody else's server does
+# not block an unrelated one - not throughput. Three is enough for that and few
+# enough that the interface can show all of them.
+MAX_CONCURRENT_TASKS = 3
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -289,6 +295,8 @@ def detail(task: Dict[str, Any]) -> Dict[str, Any]:
     base["failed_step"] = next((s.get("instruction") for s in steps
                                 if s.get("status") == "failed"), None)
     base["recovering"] = any(s.get("status") == "recovering" for s in steps)
+    base["waiting_for_tasks"] = task.get("waiting_for_tasks") or None
+    base["holds"] = task_conflicts.describe(task)["exclusive"] or None
     base["awaiting_approval"] = task.get("status") == WAITING_FOR_USER
     base["approval_request"] = task.get("blocked_reason") if base["awaiting_approval"] else None
     # The one line the interface puts in front of the user when it is their turn.
@@ -695,7 +703,12 @@ class TaskRunner:
         # When each task last had something said about it out loud. In memory,
         # one float per task, so a long task does not narrate every step.
         self._last_progress_spoken: Dict[str, float] = {}
-        self._current: Optional[str] = None
+        # Which tasks are running right now. More than one is allowed, because a
+        # download and an email draft have nothing to do with each other - but
+        # never two that want the same file, the same application or the screen.
+        # See core/task_conflicts.py; the cap is what keeps "concurrent" from
+        # meaning "unbounded".
+        self._running: Set[str] = set()
         # Strong references: asyncio only keeps weak ones, so a background task
         # without this can be garbage collected mid-run.
         self._background: set = set()
@@ -705,12 +718,29 @@ class TaskRunner:
 
         The tool that starts a task returns immediately - a request that took the
         length of the whole task to answer would not be a background task at all.
-        One at a time: the orchestrator serialises turns anyway, so a second task
-        would only interleave itself with the first.
+
+        Several tasks may run at once, but only when they cannot interfere:
+        core/task_conflicts.py is asked first, and a task that wants a file,
+        an application or the screen that another task is holding stays queued
+        with the reason written on it rather than starting and racing.
         """
-        if self._current is not None:
-            logger.info(f"A task is already running; {task_id} stays queued.")
+        if str(task_id) in self._running:
             return False
+        if len(self._running) >= MAX_CONCURRENT_TASKS:
+            logger.info(f"{MAX_CONCURRENT_TASKS} tasks are already running; "
+                        f"{task_id} stays queued.")
+            return False
+
+        task = get_task(task_id)
+        if task is None:
+            return False
+        blocked = self._blocked_by(task)
+        if blocked is not None:
+            logger.info(f"{task_id} waits: {blocked['explain']}")
+            _set_status(task_id, QUEUED, blocked_reason=blocked["explain"],
+                        waiting_for_tasks=blocked["wait_for"])
+            return False
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -719,6 +749,41 @@ class TaskRunner:
         self._background.add(background)
         background.add_done_callback(self._background.discard)
         return True
+
+    def _blocked_by(self, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """What this task has to wait for, or None. Never raises into a start.
+
+        A conflict check that fails must not stop a task running: the worst case
+        is the behaviour Leti had before concurrency existed.
+        """
+        try:
+            running = [t for t in load_tasks() if t.get("id") in self._running]
+            if not running:
+                return None
+            verdict = task_conflicts.may_start(task, running)
+            return None if verdict["ok"] else verdict
+        except Exception as e:
+            logger.debug(f"Conflict check failed ({e}); allowing the start.")
+            return None
+
+    def running_tasks(self) -> List[str]:
+        """Which task ids this runner currently has in flight."""
+        return sorted(self._running)
+
+    def start_whatever_is_ready(self) -> List[str]:
+        """Start any queued task whose conflicts have cleared. Returns what began.
+
+        Called when a task finishes, which is the only moment a conflict can
+        clear. There is no loop and no timer here: something has to have
+        happened for this to be worth asking.
+        """
+        started = []
+        for task in load_tasks():
+            if task.get("status") not in (QUEUED, RESUMING):
+                continue
+            if self.start_in_background(task["id"]):
+                started.append(task["id"])
+        return started
 
     async def run(self, task_id: str) -> Dict[str, Any]:
         """Drive a task to a stopping point: done, blocked, paused or failed."""
@@ -730,9 +795,16 @@ class TaskRunner:
         if task.get("status") not in (QUEUED, RUNNING, RESUMING):
             return describe(task)
 
-        self._current = task_id
+        self._running.add(str(task_id))
         clear_stop(task_id)
-        _set_status(task_id, RUNNING)
+        # What this task holds while it runs, written onto it so the conflict
+        # check and the interface read the same declaration.
+        try:
+            task["declared_resources"] = task_conflicts.declare(task)
+            _replace(task)
+        except Exception as e:
+            logger.debug(f"Couldn't declare task resources ({e}); continuing.")
+        _set_status(task_id, RUNNING, blocked_reason=None, waiting_for_tasks=None)
         # What this task believes about the world while it runs - see
         # core/world_state.py. In memory, one entry, dropped below whatever
         # happens; it informs a recovery instead of a recovery having to guess.
@@ -770,7 +842,7 @@ class TaskRunner:
                     break
         finally:
             restore_unattended()
-            self._current = None
+            self._running.discard(str(task_id))
             world_state.forget(task_id)
             # Nothing is ever left mid-transition by the runner: whatever else
             # happened, a task that was told to pause or cancel ends up in the
@@ -779,6 +851,12 @@ class TaskRunner:
                 self._settle_stop(task_id)
             except Exception:
                 logger.exception("Couldn't settle a pending stop")
+            # This task let go of whatever it held, so something that was waiting
+            # for it may now be able to run. Event-driven: nothing polls for this.
+            try:
+                self.start_whatever_is_ready()
+            except Exception:
+                logger.exception("Couldn't start a task that was waiting")
         return describe(get_task(task_id) or {})
 
     def _settle_stop(self, task_id: str) -> bool:

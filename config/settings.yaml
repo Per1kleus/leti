@@ -43,7 +43,7 @@ ollama:
   # turn sends 15-30 schemas rather than all of them. That is the common case,
   # not the one to size for: when routing is not confident it falls back to the
   # whole list, and that fallback still has to fit. Measured, not estimated:
-  # 129 tools serialise to 89,298 characters, roughly 22,300 tokens. This
+  # 129 tools serialise to 89,345 characters, roughly 22,300 tokens. This
   # comment used to say 9,000 and 16384 used to be enough; the tool count grew
   # past it, which is exactly the silent failure described above. main.py logs a
   # warning at startup if this number stops being big enough again, so the next

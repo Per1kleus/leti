@@ -324,6 +324,16 @@ def describe(watch: Dict[str, Any], detail: bool = False) -> Dict[str, Any]:
         "last_error": watch.get("last_error"),
         "disabled_reason": watch.get("disabled_reason"),
         "recent": watch.get("history", [])[-5:],
+        # What its action will need, and what its action last actually did. Both
+        # are read off the watch; neither grants anything - see action_permissions.
+        "needs_permission_for": ACTION_RISK.get(watch.get("action") or "notify"),
+        "acts_outside_leti": (watch.get("action") or "notify") in ACTING_ACTIONS,
+        "last_action": watch.get("last_action"),
+        "action_problem": watch.get("last_action_problem"),
+        # Whether this watch is still telling anybody anything. A watch that has
+        # not been looked at for many times its own interval is stale, and saying
+        # so is more use than a row that looks alive because it exists.
+        "stale": _is_stale(watch),
     }
     if detail:
         described.update({
@@ -337,6 +347,32 @@ def describe(watch: Dict[str, Any], detail: bool = False) -> Dict[str, Any]:
             "history": watch.get("history", []),
         })
     return described
+
+
+# How many missed evaluations make a watch stale. Generous: the scheduler only
+# runs while Leti is open, so a laptop that was shut counts as normal life.
+STALE_AFTER_INTERVALS = 10
+
+
+def _is_stale(watch: Dict[str, Any], now: Optional[float] = None) -> bool:
+    """Has this watch stopped being evaluated? Not the same as disabled.
+
+    A disabled watch was switched off on purpose. A stale one is still switched
+    on and has not been looked at in a very long time, which usually means
+    nothing is running the scheduler - and that is worth saying out loud rather
+    than leaving a row that looks alive.
+    """
+    if not watch.get("enabled"):
+        return False
+    last = watch.get("last_checked_at")
+    if not last:
+        # Never evaluated. Stale only once it has had time to be.
+        last = watch.get("created_at")
+        if not last:
+            return False
+    interval = max(float(watch.get("interval_minutes") or DEFAULT_INTERVAL_MINUTES), 1.0)
+    now = now if now is not None else time.time()
+    return (now - float(last)) > interval * 60.0 * STALE_AFTER_INTERVALS
 
 
 def _stamp(value) -> Optional[str]:
@@ -817,6 +853,135 @@ def due(watch: Dict[str, Any], now: Optional[float] = None) -> bool:
     if last is None:
         return True
     return (now - last) >= float(watch.get("interval_minutes", 5)) * 60.0
+
+
+# --------------------------------------------------------------------------- #
+# What a watch is allowed to do when it fires
+#
+# A watch is a standing instruction that runs while nobody is watching, which
+# makes "and then do X" the sharpest edge in this whole file. Detection is not
+# permission: seeing that a build finished does not authorise closing a browser,
+# and a condition becoming true is not the user saying yes to anything.
+#
+# So the rule is structural rather than remembered. A watch's action is one of
+# three things and no others: tell the user (notify), run a workflow they
+# already approved, or start a task. A task is the interesting one - it goes
+# through core/task_manager.py, which runs its steps through the orchestrator,
+# which puts every tool call in front of SafetyGuard with the unattended rules
+# already applied. There is no path from a watch to a tool that misses the
+# guard, and that is a property of the wiring, not a promise.
+#
+# What was missing was saying so where anybody can see it, and knowing whether
+# the action a watch took actually happened. Both are below.
+# --------------------------------------------------------------------------- #
+
+# Which risk class each action carries, in SafetyGuard's own vocabulary. This
+# does not grant anything - it is what the watch REPORTS it will need, so the
+# interface and the diagnostics can say "this one can send mail" before it does.
+ACTION_RISK = {
+    "notify": "read",
+    "run_workflow": "external",
+    "start_task": "external",
+}
+
+# Actions that reach the outside world when they run. Everything here still
+# stops at the guard; this only decides whether a watch is described as one
+# that can act.
+ACTING_ACTIONS = ("run_workflow", "start_task")
+
+
+def action_permissions(watch: Dict[str, Any]) -> Dict[str, Any]:
+    """What this watch will need permission for if it fires. Grants nothing."""
+    action = watch.get("action") or "notify"
+    return {
+        "action": action,
+        "risk_class": ACTION_RISK.get(action, "external"),
+        "acts_outside_leti": action in ACTING_ACTIONS,
+        "authorised_by": (
+            "nothing - it only tells you" if action == "notify" else
+            "SafetyGuard, call by call, when the task or workflow runs. Unattended "
+            "runs may read, compute and write; sending and deleting stop and wait "
+            "for you."),
+        "never": ("A watch firing is not permission. The condition being true does "
+                  "not authorise anything the user has not already allowed."),
+    }
+
+
+# What a watch's own action did, in core/verification.py's words. A watch that
+# fires and starts a task has done something checkable - the task exists - and a
+# watch that fires and notifies has done something that cannot fail. Anything
+# else is NOT VERIFIED, which is the honest answer for work that has only just
+# been handed to somebody else.
+def verify_action(watch: Dict[str, Any], outcome: Dict[str, Any]) -> Dict[str, Any]:
+    """Did what this watch asked for actually get started? Reads local state only."""
+    from core import verification
+
+    action = watch.get("action") or "notify"
+    if action == "notify":
+        return verification.check(
+            "the user was told", verification.VERIFIED,
+            "Notifying is the whole action; there is nothing further to confirm.")
+
+    started = (outcome or {}).get("task_id") or (outcome or {}).get("started")
+    if not started:
+        return verification.check(
+            "the action started", verification.NOT_VERIFIED,
+            f"The watch fired and its '{action}' was not confirmed as started.",
+            to_confirm="list the tasks, or look at the workflow's last run")
+
+    if action == "start_task":
+        try:
+            from core import task_manager
+
+            task_id = started if isinstance(started, str) else None
+            task = task_manager.get_task(task_id) if task_id else None
+        except Exception as e:
+            return verification.check(
+                "the action started", verification.NOT_VERIFIED,
+                f"The task store could not be read back ({e}).")
+        if task is None:
+            return verification.check(
+                "the action started", verification.FAILED,
+                "The watch says it started a task and no such task is in the store.")
+        return verification.check(
+            "the action started", verification.VERIFIED,
+            f"Task '{task.get('name')}' exists and is {task.get('status')}.",
+            limit=("Started is not finished, and the task's own steps still meet "
+                   "SafetyGuard one at a time."))
+
+    return verification.check(
+        "the action started", verification.NOT_VERIFIED,
+        f"'{action}' was handed off and its result is not visible from here.",
+        to_confirm="check the workflow's last run")
+
+
+def record_action(watch_id: str, outcome: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Write what a fired watch's action did onto the watch. Never raises.
+
+    Called by whoever carried the action out, on its way past - the same shape
+    as every other record_* in this codebase. Nothing here performs an action.
+    """
+    try:
+        watch = get_watch(watch_id)
+        if watch is None:
+            return None
+        found = verify_action(watch, outcome or {})
+        watch["last_action"] = {
+            "at": _stamp(time.time()),
+            "action": watch.get("action"),
+            "verification": found.get("result"),
+            "detail": found.get("detail"),
+            "task_id": (outcome or {}).get("task_id"),
+        }
+        if found.get("result") in ("FAILED", "NOT VERIFIED"):
+            watch["last_action_problem"] = found.get("detail")
+        else:
+            watch.pop("last_action_problem", None)
+        _replace(watch)
+        return watch["last_action"]
+    except Exception as e:
+        logger.debug(f"Couldn't record a watch action ({e}); the watch is unaffected.")
+        return None
 
 
 def check(watch_id: str, now: Optional[float] = None) -> Dict[str, Any]:

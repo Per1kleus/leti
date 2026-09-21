@@ -423,6 +423,13 @@ class CheckWatchesTool(BaseTool):
                 if _RUNNER is not None:
                     _RUNNER.start_in_background(task["id"])
                 started.append(task_manager.describe(task))
+                # What the watch's action actually did, written back onto the
+                # watch - see core/watches.py's verify_action. Started is not
+                # finished, and the record says so.
+                watches.record_action(item.get("watch_id") or item.get("id"),
+                                      {"task_id": task["id"]})
+            elif item["action_type"] == "notify":
+                watches.record_action(item.get("watch_id") or item.get("id"), {})
 
         return ToolResult(success=True, output={
             "checked": checked,
@@ -456,6 +463,7 @@ class CheckWatchesTool(BaseTool):
                 fired = outcome["watch"]
                 last = (fired.get("history") or [{}])[-1]
                 triggered.append({
+                    "watch_id": fired.get("id"),
                     "name": fired["name"],
                     "condition": watches.describe_condition(fired),
                     "why": last.get("why"),

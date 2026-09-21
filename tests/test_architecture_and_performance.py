@@ -198,9 +198,17 @@ def test_no_tool_was_added_to_default_modes_fallback():
     registry = main.build_tool_registry(MagicMock(), MagicMock(), MagicMock())
     visible = modes.visible_tools(registry, modes.DEFAULT)
     chars = len(json.dumps(registry.schemas_for(visible)))
-    assert chars == 89_298, (
-        f"Default Mode's fallback is now {chars:,} characters, not 89,298. Something "
-        "was added to it, which spends headroom that was already down to 348 tokens.")
+    # The count is what the canary is really protecting: a new tool is what
+    # would eat the headroom, and no upgrade since has added one.
+    assert len(visible) == 129, f"Default Mode now sees {len(visible)} tools, not 129"
+    assert chars == 89_345, (
+        f"Default Mode's fallback is now {chars:,} characters, not 89,345. Editing a "
+        "description is allowed and this number moves with it; adding a tool is not.")
+    # And the headroom it buys, which is the thing that actually has to hold.
+    from core.config_loader import get_settings
+
+    headroom = int(get_settings()["ollama"]["num_ctx"]) - chars // 4 - 6000
+    assert headroom > 0, f"Default Mode has {headroom} tokens of headroom left"
 
 
 # --- Mode activation is unchanged ---------------------------------------------------------

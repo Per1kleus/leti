@@ -163,6 +163,13 @@ _ABOUT_THE_WEB = re.compile(
     r"\b(search|google|look up|latest|news|current|today's|price of|who won|"
     r"what happened|website|url|http)\b", re.I)
 
+# Pointing at work that has already happened. Distinct from _ABOUT_WORK_IN_FLIGHT
+# above, which is about something still running.
+_ABOUT_PAST_WORK = re.compile(
+    r"\b(yesterday|last (?:night|week|time)|earlier|before|previously|"
+    r"what happened to|how did .{0,20}(?:go|end)|the one (?:we|you) |"
+    r"that task|the task from|did (?:you|we) (?:finish|do|complete))\b", re.I)
+
 _ABOUT_THE_SCREEN = re.compile(
     r"\b(screen|window|click|button|type into|scroll|drag|what am i looking at|"
     r"this app|on my desktop)\b", re.I)
@@ -248,6 +255,31 @@ def _proactive(request: Request) -> Optional[str]:
     return note or None
 
 
+def _past_work(request: Request) -> Optional[str]:
+    """What Leti did recently, when the request points backwards at a task.
+
+    Read from core/task_history.py - the record the task store's own trim would
+    otherwise have thrown away - and only when the request refers to work in
+    flight or already finished. Three lines, not a transcript.
+    """
+    from core import task_history
+
+    records = task_history.recent(limit=3)
+    if not records:
+        return None
+    lines = []
+    for record in records:
+        described = task_history.describe(record)
+        lines.append(
+            f"- {described['name'] or described['request']} "
+            f"({described['status']}, {described['finished'] or 'time not recorded'})"
+            + (f", {described['steps_done']}/{described['steps_total']} steps"
+               if described.get("steps_total") else "")
+            + ("" if described["resumable"] else " - not enough recorded to continue it"))
+    return ("Recently finished work, if the request refers to it (do not claim more "
+            "than these lines say):\n" + "\n".join(lines))
+
+
 def _objectives(request: Request) -> Optional[str]:
     """What Leti is still carrying, when the request sounds like it is about that.
 
@@ -327,6 +359,9 @@ SOURCES: List[Tuple[str, Callable[[Request], bool], Callable[[Request], Optional
     ("objectives in flight",
      lambda r: bool(_ABOUT_WORK_IN_FLIGHT.search(r.text)) or r.intent.is_complex,
      _objectives, 3),
+    ("what was done recently",
+     lambda r: r.intent.about_task or bool(_ABOUT_PAST_WORK.search(r.text)),
+     _past_work, 4),
     ("proactive", lambda r: r.allow_optional, _proactive, 5),
     ("session start", lambda r: r.first_turn_of_session, _watch_catchup, 2),
 ]

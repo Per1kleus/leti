@@ -350,6 +350,109 @@ def choose(candidates: Sequence[Dict[str, Any]], reference: str,
     }
 
 
+# --------------------------------------------------------------------------- #
+# Candidates for the things a conversation points back at
+#
+# choose() above is the decision. This is where the things being chosen between
+# come from - and they come from stores that already exist: the task manager,
+# the task history, Project Memory. Nothing is indexed and nothing is cached;
+# these are small collections read when a sentence needs them.
+#
+# core/business.py has its own _candidates_of for leads, contacts and goals. It
+# is not duplicated here: that one knows about business records and this one
+# knows about work and workspaces, and both hand the result to the same choose().
+# --------------------------------------------------------------------------- #
+
+GENERAL_KINDS = ("task", "past_task", "project")
+
+
+def _task_candidates() -> List[Dict[str, Any]]:
+    """Tasks in flight. Their own names, plus what they were asked to do."""
+    try:
+        from core import task_manager
+
+        return [{"kind": "task", "id": t.get("id"),
+                 "name": f"{t.get('name') or ''} {t.get('objective') or ''}".strip(),
+                 "status": t.get("status"), "project": t.get("project"),
+                 "updated_at": t.get("updated_at")}
+                for t in task_manager.load_tasks()
+                if t.get("status") in task_manager.ACTIVE_STATUSES]
+    except Exception as e:
+        logger.debug(f"Couldn't read active tasks for resolution: {e}")
+        return []
+
+
+def _past_task_candidates(limit: int = 25) -> List[Dict[str, Any]]:
+    """Tasks that have finished. This is what "the one from yesterday" points at."""
+    try:
+        from core import task_history
+
+        return [{"kind": "past_task", "id": r.get("task_id"),
+                 "name": f"{r.get('name') or ''} {r.get('request') or ''}".strip(),
+                 "status": r.get("status"), "project": r.get("project"),
+                 # `due` is what the date signal reads, and for a finished task
+                 # the date that matters is when it finished.
+                 "due": r.get("finished_at"),
+                 "updated_at": r.get("finished_at")}
+                for r in task_history.recent(limit=limit)]
+    except Exception as e:
+        logger.debug(f"Couldn't read task history for resolution: {e}")
+        return []
+
+
+def _project_candidates() -> List[Dict[str, Any]]:
+    try:
+        from tools.projects import list_projects
+
+        out = []
+        for entry in list_projects():
+            name = entry if isinstance(entry, str) else entry.get("name")
+            extra = entry if isinstance(entry, dict) else {}
+            out.append({"kind": "project", "name": name, "project": name,
+                        "updated_at": extra.get("updated_at")})
+        return out
+    except Exception as e:
+        logger.debug(f"Couldn't read projects for resolution: {e}")
+        return []
+
+
+_SOURCES = {
+    "task": _task_candidates,
+    "past_task": _past_task_candidates,
+    "project": _project_candidates,
+}
+
+
+def resolve(reference: str, kind: str = "",
+            now: Optional[float] = None) -> Dict[str, Any]:
+    """What "the one from yesterday" refers to, or the candidates, or nothing.
+
+    The general counterpart to core/business.py's resolve(), over work and
+    workspaces rather than business records, and going through exactly the same
+    choose() - so the resolve / ask / nothing-found rule has one implementation
+    whichever kind of thing is being referred to.
+    """
+    wanted = [k for k in GENERAL_KINDS if not kind or k == kind]
+    if kind and kind not in GENERAL_KINDS:
+        return {"resolved": None, "candidates": [],
+                "problem": f"'{kind}' is not something Leti resolves. "
+                           f"Known: {', '.join(GENERAL_KINDS)}."}
+
+    candidates: List[Dict[str, Any]] = []
+    unavailable: List[str] = []
+    for entity_kind in wanted:
+        try:
+            candidates.extend(_SOURCES[entity_kind]())
+        except Exception as e:
+            unavailable.append(f"{entity_kind}: {e}")
+
+    outcome = choose(candidates, reference, gather(now=now), kind=kind)
+    outcome["unavailable"] = unavailable or None
+    if unavailable and outcome.get("problem"):
+        outcome["problem"] += " Sources that could not be read: " + "; ".join(unavailable)
+    return outcome
+
+
 def explain() -> Dict[str, Any]:
     """What resolution actually uses, for a diagnostics panel or a sceptical user."""
     return {

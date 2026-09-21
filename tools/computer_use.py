@@ -98,13 +98,14 @@ class CompleteComputerStepTool(BaseTool):
 class VerifyScreenTool(BaseTool):
     name = "verify_screen"
     description = (
-        "Check that the screen is what you expected before acting on it, and that the "
-        "result happened after. Give the session id, what you expected to see, and what "
-        "read_screen actually reported. Says whether it matches and whether the next step "
-        "is allowed - it refuses once a session has taken too many steps or when the same "
-        "action has already been tried without the screen changing, so a sequence stops "
-        "rather than clicking blindly. Leti does not capture the screen on its own; you "
-        "call read_screen when you need a look."
+        "Check the screen is what you expected before acting on it, and that the result "
+        "happened after. Give the session id, what you expected, and what read_screen "
+        "reported. Says whether it matches and whether the next step is allowed - it "
+        "refuses after too many steps, or when the same action was tried without the "
+        "screen changing, so a sequence stops rather than clicking blindly. Name what "
+        "you are about to act on ('the Save button', not a coordinate) and it says if "
+        "that is on the screen you read. Leti never captures the screen itself; call "
+        "read_screen for a look."
     )
     parameters = [
         ToolParameter(name="session_id", type="string",
@@ -160,10 +161,16 @@ class VerifyScreenTool(BaseTool):
         if next_action and allowed:
             session.record(next_action or "step", next_action)
 
+        # What the next step is aiming at, and whether it is actually on the
+        # screen that was just read. No extra tool and no extra schema - the
+        # answer rides along with the check that was already being made.
+        aim = session.aim(next_action) if next_action else None
+
         return ToolResult(success=True, output={
             "matches": True,
             "may_continue": allowed,
             "reason": reason,
+            "target": aim,
             "progress": session.plan_progress(),
             "session": session.summary(),
             "note": ("Go ahead with the existing tool for that action - mouse_click, "

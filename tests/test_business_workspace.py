@@ -576,7 +576,7 @@ def test_default_mode_is_exactly_what_it_was(registry):
     """Business Mode grew; Default Mode did not. This is the number that proves it."""
     visible = modes.visible_tools(registry, modes.DEFAULT)
     assert len(visible) == 129
-    assert len(json.dumps(registry.schemas_for(visible))) == 89_298
+    assert len(json.dumps(registry.schemas_for(visible))) == 89_345
 
 
 def test_coding_mode_never_sees_a_business_tool(registry):

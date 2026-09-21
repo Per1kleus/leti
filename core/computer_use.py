@@ -139,6 +139,111 @@ def choose_layer(request: str) -> Dict[str, Any]:
                        "result after anything that matters.")}
 
 
+# --------------------------------------------------------------------------- #
+# Naming what to act on, rather than where to click
+#
+# A coordinate is the weakest possible description of a target: it is wrong the
+# moment the window moves, the font changes or the list scrolls, and it cannot
+# be checked afterwards because a pixel has no identity. A name can be - "the
+# Settings button", "the tab called General" - and a name can be looked for in
+# what was actually read off the screen.
+#
+# So this is the layer between "click Settings" and a click: it says whether the
+# thing being aimed at is actually visible, and it refuses when it is not. It
+# does not capture, click or type; every one of those is still the existing
+# tool, authorised by SafetyGuard the ordinary way, which is what stops driving
+# the interface becoming a way around the rules that govern the equivalent tool.
+# --------------------------------------------------------------------------- #
+
+# How a target was described, weakest last. Reported so a session that had to
+# fall back to coordinates says so rather than looking the same as one that did
+# not.
+BY_NAME = "by name"
+BY_TEXT = "by visible text"
+BY_ROLE = "by role and label"
+BY_COORDINATES = "by coordinates"
+
+TARGET_PRECEDENCE = (BY_NAME, BY_TEXT, BY_ROLE, BY_COORDINATES)
+
+# The words people use for the things they point at. Used to pull a target out
+# of a plain instruction - "click the Save button" - without asking the model to
+# re-state what it already said.
+_CONTROL_WORDS = (
+    "button", "link", "tab", "menu", "menu item", "field", "box", "checkbox",
+    "dropdown", "option", "icon", "toggle", "switch", "row", "cell", "entry",
+    "item",
+)
+
+_TARGET_PATTERNS = (
+    # click the "Save" button / click the Save button / click on Save
+    re.compile(r"\b(?:click|press|tap|select|choose|open|activate)\s+"
+               r"(?:on\s+)?(?:the\s+)?[\"\u2018\u2019\u201c\u201d']?"
+               r"(?P<label>[\w][\w \-/&.]{0,48}?)[\"\u2018\u2019\u201c\u201d']?\s+"
+               r"(?P<control>" + "|".join(_CONTROL_WORDS) + r")\b", re.I),
+    re.compile(r"\b(?:click|press|tap|select|choose|activate)\s+"
+               r"(?:on\s+)?(?:the\s+)?[\"\u2018\u2019\u201c\u201d']"
+               r"(?P<label>[^\"\u2018\u2019\u201c\u201d']{1,48})"
+               r"[\"\u2018\u2019\u201c\u201d']", re.I),
+    re.compile(r"\b(?:type|enter|put)\s+.{0,40}?\b(?:in|into)\s+(?:the\s+)?"
+               r"(?P<label>[\w][\w \-/&.]{0,48}?)\s+"
+               r"(?P<control>" + "|".join(_CONTROL_WORDS) + r")\b", re.I),
+)
+
+_COORDINATES = re.compile(r"\b(?:at|to)?\s*\(?\s*(?P<x>\d{1,5})\s*,\s*(?P<y>\d{1,5})\s*\)?")
+
+
+def describe_target(instruction: str) -> Dict[str, Any]:
+    """What this instruction is aiming at, and how well it is described.
+
+    Never raises and never guesses a label out of thin air: an instruction with
+    nothing nameable in it comes back with target None, which is itself the
+    useful answer - it says the step is about to act on a coordinate.
+    """
+    text = str(instruction or "")
+    for pattern in _TARGET_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            label = (match.groupdict().get("label") or "").strip(" \"'\u2018\u2019\u201c\u201d")
+            if label:
+                control = (match.groupdict().get("control") or "").strip().lower()
+                return {"target": label, "control": control or None,
+                        "how": BY_ROLE if control else BY_NAME,
+                        "instruction": text[:200]}
+    coordinates = _COORDINATES.search(text)
+    if coordinates:
+        return {"target": None, "control": None, "how": BY_COORDINATES,
+                "at": [int(coordinates.group("x")), int(coordinates.group("y"))],
+                "instruction": text[:200],
+                "why_weak": ("A coordinate cannot be checked afterwards and is wrong "
+                             "the moment anything moves. Name what is being clicked "
+                             "if the screen shows a name for it.")}
+    return {"target": None, "control": None, "how": None, "instruction": text[:200]}
+
+
+def _visible_label(label: str, observation: str) -> Tuple[bool, str]:
+    """Is this label actually in what was read off the screen?
+
+    Whole-label first, then every significant word of it. A label whose words
+    are all present but scattered is reported as a weaker match rather than as
+    the same thing, because "Save" and "Save as" are different buttons.
+    """
+    seen = str(observation or "").lower()
+    wanted = str(label or "").strip().lower()
+    if not wanted:
+        return False, "no label to look for"
+    if not seen:
+        return False, "nothing has been read off the screen"
+    if wanted in seen:
+        return True, f"'{label}' is on screen"
+    words = [w for w in re.findall(r"[a-z0-9]+", wanted)
+             if len(w) > 2 and w not in FURNITURE]
+    if words and all(w in seen for w in words):
+        return True, (f"every word of '{label}' is on screen, though not together - "
+                      "check it is the right one before acting")
+    missing = [w for w in words if w not in seen] or [wanted]
+    return False, f"'{label}' is not on screen (missing: {', '.join(missing[:4])})"
+
+
 class Session:
     """One bounded GUI errand: what it is for, what it has done, what it saw."""
 
@@ -306,7 +411,44 @@ class Session:
             return False, (f"'{action}' with the same target has already been tried "
                            f"{repeats} times and the screen has not changed as expected - "
                            "stop rather than repeating it")
+
+        # If the step names something, that something has to be on the screen
+        # that was just read. This is the difference between driving an interface
+        # and clicking blindly: a button that is not there is not a button that
+        # will be there after the click.
+        aimed_at = describe_target(f"{action} {detail}".strip())
+        if aimed_at.get("target"):
+            visible, why = _visible_label(aimed_at["target"], self.last_observation or "")
+            if not visible:
+                return False, (f"{why}. Do not click where it used to be - look again, "
+                               "and if it is still not there say so rather than guessing.")
         return True, "ok"
+
+    def aim(self, instruction: str) -> Dict[str, Any]:
+        """Work out what a step is aiming at and whether it can be seen.
+
+        The IDENTIFY TARGET step, separated from acting on purpose: a caller can
+        ask before it commits, and the answer is the same one may_act will give.
+        """
+        found = describe_target(instruction)
+        if found.get("target"):
+            visible, why = _visible_label(found["target"], self.last_observation or "")
+            found["visible"] = visible
+            found["evidence"] = why
+        elif found.get("how") == BY_COORDINATES:
+            found["visible"] = None
+            found["evidence"] = ("A coordinate cannot be confirmed against what is on "
+                                 "screen. Nothing here can say whether it is the right "
+                                 "place to click.")
+        else:
+            found["visible"] = None
+            found["evidence"] = ("This step does not name anything to aim at. Say what "
+                                 "is being clicked so it can be checked.")
+        found["prefer"] = (
+            "Name the control if the screen shows a name for it; coordinates are the "
+            "last resort, not the first."
+            if found.get("how") in (None, BY_COORDINATES) else None)
+        return found
 
     def record(self, action: str, detail: str = "") -> Dict[str, Any]:
         step = {"n": self.steps_taken + 1, "action": action, "detail": detail,
