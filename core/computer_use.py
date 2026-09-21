@@ -258,6 +258,14 @@ class Session:
         self.closed_reason: Optional[str] = None
         # How many times the screen has not been what was expected. See mismatch().
         self.mismatches = 0
+        # The element this session last resolved, if anything. Held for exactly
+        # as long as it is worth holding - see core/ui_targets.still_valid - and
+        # dropped on every action, observation and mismatch, because a resolved
+        # element is evidence about a screen, not a fact about an application.
+        self.resolved: Optional[Any] = None
+        # Which application/window the last observation was of. Lets a change of
+        # application be noticed rather than clicked through.
+        self.context: Optional[Dict[str, Any]] = None
         # The errand written down before it starts: "open the site", "find the
         # invoice", "download it", "move it into the project". It is a list of
         # intentions, not a program - nothing here executes a plan step. What it
@@ -329,9 +337,28 @@ class Session:
                 for s in self.steps if s.get("consequential") and not s.get("verified")]
 
     def observe(self, what_is_on_screen: str) -> None:
-        """Record one look at the screen. Nothing captures on its own."""
+        """Record one look at the screen. Nothing captures on its own.
+
+        A fresh look invalidates whatever was resolved from the last one: an
+        element found on a previous screen is not a thing to act on now, and
+        holding it across an observation is how a stale click happens.
+        """
+        previous_window = (self.context or {}).get("window")
         self.last_observation = what_is_on_screen or ""
         self.observed_at = time.time()
+        self.resolved = None
+        try:
+            from core import ui_targets
+
+            self.context = ui_targets.active_window()
+        except Exception:
+            self.context = None
+        if previous_window and (self.context or {}).get("window") != previous_window:
+            # The application changed under the errand. Not fatal - it may be
+            # what the last click was for - but the session says so rather than
+            # carrying on as though the screen were the same one.
+            _announce(self, f"the front window changed to "
+                            f"{(self.context or {}).get('window') or 'something else'}")
         # Anything consequential that was waiting to be checked has now been
         # looked at; whether it WORKED is expectation_holds' answer, not this one.
         for step in reversed(self.steps):
@@ -384,6 +411,7 @@ class Session:
         """
         self.mismatches += 1
         self.observed_at = None
+        self._drop_resolution()
         if self.mismatches >= MAX_MISMATCHES:
             return False
         _announce(self, "the screen was not what was expected - looking again")
@@ -412,43 +440,99 @@ class Session:
                            f"{repeats} times and the screen has not changed as expected - "
                            "stop rather than repeating it")
 
-        # If the step names something, that something has to be on the screen
-        # that was just read. This is the difference between driving an interface
-        # and clicking blindly: a button that is not there is not a button that
-        # will be there after the click.
+        # If the step names something, that something has to actually be there -
+        # resolved through the operating system where possible and against the
+        # screen text where not. This is the difference between driving an
+        # interface and clicking blindly: a button that is not there is not a
+        # button that will be there after the click.
+        #
+        # Only UNIQUE_MATCH may act. AMBIGUOUS is a question for the user and
+        # never a coin flip; DISABLED, PARTIAL_MATCH, STALE and NOT_FOUND are
+        # all refusals with their own reason.
+        from core import ui_targets
+
         aimed_at = describe_target(f"{action} {detail}".strip())
         if aimed_at.get("target"):
-            visible, why = _visible_label(aimed_at["target"], self.last_observation or "")
-            if not visible:
-                return False, (f"{why}. Do not click where it used to be - look again, "
-                               "and if it is still not there say so rather than guessing.")
+            resolution = self.aim(f"{action} {detail}".strip())
+            state = resolution.get("state")
+            if state != ui_targets.UNIQUE_MATCH:
+                return False, (f"{resolution.get('evidence')} "
+                               "Do not click where it used to be - look again, and if "
+                               "it is still not there say so rather than guessing.")
+            # Resolved, and still resolved NOW. A target found while the model was
+            # thinking is not evidence about the screen this instant.
+            fresh = ui_targets.still_valid(self.resolved,
+                                           observation=self.last_observation or "")
+            if not fresh.may_act:
+                self.resolved = None
+                return False, (f"{fresh.detail} The target has to be resolved again "
+                               "before anything is clicked.")
+            self.resolved = fresh.target
         return True, "ok"
 
     def aim(self, instruction: str) -> Dict[str, Any]:
-        """Work out what a step is aiming at and whether it can be seen.
+        """Work out what a step is aiming at, through the best route available.
 
         The IDENTIFY TARGET step, separated from acting on purpose: a caller can
         ask before it commits, and the answer is the same one may_act will give.
+
+        core/ui_targets.py does the resolving. It asks the operating system when
+        the operating system can be asked, and falls back to the text read off
+        the screen when it cannot - reporting which, every time, so a click made
+        on screen text is never mistaken for one made on a named element.
         """
+        from core import ui_targets
+
         found = describe_target(instruction)
-        if found.get("target"):
-            visible, why = _visible_label(found["target"], self.last_observation or "")
-            found["visible"] = visible
-            found["evidence"] = why
-        elif found.get("how") == BY_COORDINATES:
+        wanted = found.get("target")
+
+        if not wanted:
+            # Nothing nameable. Either a coordinate or an unclear step - both are
+            # weak, and both say so.
+            found["state"] = (ui_targets.UNSUPPORTED if found.get("how") == BY_COORDINATES
+                              else ui_targets.NOT_FOUND)
             found["visible"] = None
-            found["evidence"] = ("A coordinate cannot be confirmed against what is on "
-                                 "screen. Nothing here can say whether it is the right "
-                                 "place to click.")
-        else:
-            found["visible"] = None
-            found["evidence"] = ("This step does not name anything to aim at. Say what "
-                                 "is being clicked so it can be checked.")
-        found["prefer"] = (
-            "Name the control if the screen shows a name for it; coordinates are the "
-            "last resort, not the first."
-            if found.get("how") in (None, BY_COORDINATES) else None)
+            found["resolution"] = None
+            found["confidence"] = ui_targets.confidence(
+                ui_targets.BY_COORDINATES if found.get("how") == BY_COORDINATES else None)
+            found["evidence"] = (
+                "A coordinate cannot be confirmed against what is on screen. Nothing "
+                "here can say whether it is the right place to click."
+                if found.get("how") == BY_COORDINATES else
+                "This step does not name anything to aim at. Say what is being "
+                "clicked so it can be checked.")
+            found["prefer"] = ("Name the control if the interface shows a name for it; "
+                               "coordinates are the last resort, not the first.")
+            self.resolved = None
+            return found
+
+        resolution = ui_targets.resolve(
+            wanted, role=found.get("control") or "",
+            window=(self.context or {}).get("window") or "",
+            observation=self.last_observation or "")
+        # Held only when it is safe to act on. Anything else is not a target.
+        self.resolved = resolution.target if resolution.may_act else None
+
+        found.update({
+            "state": resolution.state,
+            "how": resolution.method or found.get("how"),
+            # True only when it is there and safe to act on. False when something
+            # was looked for and the answer is no - missing, ambiguous, disabled,
+            # only partly matched. None is reserved for "nothing was looked for",
+            # so a caller can tell a refusal from an absent question.
+            "visible": resolution.may_act,
+            "evidence": resolution.detail,
+            "confidence": ui_targets.confidence(resolution.method),
+            "resolution": resolution.describe(),
+            "prefer": (None if resolution.method == ui_targets.BY_ACCESSIBILITY else
+                       "This machine has no accessibility provider, so the target was "
+                       "matched against screen text. Check the result after acting."),
+        })
         return found
+
+    def _drop_resolution(self) -> None:
+        """Whatever was resolved is no longer evidence. Called after acting."""
+        self.resolved = None
 
     def record(self, action: str, detail: str = "") -> Dict[str, Any]:
         step = {"n": self.steps_taken + 1, "action": action, "detail": detail,
@@ -458,9 +542,69 @@ class Session:
                 "verified": False}
         self.steps.append(step)
         _announce(self, f"{action}" + (f" - {detail}" if detail and detail != action else ""))
-        # A step invalidates the last look: the screen has moved on.
+        # A step invalidates the last look AND whatever it resolved: the screen
+        # has moved on, and an element found on the screen before the click is
+        # not a thing to click again.
         self.observed_at = None
+        self._drop_resolution()
         return step
+
+    def verify_last_action(self, expected: str = "",
+                           observed: str = "") -> Dict[str, Any]:
+        """Did the last action do what it was supposed to?
+
+        The OBSERVE AGAIN -> COMPARE half of the loop, answered in
+        core/verification.py's words so that "the screen changed as expected"
+        reads the same as every other check in Leti.
+
+        The one thing it will never say is that a click worked because the click
+        API returned. An action whose result cannot be confirmed is NOT VERIFIED,
+        which is not the same as failed and is not the same as fine.
+        """
+        from core import verification
+
+        last = self.steps[-1] if self.steps else None
+        if last is None:
+            return verification.check(
+                "the screen changed", verification.NOT_APPLICABLE,
+                "Nothing has been done in this session yet.")
+
+        if observed:
+            self.observe(observed)
+
+        # observed_at, not last_observation: acting clears the former and leaves
+        # the latter, so a session that has not looked since the click still
+        # holds the text of the screen BEFORE it. Comparing against that would
+        # report FAILED for an action that may well have worked - the difference
+        # between "it did not do what was expected" and "nobody has looked".
+        if self.observed_at is None or not self.last_observation:
+            return verification.check(
+                "the screen changed", verification.NOT_VERIFIED,
+                f"'{last['action']}' was carried out and the screen has not been "
+                "looked at since, so whether it did anything is unknown.",
+                to_confirm="read_screen, then verify_screen with what you expected")
+
+        if not expected:
+            return verification.check(
+                "the screen changed", verification.NOT_VERIFIED,
+                f"'{last['action']}' was carried out and nothing said what should "
+                "have happened, so there is nothing to compare against.",
+                limit="An action with no expectation cannot be confirmed.")
+
+        holds, why = self.expectation_holds(expected)
+        if holds:
+            last["verified"] = True
+            return verification.check(
+                "the screen changed", verification.VERIFIED,
+                f"After '{last['action']}': {why}.",
+                limit=(None if self.context else
+                       "Matched against what was read off the screen rather than "
+                       "the interface's own state."))
+        return verification.check(
+            "the screen changed", verification.FAILED,
+            f"After '{last['action']}': {why}. The action ran; it did not produce "
+            "what was expected.",
+            to_confirm="look again before deciding what to do next")
 
     def close(self, reason: str = "finished") -> Dict[str, Any]:
         self.closed = True

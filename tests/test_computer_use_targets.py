@@ -67,7 +67,8 @@ def test_a_missing_element_is_refused_rather_than_clicked():
     session = _session()
     allowed, why = session.may_act("click", "the Checkout button")
     assert allowed is False
-    assert "not on screen" in why and "Do not click where it used to be" in why
+    assert "not in what was read off the screen" in why
+    assert "Do not click where it used to be" in why
 
 
 def test_the_wrong_application_is_refused():
@@ -118,14 +119,19 @@ def test_aiming_reports_what_it_found_and_what_it_prefers():
     assert session.aim("click at 1, 2")["prefer"]
 
 
-def test_a_partial_match_is_allowed_but_flagged():
-    """Every word present but not together is a weaker claim, and says so -
-    "Save" and "Save as" are different buttons."""
+def test_a_partial_match_is_refused_rather_than_clicked():
+    """Every word present but not together is not the same element. "Save" and
+    "Save as" are different buttons, and the difference between them is exactly
+    what a click gets wrong."""
+    from core import ui_targets
+
     session = _session("A toolbar with Save at the left and a Draft indicator "
                        "at the right.")
     aim = session.aim("click the Save Draft button")
-    assert aim["visible"] is True
+    assert aim["state"] == ui_targets.PARTIAL_MATCH
+    assert aim["visible"] is False
     assert "not together" in aim["evidence"]
+    assert session.may_act("click", "the Save Draft button")[0] is False
 
 
 # --- Verification ------------------------------------------------------------------

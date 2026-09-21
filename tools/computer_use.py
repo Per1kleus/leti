@@ -161,16 +161,25 @@ class VerifyScreenTool(BaseTool):
         if next_action and allowed:
             session.record(next_action or "step", next_action)
 
-        # What the next step is aiming at, and whether it is actually on the
-        # screen that was just read. No extra tool and no extra schema - the
-        # answer rides along with the check that was already being made.
+        # What the next step is aiming at, and whether it is actually there.
+        # No extra tool and no extra schema - the answer rides along with the
+        # check that was already being made. Resolved through the operating
+        # system where that is possible and against the screen text where it is
+        # not; the "how" says which, every time.
         aim = session.aim(next_action) if next_action else None
+
+        # And whether the PREVIOUS action did what it was supposed to, in the
+        # same VERIFIED / NOT VERIFIED / FAILED words as everything else. An
+        # action nobody looked at afterwards is NOT VERIFIED, never "clicked
+        # successfully".
+        after = session.verify_last_action(expected=expected)
 
         return ToolResult(success=True, output={
             "matches": True,
             "may_continue": allowed,
             "reason": reason,
             "target": aim,
+            "last_action": after,
             "progress": session.plan_progress(),
             "session": session.summary(),
             "note": ("Go ahead with the existing tool for that action - mouse_click, "
