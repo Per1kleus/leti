@@ -262,3 +262,57 @@ async def test_a_bare_exit_in_default_mode_is_an_ordinary_request(guard_factory)
     orch, llm, _ = _orchestrator(guard_factory, [{"content": "Exit what?"}])
     answer = await orch.handle_user_input("exit")
     assert answer == "Exit what?" and llm.seen
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_no_account_configured_says_which_account(guard_factory,
+                                                                      monkeypatch):
+    monkeypatch.setattr("core.settings_editor.section_is_configured", lambda name: False)
+    connections.forget_outcomes()
+
+    class Unreachable(BaseTool):
+        name = "send_email"
+        description = "send"
+        parameters = [ToolParameter(name="to", type="string", description="to")]
+
+        async def run(self, **kwargs):
+            return ToolResult(success=False, error="connection refused")
+
+    orch, llm, _ = _orchestrator(guard_factory, [
+        {"content": None, "tool_calls": [
+            {"function": {"name": "send_email", "arguments": {"to": "a@b.com"}}}]},
+        {"content": "There's no mail account set up."}])
+    orch.tool_registry.register(Unreachable())
+    await orch.handle_user_input("email a@b.com")
+    tool_messages = [m for m in llm.seen[-1]["messages"] if m.get("role") == "tool"]
+    assert "No email connection is set up" in tool_messages[-1]["content"]
+    assert "Connections" in tool_messages[-1]["content"]
+    connections.forget_outcomes()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_from_a_tool_that_needs_no_account_is_left_alone(guard_factory,
+                                                                        tmp_path):
+    class Broken(BaseTool):
+        name = "write_file"
+        description = "write"
+        parameters = [ToolParameter(name="path", type="string", description="path")]
+
+        async def run(self, **kwargs):
+            return ToolResult(success=False, error="disk full")
+
+    orch, llm, _ = _orchestrator(guard_factory, [
+        {"content": None, "tool_calls": [
+            {"function": {"name": "write_file", "arguments": {"path": "/x"}}}]},
+        {"content": "The disk is full."}])
+    orch.tool_registry.register(Broken())
+    await orch.handle_user_input("save it")
+    tool_messages = [m for m in llm.seen[-1]["messages"] if m.get("role") == "tool"]
+    assert "Connections" not in tool_messages[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_the_context_package_names_what_the_request_names(guard_factory):
+    orch, _, _ = _orchestrator(guard_factory, [{"content": "ok"}])
+    await orch.handle_user_input("read turbine.py and summarise it")
+    assert "turbine.py" in orch._context.report()["entities"]

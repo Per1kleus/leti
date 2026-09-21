@@ -709,6 +709,8 @@ class Orchestrator:
                                                 result.error or "")
             except Exception:
                 pass
+            if not result.success:
+                result = self._explain_failure(tool_name, result)
             return self._verified(tool_name, arguments, result)
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' raised an exception")
@@ -717,7 +719,25 @@ class Orchestrator:
                 connections.record_tool_outcome(tool_name, False, str(e))
             except Exception:
                 pass
-            return ToolResult(success=False, error=str(e))
+            return self._explain_failure(tool_name, ToolResult(success=False, error=str(e)))
+
+    def _explain_failure(self, tool_name: str, result: ToolResult) -> ToolResult:
+        """When an external call fails and its account is not set up, say so.
+
+        A failed send_email with no mail account configured reads to the model as
+        a mystery, and the answer that follows is a guess about servers. One line
+        from core/connections.py - which reads settings, contacts nothing and
+        returns no credential - turns it into "there is no email account; add one
+        under Connections". Silent for every tool that needs no account, and for
+        every account that IS set up, which is the common case.
+        """
+        try:
+            warning = connections.warning_for(tool_name)
+            if warning and result.error:
+                result.error = f"{result.error} - {warning}"
+        except Exception as e:
+            logger.debug(f"Couldn't add connection context to a failure: {e}")
+        return result
 
     def _verified(self, tool_name: str, arguments: Dict[str, Any],
                   result: ToolResult) -> ToolResult:

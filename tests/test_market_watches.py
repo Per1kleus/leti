@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import time
 import types
 
@@ -991,10 +992,24 @@ def test_the_trend_series_does_not_grow_without_limit(searches):
 async def test_a_slow_provider_does_not_freeze_the_interface(market, searches, monkeypatch):
     """Watches wait on somebody else's API, and the interface is on this event
     loop. The sweep runs in one worker thread - one for the sweep, not one per
-    watch - so a search that takes three seconds does not stop the screen."""
+    watch - so a search that takes three seconds does not stop the screen.
+
+    What this asserts is the MECHANISM, not a stopwatch reading. An earlier
+    version required no heartbeat gap to exceed 0.1s against a 0.15s provider
+    call, which is a real property measured by a proxy that a loaded machine can
+    trip: inside a full 1,700-test run, one missed 10ms wakeup fails it while the
+    sweep is behaving perfectly. So it now checks the two things that are
+    actually true when the loop is free - every provider call happened off the
+    main thread, and the loop went on ticking throughout - and keeps a stall
+    ceiling set to what a genuinely frozen loop would look like rather than to
+    what a busy one might.
+    """
     from tools.watch_tools import CheckWatchesTool
 
+    calling_threads = []
+
     async def slow_searches(queries, max_results=5):
+        calling_threads.append(threading.current_thread())
         await asyncio.sleep(0.15)
         return {"results": [article("Something happened at last", "reuters.com")],
                 "failed_queries": []}
@@ -1013,15 +1028,27 @@ async def test_a_slow_provider_does_not_freeze_the_interface(market, searches, m
             await asyncio.sleep(0.01)
 
     beat = asyncio.get_running_loop().create_task(heartbeat())
+    started = time.perf_counter()
     try:
         result = await CheckWatchesTool().run()
     finally:
         beat.cancel()
+    swept = time.perf_counter() - started
 
     assert result.output["checked"] == 3
-    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    # The mechanism: nothing waited on a provider from the thread the interface
+    # and the voice loop live on.
+    assert calling_threads, "no provider call was made"
+    main = threading.main_thread()
+    assert all(t is not main for t in calling_threads), (
+        "a provider call ran on the event loop's thread")
+    # And the consequence: the loop kept running while it happened. Three 0.15s
+    # calls take about 0.45s, which is ~45 ticks at 10ms; a frozen loop manages
+    # one or two.
     assert len(ticks) > 10, "the loop stopped while watches were evaluated"
-    assert max(gaps) < 0.1, f"the loop stalled for {max(gaps):.2f}s"
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    assert max(gaps) < swept / 2, (
+        f"the loop stalled for {max(gaps):.2f}s of a {swept:.2f}s sweep")
 
 
 def test_one_worker_thread_for_the_sweep_not_one_per_provider_call(market, searches):

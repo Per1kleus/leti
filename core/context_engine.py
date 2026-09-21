@@ -97,6 +97,7 @@ class Piece:
 class Package:
     """The assembled context, plus a truthful account of how it was assembled."""
     messages: List[Dict[str, Any]] = field(default_factory=list)
+    entities: List[str] = field(default_factory=list)
     included: List[str] = field(default_factory=list)
     skipped: List[Tuple[str, str]] = field(default_factory=list)
     dropped: List[str] = field(default_factory=list)
@@ -106,6 +107,7 @@ class Package:
 
     def report(self) -> Dict[str, Any]:
         return {
+            "entities": list(self.entities),
             "included": list(self.included),
             "skipped": [{"source": name, "why": why} for name, why in self.skipped],
             "dropped_for_budget": list(self.dropped),
@@ -362,6 +364,14 @@ async def build(request: Request, system_prompt: str,
     started = time.perf_counter()
     package = Package()
     pieces: List[Piece] = []
+
+    # ENTITIES. What the request actually names - a file, a person, a symbol, a
+    # project - read by core/intent.py on the way in and kept here because it is
+    # what several of the predicates below are really asking about. Nothing is
+    # resolved at this point: turning "Acme" into a particular lead is
+    # core/entities.py's job, done when a tool needs the answer rather than
+    # speculatively on every turn.
+    package.entities = list(request.intent.entities)
 
     for name, wanted, fetch, priority in SOURCES:
         try:
