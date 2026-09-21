@@ -408,6 +408,20 @@ class Orchestrator:
             self._set_state(AgentState.IDLE)
             return answer
 
+        # "Run full Leti diagnostics" is a command too, and answered the same way:
+        # deterministically, here, without a model round trip and without costing
+        # Default Mode a tool schema. Every check reads; none of them changes,
+        # sends or deletes anything (see core/diagnostics.py's full_check).
+        diagnostics_request = intent_reader.asks_for_diagnostics(user_text)
+        if diagnostics_request is not None:
+            answer = await self._run_diagnostics(**diagnostics_request)
+            self.session_memory.add_turn("assistant", answer, session_id)
+            if self.speak_callback:
+                self._set_state(AgentState.SPEAKING)
+                await self.speak_callback(answer)
+            self._set_state(AgentState.IDLE)
+            return answer
+
         messages = await self._build_messages(user_text)
         _turn_started = time.perf_counter()
         final_answer = await self._tool_calling_loop(messages)
@@ -434,6 +448,23 @@ class Orchestrator:
 
         self._set_state(AgentState.IDLE)
         return final_answer
+
+    async def _run_diagnostics(self, reach_out: bool = False) -> str:
+        """Check every subsystem and say what was and was not actually tested.
+
+        Run off the event loop: the checks read files and, when asked, contact the
+        model server, and blocking the loop would freeze the interface and the
+        voice pipeline while it happened.
+        """
+        self._set_state(AgentState.EXECUTING)
+        try:
+            report = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: diagnostics.full_check(self.tool_registry, reach_out))
+            return diagnostics.full_check_text(report)
+        except Exception as e:
+            logger.exception("The diagnostics run itself failed")
+            return (f"The diagnostics run failed before it could report: {e}. That is "
+                    "not a verdict on any subsystem - nothing was tested.")
 
     def _describe_mode(self) -> str:
         active = modes.mode()

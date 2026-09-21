@@ -47,11 +47,13 @@ SYNC_METHODS = {
     "get_personality", "set_personality", "get_activity",
     "get_tasks", "control_task", "get_computer_use",
     "get_watch", "control_watch", "get_proactive", "get_mode", "set_mode",
+    "get_connections", "get_context_report",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
                  "check_audio", "save_audio_setup",
                  "get_model_setup", "apply_model_setup",
-                 "get_permissions", "set_permission", "get_diagnostics"}
+                 "get_permissions", "set_permission", "get_diagnostics",
+                 "run_full_check"}
 
 
 class LetiAPI:
@@ -199,6 +201,50 @@ class LetiAPI:
             return diagnostics.snapshot(self.orchestrator.tool_registry)
         except Exception as e:
             logger.warning(f"Couldn't build a diagnostics snapshot: {e}")
+            return {"error": str(e)}
+
+    async def a_run_full_check(self, reach_out: bool = False) -> dict:
+        """Every subsystem, checked on demand. The same core/diagnostics.py full
+        check that "run full Leti diagnostics" runs - one implementation, reached
+        from the interface as well as from speech.
+
+        Run off the event loop: the checks read files and, when asked, contact the
+        model server, and the window must stay responsive while they do. Nothing
+        here changes, sends or deletes anything.
+        """
+        from core import diagnostics
+
+        try:
+            return await self.loop.run_in_executor(
+                None,
+                lambda: diagnostics.full_check(self.orchestrator.tool_registry,
+                                               bool(reach_out)))
+        except Exception as e:
+            logger.warning(f"The full check failed: {e}")
+            return {"error": str(e),
+                    "note": "Nothing was tested; this is not a verdict on any subsystem."}
+
+    def get_connections(self) -> dict:
+        """Which accounts are set up, from core/connections.py.
+
+        A view of settings, not a second store: no credential is read, returned or
+        logged here, and nothing is contacted to build it.
+        """
+        from core import connections
+
+        try:
+            return {"summary": connections.summary(), "connections": connections.overview()}
+        except Exception as e:
+            logger.warning(f"Couldn't read the connections: {e}")
+            return {"error": str(e)}
+
+    def get_context_report(self) -> dict:
+        """What the last turn's context was assembled from, and what it left out."""
+        from core import diagnostics
+
+        try:
+            return diagnostics.context_section()
+        except Exception as e:
             return {"error": str(e)}
 
     async def a_get_model_setup(self) -> dict:

@@ -240,8 +240,25 @@ def detail(task: Dict[str, Any]) -> Dict[str, Any]:
         "result": (s.get("result") or "")[:400] or None,
         "history": s.get("history", [])[-4:],
     } for i, s in enumerate(steps)]
+    done = [s for s in steps if s.get("status") == "done"]
+    current = task.get("current_step", 0)
+    # Everything a panel needs to say where this is, computed from the steps that
+    # are already here. No second progress model: these are the same steps
+    # describe() counted, named the way a person reads them.
+    base["percent"] = round(len(done) / len(steps) * 100.0, 1) if steps else None
+    base["completed_steps"] = [s.get("instruction", "") for s in done]
+    base["next_step"] = (steps[current + 1].get("instruction")
+                         if 0 <= current + 1 < len(steps) else None)
+    base["failed_step"] = next((s.get("instruction") for s in steps
+                                if s.get("status") == "failed"), None)
+    base["recovering"] = any(s.get("status") == "recovering" for s in steps)
     base["awaiting_approval"] = task.get("status") == WAITING_FOR_USER
     base["approval_request"] = task.get("blocked_reason") if base["awaiting_approval"] else None
+    # The one line the interface puts in front of the user when it is their turn.
+    base["waiting_for_you"] = (
+        (f"Leti needs your answer before it can carry on: "
+         f"{task.get('blocked_reason') or 'it needs your approval for the next step'}.")
+        if base["awaiting_approval"] else None)
     base["can"] = {
         "pause": task.get("status") in (QUEUED, RUNNING),
         "resume": task.get("status") in (PAUSED, WAITING_FOR_USER, FAILED),
@@ -297,6 +314,33 @@ def _set_status(task_id: str, status: str, **fields) -> Optional[Dict[str, Any]]
     _replace(task)
     _mirror_to_activity(task, status)
     return task
+
+
+def spoken_progress(task: Dict[str, Any], index: Optional[int] = None) -> str:
+    """Where a task is, in one sentence short enough to hear.
+
+    Read entirely from the task's own steps, so what is said out loud and what the
+    interface's task panel shows come from the same place and cannot drift. Says
+    what is true and nothing more: a step that is recovering is described as
+    trying again, not as progress.
+    """
+    steps = task.get("steps", [])
+    index = task.get("current_step", 0) if index is None else index
+    total = len(steps)
+    position = min(index + 1, total) if total else 0
+    name = task.get("name") or "the task"
+    step = steps[index] if 0 <= index < total else {}
+    doing = (step.get("instruction") or "").strip()
+    short = (doing[:60].rsplit(" ", 1)[0] + "...") if len(doing) > 60 else doing
+
+    if step.get("status") == "recovering":
+        return f"Still on {name}: step {position} of {total} did not work, trying another way."
+    if task.get("status") == WAITING_FOR_USER:
+        return (f"{name} is waiting for you: "
+                + (task.get("blocked_reason") or "it needs your approval to carry on") + ".")
+    if short:
+        return f"Still working on {name}: step {position} of {total}, {short}"
+    return f"Still working on {name}: step {position} of {total}."
 
 
 def _mirror_step(task: Dict[str, Any], index: int) -> None:
@@ -506,6 +550,9 @@ class TaskRunner:
         self.orchestrator = orchestrator
         self.safety_guard = safety_guard
         self.notify = notify
+        # When each task last had something said about it out loud. In memory,
+        # one float per task, so a long task does not narrate every step.
+        self._last_progress_spoken: Dict[str, float] = {}
         self._current: Optional[str] = None
         # Strong references: asyncio only keeps weak ones, so a background task
         # without this can be garbage collected mid-run.
@@ -594,6 +641,7 @@ class TaskRunner:
             _note(step, "running with the approval you gave in the interface")
         _replace(task)
         _mirror_step(task, index)
+        self._announce_progress(task, index)
 
         instruction = (
             f"[Autonomous task '{task['name']}', step {index + 1} of "
@@ -764,6 +812,37 @@ class TaskRunner:
         checked = (task.get("verification") or {}).get("passed")
         self._announce(f"'{task['name']}' is done."
                        + (" It passed its own check." if checked else ""))
+
+    # Spoken progress on a long task.
+    #
+    # There is no second voice pipeline here and no loop: this fires on the step
+    # transition that was happening anyway, and the line it produces goes down the
+    # SAME notify path the approval and failure announcements already use, which
+    # in voice mode is the one speak_callback and in the interface is the chat.
+    # The interface's own task panel reads the same task state, so the two never
+    # disagree about where a task is.
+    #
+    # Two conditions keep it from becoming chatter: a task has to be long enough
+    # for progress to be a question, and enough time has to have passed since the
+    # last thing Leti said about it. A four-step task that finishes in ten seconds
+    # says nothing at all until it is done.
+    SPOKEN_PROGRESS_AFTER_SECONDS = 45
+    MIN_STEPS_FOR_SPOKEN_PROGRESS = 3
+
+    def _announce_progress(self, task: Dict[str, Any], index: int) -> None:
+        """One short line about where a long task has got to, or nothing."""
+        try:
+            steps = task.get("steps", [])
+            if len(steps) < self.MIN_STEPS_FOR_SPOKEN_PROGRESS or index == 0:
+                return
+            now = time.time()
+            since = now - self._last_progress_spoken.get(task["id"], 0.0)
+            if since < self.SPOKEN_PROGRESS_AFTER_SECONDS:
+                return
+            self._last_progress_spoken[task["id"]] = now
+            self._announce(spoken_progress(task, index))
+        except Exception:
+            logger.debug("Couldn't announce task progress; the task is unaffected.")
 
     def _announce(self, message: str) -> None:
         if not self.notify:

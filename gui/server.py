@@ -219,6 +219,10 @@ class LetiWebServer:
                 value = await self.api.a_set_permission(*args)
             elif method == "get_diagnostics":
                 value = await self.api.a_get_diagnostics()
+            elif method == "run_full_check":
+                # On demand, and it runs its checks in a worker thread; the socket
+                # stays answerable while it does.
+                value = await self.api.a_run_full_check(*args)
             elif method == "get_model_setup":
                 value = await self.api.a_get_model_setup()
             elif method == "apply_model_setup":

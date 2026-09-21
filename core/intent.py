@@ -261,6 +261,48 @@ def mode_command(text: str) -> Optional[str]:
     return None
 
 
+# "Run full Leti diagnostics" is a command, like a mode command, and is answered
+# the same way: matched deterministically here, before any model call, and handled
+# by the orchestrator itself.
+#
+# It is deliberately NOT a tool. Every registered tool's schema sits in Default
+# Mode's fallback, which is already close to the context window, and a diagnostics
+# report is a fixed thing Leti knows how to produce - there is nothing for the
+# model to decide. This way it costs zero tokens, works by voice, and cannot be
+# triggered by a sentence that merely mentions health.
+_DIAGNOSTICS = re.compile(
+    r"\b(?:run|do|perform|start|give me)\s+(?:a\s+|the\s+|my\s+)?"
+    r"(?:full\s+|complete\s+|whole\s+|deep\s+|thorough\s+|quick\s+)?(?:leti\s+)?"
+    r"(?:diagnostics?|system\s+check|health\s+check|self[\s-]?check|self[\s-]?test)\b"
+    r"|\b(?:leti\s+)?diagnostics\b\s*$"
+    r"|\bcheck\s+(?:your|leti'?s)\s+(?:own\s+)?health\b", re.I)
+
+# The same command, asking it to actually contact the model server. Costs seconds,
+# so it happens only when asked for in these words.
+_DIAGNOSTICS_DEEP = re.compile(
+    r"\b(?:deep|thorough|including connections?|with connections?|contact|"
+    r"actually (?:test|check|try))\b", re.I)
+
+
+def asks_for_diagnostics(text: str) -> Optional[Dict[str, Any]]:
+    """A request for a full system check, or None for everything else.
+
+    None for every ordinary request, including one that complains something is
+    broken: "my email isn't working" is a problem to look into, not a command to
+    run sixteen checks.
+    """
+    if not isinstance(text, str):
+        return None
+    lowered = text.lower()
+    if not any(hint in lowered for hint in
+               ("diagnos", "system check", "health", "self-check", "self check",
+                "self-test", "self test")):
+        return None
+    if not _DIAGNOSTICS.search(text):
+        return None
+    return {"reach_out": bool(_DIAGNOSTICS_DEEP.search(text))}
+
+
 @dataclass
 class Intent:
     """A reading of one request. Every field is a hint, never an instruction."""

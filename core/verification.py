@@ -336,9 +336,9 @@ def _verify_scheduled_task(arguments: Dict[str, Any], result: Any) -> Dict[str, 
                      "The tool did not return the id of the scheduled task.",
                      to_confirm="list_scheduled_tasks")
     try:
-        from core import system_scheduler
+        from tools import scheduler
 
-        jobs = system_scheduler.load_jobs()
+        jobs = scheduler.load_tasks()
     except Exception as e:
         return check("scheduled", NOT_VERIFIED,
                      f"The scheduler store could not be read back ({e}).")

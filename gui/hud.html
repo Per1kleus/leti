@@ -133,6 +133,12 @@
   }
   /* Coding Mode's badge. The same mono/letter-spaced language as the readouts,
      shown only while the mode is on - Default Leti looks exactly as it did. */
+  /* The two lines the task card grew: what is next, and what is blocking. Same
+     type scale as the rest of the card; the blocked one takes the amber that
+     already means "your turn" everywhere else in this interface. */
+  .task-next{ margin-top:3px; opacity:0.55; font-size:10.5px; letter-spacing:0.2px; }
+  .task-blocked{ margin-top:4px; color:var(--amber); font-size:10.5px; }
+
   .mode-badge{
     font-family:var(--mono); font-size:9px; letter-spacing:2px; text-transform:uppercase;
     color:var(--cyan); border:1px solid var(--cyan); border-radius:3px;
@@ -382,7 +388,10 @@
   .radar-core .state.speaking{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
   .radar-core .state.thinking,
   .radar-core .state.executing{ color:var(--cyan); text-shadow:0 0 10px rgba(79,227,255,0.55); }
-  .radar-core .state.waiting{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
+  .radar-core .state.waiting,
+  .radar-core .state.approval{ color:var(--amber); text-shadow:0 0 12px rgba(255,180,84,0.7); }
+  .radar-core .state.recovering{ color:var(--amber); }
+  .radar-core .state.failed{ color:#ff7a6b; text-shadow:0 0 12px rgba(255,122,107,0.6); }
   .radar-core .state.completed{ color:var(--cyan); }
   .radar-core .state.error{ color:#ff7a6b; text-shadow:0 0 12px rgba(255,122,107,0.6); }
   .radar-core .core-label{
@@ -425,7 +434,13 @@
   #leti-root[data-state="thinking"] .mark-halo,
   #leti-root[data-state="executing"] .mark-halo{ opacity:0.16; }
   #leti-root[data-state="waiting"] .mark-halo,
-  #leti-root[data-state="waiting"] .mark-stem{ fill:var(--amber); }
+  #leti-root[data-state="waiting"] .mark-stem,
+  #leti-root[data-state="approval"] .mark-halo,
+  #leti-root[data-state="approval"] .mark-stem,
+  #leti-root[data-state="recovering"] .mark-halo,
+  #leti-root[data-state="recovering"] .mark-stem{ fill:var(--amber); }
+  #leti-root[data-state="failed"] .mark-halo,
+  #leti-root[data-state="failed"] .mark-stem{ fill:#ff7a6b; }
   #leti-root[data-state="error"] .mark-halo,
   #leti-root[data-state="error"] .mark-stem{ fill:#ff7a6b; }
   /* 190px of window is not a place for a 90-unit letterform beside a wordmark. */
@@ -2022,16 +2037,40 @@
   // lets "thinking", "executing" and "waiting for approval" appear on screen
   // without any of them costing a frame more than sitting idle does.
   const STATES = {
-    idle:      { anim:'idle',      label:'IDLE',       pill:'Awaiting Command...' },
-    listening: { anim:'listening', label:'LISTENING',  pill:'Listening...' },
-    thinking:  { anim:'idle',      label:'THINKING',   pill:'Thinking...' },
-    executing: { anim:'idle',      label:'EXECUTING',  pill:'Working on it...' },
-    speaking:  { anim:'speaking',  label:'SPEAKING',   pill:'Responding...' },
-    waiting:   { anim:'idle',      label:'YOUR TURN',  pill:'Waiting for you...' },
-    completed: { anim:'idle',      label:'COMPLETE',   pill:'Done' },
-    error:     { anim:'idle',      label:'ERROR',      pill:'Something went wrong' },
+    idle:       { anim:'idle',      label:'IDLE',        pill:'Awaiting Command...' },
+    listening:  { anim:'listening', label:'LISTENING',   pill:'Listening...' },
+    thinking:   { anim:'idle',      label:'THINKING',    pill:'Thinking...' },
+    executing:  { anim:'idle',      label:'WORKING',     pill:'Working on it...' },
+    speaking:   { anim:'speaking',  label:'SPEAKING',    pill:'Responding...' },
+    waiting:    { anim:'idle',      label:'YOUR TURN',   pill:'Waiting for you...' },
+    approval:   { anim:'idle',      label:'NEEDS YOU',   pill:'Waiting for your approval' },
+    recovering: { anim:'idle',      label:'RETRYING',    pill:'That did not work - trying another way' },
+    completed:  { anim:'idle',      label:'COMPLETE',    pill:'Done' },
+    failed:     { anim:'idle',      label:'FAILED',      pill:'That did not work' },
+    error:      { anim:'idle',      label:'ERROR',       pill:'Something went wrong' },
   };
   let displayState = 'idle';
+
+  // What the AGENT is doing (idle, listening, thinking, working, speaking) and
+  // what a long-running TASK needs (your approval, another attempt, your
+  // attention because it failed) are two different facts, and the readout has to
+  // show whichever one the person has to act on.
+  //
+  // The rule: a busy agent wins, because it is happening now and the task can
+  // wait one turn. An idle agent yields to the task, because "IDLE" while a task
+  // sits blocked on an approval is the readout actively misleading somebody.
+  //
+  // Both facts come from where they already live - the agent state machine pushes
+  // one, core/task_manager.py's own status is read for the other in refreshTasks.
+  // Nothing here keeps a copy of either, so there is no second state to drift.
+  const BUSY_STATES = ['listening', 'thinking', 'executing', 'speaking'];
+  let agentState = 'idle';
+  let taskAttention = null;
+
+  function applyState(){
+    if(BUSY_STATES.indexOf(agentState) !== -1){ setMode(agentState); return; }
+    setMode(taskAttention || agentState);
+  }
 
   function setMode(newState){
     const spec = STATES[newState] || STATES.idle;
@@ -2132,8 +2171,11 @@
     thinking: 'Thinking...',
     executing: 'Running a tool',
     speaking: 'Responding',
-    waiting: 'Waiting for your approval',
+    waiting: 'Waiting for you',
+    approval: 'Waiting for your approval',
+    recovering: 'That step did not work - trying another way',
     completed: 'Task completed',
+    failed: 'A task failed',
     error: 'Something went wrong',
   };
   let lastLoggedState = null;
@@ -2249,7 +2291,8 @@
   };
   window.appendUserMessage = function(text){ appendSessionMessage('user', text); };
   window.setHudState = function(state){
-    setMode(state);
+    agentState = state;
+    applyState();
     // The RT-LOG gets the same transition, once. Repeats are dropped: one turn
     // passes through THINKING several times and saying so each time is noise.
     const line = STATE_LINE[state];
@@ -2949,7 +2992,104 @@
       if(watch.id === openWatch && watchDetail) html += watchDetailHtml(watchDetail);
     });
 
+    html += renderConnections(d.connections);
+    html += renderContextReport(d.context);
+    html += renderFullCheck();
+
     diagnosticsContent.innerHTML = html;
+    wireFullCheckButton();
+  }
+
+  // Which accounts are set up. A view of core/connections.py, which is itself a
+  // view of the settings - no credential is read here, none is sent here, and
+  // nothing is contacted to draw it.
+  function renderConnections(c){
+    if(!c) return '';
+    const s = c.summary || {};
+    let html = '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
+               'Connections</div></div></div>';
+    html += row('Set up', (s.connected || 0) + ' of ' + (s.total || 0));
+    if(s.failing) html += row('Failing', s.failing);
+    (c.connections || []).forEach(conn => {
+      const off = conn.state === 'not configured' || conn.state === 'failing';
+      html += '<div class="kv-row"><span class="k">' + esc(conn.capability) + '</span>' +
+              '<span class="v' + (off ? ' off' : '') + '">' + esc(conn.state) + '</span></div>';
+      html += '<div class="audio-detail">' + esc(conn.detail || '') +
+              (conn.fix ? '<br>' + esc(conn.fix) : '') + '</div>';
+    });
+    return html;
+  }
+
+  // What the last turn's context was built from, and - the part worth having -
+  // what it deliberately left out. See core/context_engine.py.
+  function renderContextReport(c){
+    if(!c || c.status !== 'ok') return '';
+    let html = '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
+               'Context for the last turn</div></div></div>';
+    html += row('Sources used', (c.sources_used || []).join(', ') || 'none') +
+            row('Size', (c.chars || 0) + ' of ' + (c.budget_chars || 0) + ' chars') +
+            row('Assembled in', c.seconds === undefined ? 'Unavailable'
+                                : (c.seconds * 1000).toFixed(2) + ' ms');
+    if((c.dropped_for_budget || []).length)
+      html += '<div class="audio-detail">Dropped to fit: ' +
+              esc(c.dropped_for_budget.join(', ')) + '</div>';
+    if((c.only_a_tool_can_reach || []).length)
+      html += '<div class="audio-detail">Only a tool can reach: ' +
+              esc(c.only_a_tool_can_reach.map(t => t.source).join(', ')) + '</div>';
+    if((c.sources_skipped || []).length)
+      html += '<div class="audio-detail">Left out: ' +
+              esc(c.sources_skipped.map(x => x.source + ' (' + x.why + ')').join('; ')) +
+              '</div>';
+    return html;
+  }
+
+  // The full check. On demand and nowhere else: this panel refreshes every few
+  // seconds and running sixteen checks on that timer would be a background health
+  // monitor, which is exactly what Leti does not have. The button runs it once.
+  let fullCheck = null, fullCheckRunning = false;
+
+  function renderFullCheck(){
+    let html = '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
+               'Full system check</div></div></div>';
+    html += '<div class="audio-detail">Checks every subsystem and reports what it ' +
+            'could NOT test as well as what passed. Reads only — nothing is ' +
+            'changed, sent or deleted.</div>';
+    html += '<div class="task-actions" style="margin:6px 0 10px">' +
+            '<button class="settings-btn" id="fullCheckBtn"' +
+            (fullCheckRunning ? ' disabled' : '') + '>' +
+            (fullCheckRunning ? 'Checking…' : 'Run full check') + '</button></div>';
+    if(!fullCheck) return html;
+    if(fullCheck.error) return html + '<div class="settings-error">' + esc(fullCheck.error) +
+                                      '</div>';
+    html += row('Overall', fullCheck.overall) +
+            row('Taken at', fullCheck.taken_at) +
+            row('Took', fullCheck.seconds + ' s');
+    (fullCheck.checks || []).forEach(check => {
+      const bad = check.state === 'FAIL' || check.state === 'WARNING';
+      const unknown = check.state !== 'PASS' && !bad;
+      html += '<div class="kv-row"><span class="k">' + esc(check.subsystem) + '</span>' +
+              '<span class="v' + (bad || unknown ? ' off' : '') + '">' +
+              esc(check.state) + '</span></div>';
+      html += '<div class="audio-detail">' + esc(check.detail) +
+              (check.fix ? '<br>' + esc(check.fix) : '') + '</div>';
+    });
+    if((fullCheck.not_tested || []).length)
+      html += '<div class="audio-detail">Not actually tested: ' +
+              esc(fullCheck.not_tested.join(', ')) + '. That is not a pass.</div>';
+    return html;
+  }
+
+  function wireFullCheckButton(){
+    const btn = document.getElementById('fullCheckBtn');
+    if(!btn) return;
+    btn.onclick = () => {
+      fullCheckRunning = true;
+      btn.disabled = true; btn.textContent = 'Checking…';
+      callApi('run_full_check', false)
+        .then(result => { fullCheck = result; })
+        .catch(e => { fullCheck = {error: e.message}; })
+        .then(() => { fullCheckRunning = false; refreshDiagnostics(); });
+    };
   }
 
   // Which watch is expanded, and what came back for it. Kept outside the render
@@ -3097,9 +3237,14 @@
       catch(e){ watchDetail = {error: e.message}; }
     }
     try {
-      const [diag, pro] = await Promise.all([
-        callApi('get_diagnostics'), callApi('get_proactive').catch(() => null)]);
+      const [diag, pro, conns, ctx] = await Promise.all([
+        callApi('get_diagnostics'),
+        callApi('get_proactive').catch(() => null),
+        callApi('get_connections').catch(() => null),
+        callApi('get_context_report').catch(() => null)]);
       if(pro) diag.proactive = pro;
+      if(conns) diag.connections = conns;
+      if(ctx) diag.context = ctx;
       renderDiagnostics(diag);
     }
     catch(e){
@@ -3774,6 +3919,17 @@
         active: tasks.active || [], recent: tasks.recent || [],
         sessions: computer.sessions || [],
       };
+      // Read off the same task rows the card below renders, so the readout and
+      // the card can never say different things about the same task.
+      const blocked = taskState.active.find(t => t.awaiting_approval);
+      const retrying = taskState.active.find(t => t.recovering);
+      const brokeJustNow = (taskState.recent || []).slice(-1)
+                             .filter(t => t.status === 'failed')[0];
+      taskAttention = blocked ? 'approval'
+                    : retrying ? 'recovering'
+                    : brokeJustNow ? 'failed'
+                    : null;
+      applyState();
       renderTaskCard();
       if(taskOverlay.classList.contains('open')) renderTaskOverlay();
     });
@@ -3799,8 +3955,14 @@
       // Real steps, counted. A task whose length is unknown says so rather than
       // showing a fraction of a number nobody has.
       const total = task.steps_total || 0;
-      count.textContent = total ? (task.steps_done + ' / ' + total) : 'working...';
-      fill.style.width = total ? Math.round(task.steps_done / total * 100) + '%' : '0%';
+      // Percentage comes from core/task_manager.py's own count of finished steps -
+      // the panel does not compute a second one.
+      const percent = (task.percent === null || task.percent === undefined)
+                        ? null : Math.round(task.percent);
+      count.textContent = total
+        ? (task.steps_done + ' / ' + total + (percent === null ? '' : ' · ' + percent + '%'))
+        : 'working...';
+      fill.style.width = percent === null ? '0%' : percent + '%';
       current.innerHTML = '';
       if(task.current){
         const arrow = document.createElement('span');
@@ -3808,6 +3970,21 @@
         const what = document.createElement('span');
         what.textContent = task.current;
         current.appendChild(arrow); current.appendChild(what);
+      }
+      // One line of what is coming, so the card answers "and then what" without
+      // anybody opening the step list. Progressive disclosure: the summary here,
+      // the whole plan behind the Steps button.
+      if(task.next_step){
+        const then = document.createElement('div');
+        then.className = 'task-next';
+        then.textContent = 'then: ' + task.next_step;
+        current.appendChild(then);
+      }
+      if(task.waiting_for_you){
+        const blocked = document.createElement('div');
+        blocked.className = 'task-blocked';
+        blocked.textContent = task.waiting_for_you;
+        current.appendChild(blocked);
       }
       ask.hidden = !task.awaiting_approval;
       if(task.awaiting_approval){
