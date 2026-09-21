@@ -29,10 +29,11 @@ rather than a thing it guesses at.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from core import entities
 
 logger = logging.getLogger("leti.business")
 
@@ -452,21 +453,23 @@ def follow_ups(now: Optional[float] = None, stale_after_days: float = STALE_LEAD
 # The rule is the one that makes it safe: several matches is an ANSWER, not a
 # problem to be resolved by picking the first. Acting on the wrong customer is
 # worse than asking which one.
+#
+# What narrows it down is core/entities.py: the name, yes, but also whether it
+# came up earlier in this conversation, whether it is the project that is open,
+# whether an active task names it, whether the date in the reference lines up.
+# That module owns the signals AND the choice between the three outcomes, so
+# "which one did they mean" is decided in one place whoever is asking.
 
 ENTITY_KINDS = ("lead", "contact", "goal", "project", "task", "meeting")
 MAX_CANDIDATES = 6
 
-_REFERENCE_WORDS = frozenset({
-    "the", "that", "this", "our", "my", "a", "an", "customer", "client", "lead",
-    "company", "contact", "person", "goal", "objective", "project", "task",
-    "meeting", "call", "appointment", "quotation", "quote", "proposal", "deal",
-    "opportunity", "we", "are", "working", "with", "previous", "last", "one",
-})
-
-
 def _significant(reference: str) -> List[str]:
-    words = re.findall(r"[A-Za-z0-9][\w'&.-]*", str(reference or "").lower())
-    return [w for w in words if w not in _REFERENCE_WORDS and len(w) > 1]
+    """The words in a reference that could identify something.
+
+    core/entities.py owns the list of what cannot - "the customer" has to read as
+    bare in both halves of resolution, and two copies of that list would drift.
+    """
+    return entities.significant_words(reference)
 
 
 def resolve(reference: str, kind: str = "", now: Optional[float] = None) -> Dict[str, Any]:
@@ -491,35 +494,23 @@ def resolve(reference: str, kind: str = "", now: Optional[float] = None) -> Dict
         except Exception as e:
             unavailable.append(f"{entity_kind}: {e}")
 
-    # With something distinctive to go on, anything that matched none of it is not
-    # a candidate - returning every lead for "Wakanda Industries" would turn "I
-    # cannot find that" into "here are four things it might be".
-    #
-    # A bare reference ("the customer") has nothing to narrow by, so everything of
-    # that kind stays: the right answer when there is one and a question when
-    # there are five.
-    if words:
-        candidates = [c for c in candidates if c.get("score", 0) > 0]
+    # A bare reference ("the customer") has nothing distinctive in it, so every
+    # entity of that kind stays a candidate and the context below is what narrows
+    # it - the right answer when one thing is clearly in play, and a question when
+    # five are. With distinctive words, anything matching none of the context
+    # either is dropped by choose(), which is what keeps "I cannot find Wakanda
+    # Industries" from becoming "here are four things it might be".
+    context = entities.gather(now=now)
+    outcome = entities.choose(candidates, reference, context, kind=kind)
 
-    if len(candidates) == 1:
-        return {"resolved": candidates[0], "candidates": candidates,
-                "how": "one match", "unavailable": unavailable or None}
-    if not candidates:
-        return {"resolved": None, "candidates": [],
-                "problem": (f"Nothing matches '{reference}'."
-                            + (" Sources that could not be read: "
-                               + "; ".join(unavailable) if unavailable else "")),
-                "unavailable": unavailable or None}
-
-    candidates.sort(key=lambda c: -c.get("score", 0))
-    top = candidates[:MAX_CANDIDATES]
-    if len(words) and top[0].get("score", 0) > 0 and (
-            len(top) == 1 or top[0]["score"] > top[1].get("score", 0) * 2):
-        return {"resolved": top[0], "candidates": top, "how": "clearly the best match",
-                "unavailable": unavailable or None}
-    return {"resolved": None, "candidates": top,
-            "ask": (f"'{reference}' could be any of these - which one?"),
-            "unavailable": unavailable or None}
+    if unavailable:
+        outcome["unavailable"] = unavailable
+        if outcome.get("problem"):
+            outcome["problem"] += (" Sources that could not be read: "
+                                   + "; ".join(unavailable))
+    else:
+        outcome["unavailable"] = None
+    return outcome
 
 
 def _candidates_of(kind: str, words: List[str], now: float) -> List[Dict[str, Any]]:

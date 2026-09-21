@@ -276,18 +276,30 @@ def _coerce(value: str, field: Dict[str, Any]) -> Any:
     return value
 
 
+def section_is_configured(name: str) -> bool:
+    """Has this section had all its required fields filled in?
+
+    One section, without walking the other nineteen - core/connections.py asks
+    this per tool call, and the answer to "is email set up" should not cost a pass
+    over the whole schema table. list_sections() below is the same question asked
+    about everything.
+    """
+    schema = SECTION_SCHEMAS.get(name)
+    if schema is None:
+        raise KeyError(f"Unknown settings section: '{name}'")
+    current = _deep_get(get_settings(), _get_path(schema, name)) or {}
+    required_fields = [f for f in schema["fields"]
+                       if f.get("required", True) and not f.get("default")]
+    return bool(current) and all(current.get(f["key"]) for f in required_fields)
+
+
 def list_sections() -> List[Dict[str, Any]]:
     """Every editable section, with whether it's currently configured (has all
     its required fields set) - used to render the section picker."""
-    settings = get_settings()
-    out = []
-    for name, schema in SECTION_SCHEMAS.items():
-        current = _deep_get(settings, _get_path(schema, name)) or {}
-        required_fields = [f for f in schema["fields"] if f.get("required", True) and not f.get("default")]
-        configured = bool(current) and all(current.get(f["key"]) for f in required_fields)
-        out.append({"name": name, "label": schema["label"], "configured": configured,
-                    "kind": schema.get("kind", "other")})
-    return out
+    return [{"name": name, "label": schema["label"],
+             "configured": section_is_configured(name),
+             "kind": schema.get("kind", "other")}
+            for name, schema in SECTION_SCHEMAS.items()]
 
 
 def get_section(name: str) -> Dict[str, Any]:

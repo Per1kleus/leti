@@ -22,18 +22,15 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from core.config_loader import get_settings
 from core import intent as intent_reader
-from core import modes, performance, proactive
+from core import context_engine, entities, modes, performance
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
-from core import artifacts, diagnostics
+from core import artifacts, connections, diagnostics, verification
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
 from memory.vector_store import VectorMemory
 from tools.base import ToolRegistry, ToolResult
-from tools.personality import describe_personality
-from tools.projects import get_active_project, project_context
-from tools.user_profile import profile_summary
 
 logger = logging.getLogger("leti.orchestrator")
 
@@ -281,6 +278,7 @@ _DEFAULT_MODE = performance.Mode()
 class Orchestrator:
     _intent = _DEFAULT_INTENT
     _mode = _DEFAULT_MODE
+    _context = None                  # the last context package, for diagnostics
 
     def __init__(
         self,
@@ -314,6 +312,13 @@ class Orchestrator:
         # buffer, the agent state machine, the one-shot pre-approval flag). Two
         # concurrent turns interleave their tool calls and their history.
         self._turn_lock = asyncio.Lock()
+        # "Which Acme did they mean" is answered partly by what was said two turns
+        # ago. core/entities.py reads the conversation through this reference - the
+        # buffer stays the one in memory/session_memory.py, and nothing is copied.
+        try:
+            entities.use_conversation_source(self.session_memory.get_recent_messages)
+        except Exception as e:
+            logger.debug(f"Entity resolution will run without conversation context: {e}")
 
     @property
     def settings(self) -> Dict[str, Any]:
@@ -451,7 +456,6 @@ class Orchestrator:
         if not result.get("changed"):
             return result.get("note", f"Already in {modes.mode().label}.")
         try:
-            from tools.control_center import _open_workspace_for  # noqa: F401
             from core import business
 
             if wanted == modes.BUSINESS:
@@ -464,116 +468,47 @@ class Orchestrator:
     # Message construction: system prompt + recalled memory + recent turns
     # ------------------------------------------------------------------ #
     async def _build_messages(self, user_text: str) -> List[Dict[str, Any]]:
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        """The context for this turn, chosen rather than accumulated.
 
-        # Which Leti this is. One line, and only when it is not the ordinary one:
-        # Default Mode's prompt is exactly what it was before modes existed.
-        note = modes.system_note()
-        if note:
-            messages.append({"role": "system", "content": note})
+        core/context_engine.py decides which of Leti's context sources this
+        particular request could use, reads only those, and fits what comes back
+        in a budget. What it leaves out it says it left out - the report goes to
+        the diagnostics panel, so "why did it not know about my project" has an
+        answer that is not a guess.
 
+        The fallback is deliberately the thing that always worked: the system
+        prompt and the conversation buffer. A context engine that can fail a turn
+        would be worse than no context engine.
+        """
+        request = context_engine.Request(
+            text=user_text,
+            intent=self._intent,
+            mode=modes.current(),
+            allow_optional=self._mode.recall_memory,
+            first_turn_of_session=not self._checked_watches_this_session,
+        )
+        self._checked_watches_this_session = True
         try:
-            messages.append({"role": "system", "content": describe_personality()})
+            package = await context_engine.build(
+                request,
+                system_prompt=SYSTEM_PROMPT,
+                history=self.session_memory.get_recent_messages(),
+                referents=self.session_memory.recent_referents(),
+                recall=(self.vector_memory.search if self.vector_memory else None),
+            )
         except Exception as e:
-            logger.warning(f"Failed to load personality settings (continuing with defaults): {e}")
+            logger.warning(f"Context assembly failed; falling back to the basics: {e}")
+            return ([{"role": "system", "content": SYSTEM_PROMPT}]
+                    + self.session_memory.get_recent_messages())
 
-        # The active project's instructions and file list, so "continue the MATLAB
-        # project" resolves to something concrete rather than a name the model has
-        # to guess the contents of.
+        self._context = package
         try:
-            active = get_active_project()
-            if active:
-                # The request is passed so the file list can be about this turn
-                # rather than the whole folder every time.
-                messages.append({"role": "system",
-                                 "content": project_context(active, request=user_text)})
-        except Exception as e:
-            logger.warning(f"Failed to load project context (continuing without it): {e}")
-
-        try:
-            profile_text = profile_summary()
-            if profile_text:
-                messages.append({"role": "system", "content": f"What you know about the user so far:\n{profile_text}"})
-        except Exception as e:
-            logger.warning(f"Failed to load user profile (continuing without it): {e}")
-
-        if not self._checked_watches_this_session:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "This is the start of a new session. If any social media watches are "
-                    "configured, call check_social_watches now, before anything else, to catch "
-                    "the user up on anything missed since last time - regardless of how long "
-                    "it's been. If it reports nothing new (or no watches exist), just continue "
-                    "with the user's actual request without mentioning the check."
-                ),
-            })
-            self._checked_watches_this_session = True
-
-        # A request that refers back to something ("compare the first three") is
-        # told what it is pointing at, from the list Leti itself produced last
-        # turn. When there is nothing to point at, the note says to ask rather
-        # than to pick - which is the whole difference between continuity and
-        # confabulation.
-        try:
-            note = intent_reader.continuity_note(
-                self._intent, self.session_memory.recent_referents())
-            if note:
-                messages.append({"role": "system", "content": note})
-        except Exception as e:
-            logger.debug(f"Continuity note skipped: {e}")
-
-        # One line for a genuinely complex request, naming the stages it implies
-        # and that it is not done until it has been checked. Empty for everything
-        # else, which is most things.
-        try:
-            note = intent_reader.system_note(self._intent)
-            if note:
-                messages.append({"role": "system", "content": note})
-        except Exception as e:
-            logger.debug(f"Objective note skipped: {e}")
-
-        # Anything worth mentioning that the user has not asked about - a task
-        # waiting on them, a watch that fired, work about to run. Read from the
-        # stores that already hold it, at the level they chose, and phrased as
-        # something to MENTION. Nothing here starts anything; see core/proactive.py.
-        try:
-            if self._mode.recall_memory:          # the same optional-work budget
-                pending = proactive.items()
-                note = proactive.turn_note(pending)
-                if note:
-                    messages.append({"role": "system", "content": note})
-                    proactive.mark_raised(pending)
-        except Exception as e:
-            logger.debug(f"Proactive note skipped: {e}")
-
-        if self._intent.question_to_ask:
-            messages.append({"role": "system", "content": (
-                "Something needed to answer this is missing and guessing it would "
-                f"change the result. Ask: \"{self._intent.question_to_ask}\" - unless "
-                "the conversation above already answers it, in which case carry on.")})
-
-        # Long-term recall is a vector search. It earns its cost on most turns and
-        # on none of them is it the difference between working and not, so it is
-        # the first thing to go when the machine is under real pressure.
-        try:
-            recalled = await self.vector_memory.search(user_text) if self._mode.recall_memory else []
-            if recalled:
-                memory_context = "\n".join(f"- {m['text']}" for m in recalled)
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": f"Relevant things you remember about the user:\n{memory_context}",
-                    }
-                )
-        except Exception as e:
-            logger.warning(f"Long-term memory recall failed (continuing without it): {e}")
-
-        # The rolling buffer already ends with this turn's user message - handle_user_input
-        # records it before calling this, so that a failed LLM call doesn't lose what the
-        # user said. Appending user_text again here sent every utterance to the model twice.
-        messages.extend(self.session_memory.get_recent_messages())
-        return messages
+            diagnostics.record_context(package.report())
+        except Exception:
+            pass
+        logger.debug(f"Context: {', '.join(package.included) or 'nothing extra'}"
+                     f" ({package.chars} chars)")
+        return package.messages
 
     # ------------------------------------------------------------------ #
     # Tool-calling loop
@@ -739,13 +674,47 @@ class Orchestrator:
             try:
                 diagnostics.record_tool(tool_name, time.perf_counter() - _tool_started,
                                         result.success)
+                connections.record_tool_outcome(tool_name, result.success,
+                                                result.error or "")
             except Exception:
                 pass
-            return result
+            return self._verified(tool_name, arguments, result)
         except Exception as e:
             logger.exception(f"Tool '{tool_name}' raised an exception")
             await self.safety_guard.audit_result(tool_name, arguments, False, str(e), case=case)
+            try:
+                connections.record_tool_outcome(tool_name, False, str(e))
+            except Exception:
+                pass
             return ToolResult(success=False, error=str(e))
+
+    def _verified(self, tool_name: str, arguments: Dict[str, Any],
+                  result: ToolResult) -> ToolResult:
+        """Say what is actually known about what that call did.
+
+        core/verification.py answers "did the intended thing happen", which is not
+        the question "did the call return". When it cannot confirm something, the
+        model is told so IN the tool result, where it cannot be missed on the way
+        to writing the answer - and only then: a VERIFIED or NOT APPLICABLE check
+        adds nothing, so most calls come back untouched and cost nothing.
+
+        A verification never changes success/failure. It is evidence about the
+        world, not a second opinion about the call.
+        """
+        try:
+            found = verification.verify(tool_name, arguments, result.output)
+            note = verification.note_for(found)
+            if not note:
+                return result
+            if isinstance(result.output, dict):
+                result.output = {**result.output, "verification": found,
+                                 "how_to_report": note}
+            else:
+                result.output = {"result": result.output, "verification": found,
+                                 "how_to_report": note}
+        except Exception as e:
+            logger.debug(f"Verification of {tool_name} skipped: {e}")
+        return result
 
     # ------------------------------------------------------------------ #
     # Long-term memory writeback

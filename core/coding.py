@@ -19,10 +19,11 @@ not having.
   by name and by import, and when it cannot tell, it says so and the whole suite
   is the honest answer.
 
-  Verification. The coding half of what core/task_manager.py already does for
-  every task: syntax, tests, scope, secrets, git state. Every property comes back
-  VERIFIED, NOT VERIFIED, FAILED or NOT APPLICABLE, and nothing is reported as
-  checked that was not run.
+  Verification. The coding-shaped property checks - syntax, tests, scope, secrets,
+  git state. The vocabulary they report in (VERIFIED, NOT VERIFIED, FAILED, NOT
+  APPLICABLE) and the summarise() that combines them are core/verification.py's,
+  shared with every other domain rather than restated here. Nothing is reported
+  as checked that was not run.
 """
 from __future__ import annotations
 
@@ -33,6 +34,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from core import verification
 
 logger = logging.getLogger("leti.coding")
 
@@ -491,8 +494,15 @@ def classify_failure(output: str, changed: Iterable[str] = (),
 # Verification
 # --------------------------------------------------------------------------- #
 
-VERIFIED, NOT_VERIFIED, FAILED, NOT_APPLICABLE = (
-    "VERIFIED", "NOT VERIFIED", "FAILED", "NOT APPLICABLE")
+# The vocabulary and the summary live in core/verification.py, which every other
+# domain now uses as well. They are imported rather than restated so there is one
+# definition of what VERIFIED means, not a coding-shaped copy of it - see the note
+# at the top of that module.
+VERIFIED = verification.VERIFIED
+NOT_VERIFIED = verification.NOT_VERIFIED
+FAILED = verification.FAILED
+NOT_APPLICABLE = verification.NOT_APPLICABLE
+summarise = verification.summarise
 
 SECRET_PATTERNS = (
     (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})"), "a GitHub token"),
@@ -600,21 +610,3 @@ def check_scope(intended: Iterable[str], actually_changed: Iterable[str],
             "untouched_user_work": sorted(theirs)}
 
 
-def summarise(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The overall answer, which is never better than its worst check."""
-    results = [c.get("result") for c in checks]
-    if FAILED in results:
-        overall, why = FAILED, "at least one check failed"
-    elif NOT_VERIFIED in results:
-        overall, why = NOT_VERIFIED, "at least one property could not be confirmed"
-    elif VERIFIED in results:
-        overall, why = VERIFIED, "every applicable check passed"
-    else:
-        overall, why = NOT_APPLICABLE, "nothing could be checked"
-    return {
-        "overall": overall, "why": why, "checks": checks,
-        "how_to_report": (
-            "Report each property as it came back. NOT APPLICABLE means Leti could not "
-            "check it, which is not the same as it being fine, and a test that was not "
-            "run has not passed."),
-    }

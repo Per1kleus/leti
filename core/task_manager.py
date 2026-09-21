@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
+from core import world_state
 
 logger = logging.getLogger("leti.tasks")
 
@@ -540,6 +541,12 @@ class TaskRunner:
 
         self._current = task_id
         _set_status(task_id, RUNNING)
+        # What this task believes about the world while it runs - see
+        # core/world_state.py. In memory, one entry, dropped below whatever
+        # happens; it informs a recovery instead of a recovery having to guess.
+        world_state.begin(task_id, request=task.get("objective", ""),
+                          task_id=task_id, project=task.get("project") or None,
+                          goal=task.get("success_criteria") or None)
         # An unattended run is what the guard already understands: reading,
         # computing and writing proceed; sending and deleting stop and wait.
         restore_unattended = self._enter_unattended()
@@ -562,6 +569,7 @@ class TaskRunner:
         finally:
             restore_unattended()
             self._current = None
+            world_state.forget(task_id)
         return describe(get_task(task_id) or {})
 
     def _enter_unattended(self) -> Callable[[], None]:
@@ -596,6 +604,9 @@ class TaskRunner:
                             "before reporting it finished.")
         if step.get("recovery_instruction"):
             instruction += f"\n\n{step['recovery_instruction']}"
+        # Written down BEFORE the step runs: an expectation formed after seeing
+        # the answer is a description, not a check.
+        world_state.expect(task_id, step.get("expected") or step.get("instruction", ""))
         try:
             answer = await self.orchestrator.handle_user_input(
                 instruction, preapproved=approved)
@@ -620,6 +631,8 @@ class TaskRunner:
             return False
         step["status"] = "done"
         step["result"] = (answer or "")[:MAX_RESULT_CHARS]
+        world_state.observe(task_id, answer or "")
+        world_state.succeeded(task_id, step.get("instruction", "")[:120])
         if step.get("recoveries"):
             _note(step, f"recovery {step['recoveries']} succeeded")
         step["error"] = None
@@ -720,9 +733,10 @@ class TaskRunner:
             step["status"] = "recovering"
             step["error"] = message
             step["recovery_instruction"] = (
-                f"The previous attempt failed: {message}. Try a different way of doing "
-                "this same step - an alternative source, address or tool. Do not repeat "
-                "the approach that just failed, and do not skip the step.")
+                world_state.recovery_note(task_id, error)
+                + " Try a different way of doing this same step - an alternative source, "
+                  "address or tool. Do not repeat the approach that just failed, and do "
+                  "not skip the step.")
             _note(step, f"recovery {step['recoveries']} attempted after: {message}")
             _replace(task)
             logger.info(f"Task {task_id} step {index + 1}: recovery "
@@ -762,28 +776,20 @@ class TaskRunner:
             logger.exception("Couldn't deliver a task notification")
 
 
-# Failures worth trying differently: something that was briefly unavailable, timed
-# out, or refused once. Deliberately a short list - treating everything as
-# recoverable is how a task spends an afternoon failing in new ways.
-_RECOVERABLE = (
-    "timeout", "timed out", "temporarily", "unavailable", "connection",
-    "network", "unreachable", "rate limit", "too many requests", "503", "502",
-    "504", "429", "reset by peer", "try again",
-)
-
-
 def is_recoverable(error: Exception) -> bool:
     """Whether a different approach is worth one attempt.
+
+    The judgement is core/world_state.py's: it classifies why something failed,
+    and only the kinds where a different approach could plausibly work unlock this
+    budget. One classifier rather than two, so "why did that fail" gets the same
+    answer whether a task is asking or a turn is.
 
     Never true for an approval stop or a hard block: those are answers, not
     failures, and retrying them differently would be trying to get around them.
     """
-    from core.safety_guard import ConfirmationDenied, PermissionDenied
+    from core import world_state
 
-    if isinstance(error, (ConfirmationDenied, PermissionDenied)):
-        return False
-    text = str(error).lower()
-    return any(marker in text for marker in _RECOVERABLE)
+    return world_state.unlocks_recovery(error)
 
 
 def _needs_approval(error: Exception) -> bool:

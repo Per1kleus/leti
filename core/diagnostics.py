@@ -88,6 +88,40 @@ def record_routing(tool_count: int, total: int, seconds: float,
     record_activity("routing", f"Planning - {tool_count} of {total} tools in scope")
 
 
+_contexts: Deque[Dict[str, Any]] = deque(maxlen=_KEEP)
+
+
+def record_context(report: Dict[str, Any]) -> None:
+    """What core/context_engine.py assembled for one turn, and what it left out.
+
+    A mirror of a decision that was made anyway, like every other record_* here.
+    Nothing is measured for it and nothing is re-read; the report is the object
+    the engine already built.
+    """
+    _contexts.append({"at": time.time(), **(report or {})})
+    included = len((report or {}).get("included") or [])
+    record_activity("context",
+                    f"Context - {included} source(s), {(report or {}).get('chars', 0)} chars")
+
+
+def context_section() -> Dict[str, Any]:
+    """The last turn's context decisions, for the diagnostics panel."""
+    last = _last(_contexts)
+    if not last:
+        return {"status": UNAVAILABLE,
+                "detail": "No turn has assembled context since Leti started."}
+    return {
+        "status": "ok",
+        "sources_used": last.get("included", []),
+        "sources_skipped": last.get("skipped", []),
+        "dropped_for_budget": last.get("dropped_for_budget", []),
+        "only_a_tool_can_reach": last.get("only_a_tool_can_reach", []),
+        "chars": last.get("chars"),
+        "budget_chars": last.get("budget_chars"),
+        "seconds": last.get("seconds"),
+    }
+
+
 def record_turn(seconds: float, answer_chars: int = 0) -> None:
     _turns.append({"at": time.time(), "seconds": seconds, "chars": answer_chars})
     record_activity("turn", f"Answer ready ({seconds:.1f}s)")
@@ -104,6 +138,7 @@ def record_tool(name: str, seconds: float, success: bool) -> None:
 
 def reset() -> None:
     _turns.clear(); _routings.clear(); _tools.clear(); _activity.clear()
+    _contexts.clear()
 
 
 def _last(source: Deque[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

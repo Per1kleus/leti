@@ -560,13 +560,29 @@ class SafetyGuard:
     def _build_confirmation_prompt(
         self, tool_name: str, arguments: Dict[str, Any], tier: RiskTier
     ) -> str:
+        """The question the user is asked, in terms they can actually answer.
+
+        core/autonomy.py turns the arguments into concrete consequences - how
+        many recipients, which file, what would be skipped, whether it can be
+        taken back - and phrases the question around them. It decides nothing:
+        by the time this runs, THIS method's caller has already established that
+        a confirmation is required, and that decision was made above from the
+        tier and config/permissions.yaml. If it ever fails, the prompt falls back
+        to the plain one rather than the call going through unasked.
+        """
         action_desc = _humanize_tool_call(tool_name, arguments)
-        severity = {
-            RiskTier.CRITICAL: "This can't be undone.",
-            RiskTier.EXTERNAL: "This reaches outside your computer.",
-            RiskTier.MODIFY: "This will make a change on your system.",
-        }.get(tier, "This will run on your computer.")
-        return f"Leti wants to {action_desc}. {severity} Should I go ahead?"
+        try:
+            from core import autonomy
+
+            return autonomy.confirmation_prompt(action_desc, tool_name, arguments,
+                                                tier.value)
+        except Exception:
+            severity = {
+                RiskTier.CRITICAL: "This can't be undone.",
+                RiskTier.EXTERNAL: "This reaches outside your computer.",
+                RiskTier.MODIFY: "This will make a change on your system.",
+            }.get(tier, "This will run on your computer.")
+            return f"Leti wants to {action_desc}. {severity} Should I go ahead?"
 
     # ------------------------------------------------------------------ #
     # Audit logging
