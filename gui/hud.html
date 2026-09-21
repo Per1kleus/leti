@@ -136,6 +136,12 @@
   /* The two lines the task card grew: what is next, and what is blocking. Same
      type scale as the rest of the card; the blocked one takes the amber that
      already means "your turn" everywhere else in this interface. */
+  /* The count line above a multi-task card. Same scale as the other secondary
+     rows; it disappears entirely when there is only one task. */
+  .task-summary{ margin:2px 0 4px; opacity:0.6; font-size:10px; letter-spacing:0.6px;
+                 text-transform:uppercase; }
+  .task-summary[hidden]{ display:none; }
+
   .task-next{ margin-top:3px; opacity:0.55; font-size:10.5px; letter-spacing:0.2px; }
   .task-blocked{ margin-top:4px; color:var(--amber); font-size:10.5px; }
 
@@ -1365,6 +1371,8 @@
           </div>
           <div class="tag" id="taskStatus">-</div>
         </div>
+        <!-- Only when there is more than one task; see taskSummaryLine(). -->
+        <div class="task-summary" id="taskSummary" hidden></div>
         <div class="task-name" id="taskName"></div>
         <div class="task-progress">
           <div class="task-bar"><i id="taskFill"></i></div>
@@ -3937,11 +3945,41 @@
     });
   }
 
+  // "3 active tasks - 1 needs you, 1 waiting, 1 running". One line, and only
+  // when there is more than one task: a single task's own card already says
+  // everything this would, and a summary of one thing is clutter.
+  function taskSummaryLine(){
+    const active = taskState.active || [];
+    if(active.length < 2) return '';
+    const needs = active.filter(t => t.awaiting_approval).length;
+    const waiting = active.filter(t => t.status === 'waiting_for_external'
+                                    || t.waiting_for_tasks).length;
+    const running = active.filter(t => ['running','queued','retrying','resuming']
+                                    .indexOf(t.status) !== -1).length;
+    const paused = active.filter(t => ['paused','pausing'].indexOf(t.status) !== -1).length;
+    const parts = [active.length + ' active tasks'];
+    if(needs) parts.push(needs + ' needs you');
+    if(waiting) parts.push(waiting + ' waiting');
+    if(running) parts.push(running + ' running');
+    if(paused) parts.push(paused + ' paused');
+    return parts.join(' \u00b7 ');
+  }
+
   function renderTaskCard(){
-    const task = taskState.active[0];
+    // The one shown on the card is whichever needs a person first - an
+    // approval outranks progress, because progress does not need anybody.
+    const active = taskState.active || [];
+    const task = active.find(t => t.awaiting_approval) || active[0];
     const session = taskState.sessions[0];
     if(!task && !session){ taskCard.hidden = true; return; }
     taskCard.hidden = false;
+
+    const summaryLine = document.getElementById('taskSummary');
+    if(summaryLine){
+      const line = taskSummaryLine();
+      summaryLine.textContent = line;
+      summaryLine.hidden = !line;
+    }
 
     const status = document.getElementById('taskStatus');
     const name = document.getElementById('taskName');

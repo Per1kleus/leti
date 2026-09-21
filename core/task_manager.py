@@ -745,7 +745,16 @@ class TaskRunner:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return False
-        background = loop.create_task(self.run(task_id))
+        # The slot is claimed HERE, not inside run(). run() is a coroutine that
+        # has not executed yet when this returns, so a second start in the same
+        # tick would otherwise see nothing running and both conflicting tasks
+        # would go ahead - which is the exact race this whole check exists for.
+        self._running.add(str(task_id))
+        try:
+            background = loop.create_task(self.run(task_id))
+        except Exception:
+            self._running.discard(str(task_id))
+            raise
         self._background.add(background)
         background.add_done_callback(self._background.discard)
         return True
@@ -795,7 +804,7 @@ class TaskRunner:
         if task.get("status") not in (QUEUED, RUNNING, RESUMING):
             return describe(task)
 
-        self._running.add(str(task_id))
+        self._running.add(str(task_id))      # already claimed by start_in_background
         clear_stop(task_id)
         # What this task holds while it runs, written onto it so the conflict
         # check and the interface read the same declaration.
@@ -1105,6 +1114,17 @@ class TaskRunner:
         step["error"] = message
         step["escalation"] = escalation
         _replace(task)
+
+        # Cancelled while this step was failing. It is cancelled, not failed:
+        # the user stopped it, and recording that as a failure would blame the
+        # task for doing what it was told.
+        if stop_requested(task_id):
+            finalise_cancel(task_id, f"Stopped while step {index + 1} was failing "
+                                     f"({message}).")
+            self._announce(f"'{task['name']}' was stopped while step {index + 1} "
+                           "was failing.")
+            return False
+
         remaining = [s.get("n", i + 1) for i, s in enumerate(task.get("steps", []))
                      if s.get("status") in ("pending", "recovering")]
         # Deliberately FAILED, never WAITING_FOR_USER. The case where the user

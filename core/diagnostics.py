@@ -139,7 +139,7 @@ def record_tool(name: str, seconds: float, success: bool) -> None:
 
 def reset() -> None:
     _turns.clear(); _routings.clear(); _tools.clear(); _activity.clear()
-    _contexts.clear()
+    _contexts.clear(); _intents.clear()
 
 
 def _last(source: Deque[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -302,6 +302,121 @@ def watches_section() -> Dict[str, Any]:
     }
 
 
+_intents: Deque[Dict[str, Any]] = deque(maxlen=_KEEP)
+
+
+def record_intent(reading: Dict[str, Any]) -> None:
+    """How the last request was read. A mirror of a decision already made."""
+    _intents.append({"at": time.time(), **(reading or {})})
+
+
+def intent_section() -> Dict[str, Any]:
+    """What the Intent Layer made of the last few requests."""
+    last = _last(_intents)
+    if not last:
+        return {"status": UNAVAILABLE,
+                "detail": "No request has been read since Leti started."}
+    return {
+        "status": "ok",
+        "kind": last.get("kind"),
+        "confidence": last.get("confidence"),
+        "shape": last.get("shape"),
+        "side_effect_requested": last.get("side_effect_requested"),
+        "tool_possibly_required": last.get("tool_possibly_required"),
+        "clarification_required": last.get("clarification_required"),
+        "belongs_to_existing_task": last.get("belongs_to_existing_task"),
+        "recent": [{"kind": r.get("kind"), "confidence": r.get("confidence")}
+                   for r in list(_intents)[-5:]],
+    }
+
+
+def tasks_section() -> Dict[str, Any]:
+    """Every task, what it is waiting for, and anything that cannot run yet.
+
+    Read-only, from core/task_manager.py's own store and the conflict view - no
+    second task state and nothing computed here that the task does not already
+    say about itself.
+    """
+    try:
+        from core import task_conflicts, task_manager
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": f"tasks could not be read: {e}"}
+    try:
+        tasks = task_manager.load_tasks()
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": f"the task store could not be read: {e}"}
+
+    active = [t for t in tasks if t.get("status") in task_manager.ACTIVE_STATUSES]
+    described = [task_manager.detail(t) for t in active]
+    return {
+        "status": "ok",
+        "active": len(active),
+        "needs_you": sum(1 for t in described if t.get("awaiting_approval")),
+        "waiting_external": sum(
+            1 for t in active
+            if t.get("status") == task_manager.WAITING_FOR_EXTERNAL),
+        "retrying": sum(1 for t in active
+                        if t.get("status") == task_manager.RETRYING),
+        "blocked_by_conflict": [
+            {"task": t.get("id"), "waiting_for": t.get("waiting_for_tasks"),
+             "why": t.get("blocked_reason")}
+            for t in active if t.get("waiting_for_tasks")],
+        "conflicts": task_conflicts.all_conflicts(active),
+        "tasks": [{
+            "id": t["id"], "name": t.get("name"), "status": t.get("status"),
+            "step": t.get("step"), "percent": t.get("percent"),
+            "current": t.get("current"), "next": t.get("next_step"),
+            "recoveries": t.get("recoveries"), "recovering": t.get("recovering"),
+            "verified": t.get("verified"), "holds": t.get("holds"),
+            "waiting_for_you": t.get("waiting_for_you"),
+        } for t in described],
+    }
+
+
+def watches_health() -> Dict[str, Any]:
+    """Which watches are stale, failing, or could act. Read-only."""
+    try:
+        from core import watches
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    try:
+        described = [watches.describe(w) for w in watches.load_watches()]
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    return {
+        "status": "ok",
+        "total": len(described),
+        "stale": [w["name"] for w in described if w.get("stale")],
+        "failing": [w["name"] for w in described if w.get("failures")],
+        "can_act": [w["name"] for w in described if w.get("acts_outside_leti")],
+        "action_problems": [{"watch": w["name"], "problem": w["action_problem"]}
+                            for w in described if w.get("action_problem")],
+    }
+
+
+def computer_use_section() -> Dict[str, Any]:
+    """Open GUI sessions and anything in them nobody checked. Read-only."""
+    try:
+        from core import computer_use
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    try:
+        sessions = computer_use.active_sessions()
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    return {
+        "status": "ok",
+        "open_sessions": len(sessions),
+        "sessions": [{
+            "id": s.id, "goal": s.goal, "steps": s.steps_taken,
+            "mismatches": s.mismatches,
+            "observed_seconds_ago": (round(time.time() - s.observed_at, 1)
+                                     if s.observed_at else None),
+            "unverified": s.unverified_actions(),
+        } for s in sessions],
+    }
+
+
 def snapshot(registry: Any = None) -> Dict[str, Any]:
     """Everything the panel shows, in one cheap call."""
     return {
@@ -312,6 +427,11 @@ def snapshot(registry: Any = None) -> Dict[str, Any]:
         "tools": tools_section(registry),
         "autonomy": autonomy_section(),
         "watches": watches_section(),
+        # The upgrade layers, all of them views of state that already exists.
+        "intent": intent_section(),
+        "tasks": tasks_section(),
+        "watch_health": watches_health(),
+        "computer_use": computer_use_section(),
     }
 
 

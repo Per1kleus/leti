@@ -376,6 +376,10 @@ class Orchestrator:
         self._intent = intent_reader.read(
             user_text, self.session_memory.get_recent_messages())
         self._mode = performance.for_turn(self._intent)
+        try:
+            diagnostics.record_intent(self._intent.as_dict())
+        except Exception:
+            pass
         if self._mode.under_pressure:
             logger.info(f"Adaptive mode: {self._mode.reason}")
 

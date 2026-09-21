@@ -38,15 +38,31 @@ logger = logging.getLogger("leti.entities")
 # point here and only one points there", not to express confidence to two decimal
 # places, and a scale fine enough to rank near-ties would be a scale fine enough
 # to resolve them - which is the thing this must not do.
+# `from_reference` is the load-bearing field. A signal that comes FROM THE
+# REFERENCE - the name they used, an alias of it, a date in it, a company in it -
+# is evidence that this candidate is the one they meant. A signal that is merely
+# true of the candidate - it was touched recently, it belongs to the open project -
+# is not: every task is recent the moment it is created, and treating that as a
+# match would resolve "Wakanda Industries" to whatever was made last.
+#
+# So ambient signals rank candidates that already match. They never make one.
 SIGNALS: Dict[str, Dict[str, Any]] = {
-    "name": {"weight": 2, "because": "the name matches"},
-    "alias": {"weight": 3, "because": "a known short name or alias matches"},
-    "conversation": {"weight": 2, "because": "it came up earlier in this conversation"},
-    "project": {"weight": 2, "because": "it belongs to the project that is open"},
-    "recent": {"weight": 1, "because": "it was worked on recently"},
-    "when": {"weight": 3, "because": "the date lines up"},
-    "relationship": {"weight": 2, "because": "the company, stage or role matches"},
-    "task": {"weight": 2, "because": "an active task refers to it"},
+    "name": {"weight": 2, "from_reference": True,
+             "because": "the name matches"},
+    "alias": {"weight": 3, "from_reference": True,
+              "because": "a known short name or alias matches"},
+    "when": {"weight": 3, "from_reference": True,
+             "because": "the date lines up"},
+    "relationship": {"weight": 2, "from_reference": True,
+                     "because": "the company, stage or role matches"},
+    "conversation": {"weight": 2, "from_reference": False,
+                     "because": "it came up earlier in this conversation"},
+    "project": {"weight": 2, "from_reference": False,
+                "because": "it belongs to the project that is open"},
+    "recent": {"weight": 1, "from_reference": False,
+               "because": "it was worked on recently"},
+    "task": {"weight": 2, "from_reference": False,
+             "because": "an active task refers to it"},
 }
 
 # Enough to act on: at least one signal beyond a single weak word match.
@@ -215,6 +231,7 @@ def signals_for(candidate: Dict[str, Any], reference: str,
     def add(signal: str, detail: str, times: int = 1) -> None:
         spec = SIGNALS[signal]
         found.append({"signal": signal, "weight": spec["weight"] * max(1, times),
+                      "from_reference": spec["from_reference"],
                       "because": f"{spec['because']} ({detail})"})
 
     # Every word of the reference that lands in the name counts: "Beta Co" is a
@@ -251,13 +268,20 @@ def signals_for(candidate: Dict[str, Any], reference: str,
     if window and isinstance(starts, (int, float)) and window[0] <= float(starts) < window[1]:
         add("when", "it falls in the period named")
 
+    # What else is recorded about this candidate that a reference could name: a
+    # company, a stage, or - for a piece of work - what it was actually asked to
+    # do. Kept out of `name` on purpose, so whole-name matching stays exact.
     related = " ".join(str(candidate.get(k) or "")
-                       for k in ("company", "stage", "status", "role", "tags")).lower()
+                       for k in ("company", "stage", "status", "role", "tags",
+                                 "objective", "request")).lower()
     relationship_hits = [w for w in words if w and w in related]
     if relationship_hits:
         add("relationship", ", ".join(relationship_hits[:3]))
 
-    if name and context.task_texts:
+    # An active task naming the candidate is evidence - unless the candidate IS
+    # a task, in which case every task names itself and the signal would support
+    # all of them equally. Circular evidence is not evidence.
+    if name and context.task_texts and candidate.get("kind") not in ("task", "past_task"):
         if any(lowered_name in text.lower() for text in context.task_texts if text):
             add("task", "an active task names it")
 
@@ -266,10 +290,21 @@ def signals_for(candidate: Dict[str, Any], reference: str,
 
 def support(candidate: Dict[str, Any], reference: str,
             context: Optional[Context] = None) -> Dict[str, Any]:
-    """How strongly the context points at this one candidate."""
+    """How strongly the context points at this one candidate.
+
+    Two numbers, and the difference between them matters. `match` counts only
+    what came from the reference itself, and is what decides whether this
+    candidate is in play at all. `score` counts everything, and is what ranks
+    the ones that are.
+    """
     found = signals_for(candidate, reference, context)
-    return {"score": sum(s["weight"] for s in found), "signals": found,
-            "because": [s["because"] for s in found]}
+    return {
+        "score": sum(s["weight"] for s in found),
+        "match": sum(s["weight"] for s in found
+                     if SIGNALS[s["signal"]]["from_reference"]),
+        "signals": found,
+        "because": [s["because"] for s in found],
+    }
 
 
 def choose(candidates: Sequence[Dict[str, Any]], reference: str,
@@ -292,7 +327,7 @@ def choose(candidates: Sequence[Dict[str, Any]], reference: str,
     for candidate in candidates:
         result = support(candidate, reference, context)
         scored.append({**candidate, "support": result["score"],
-                       "because": result["because"]})
+                       "match": result["match"], "because": result["because"]})
     scored.sort(key=lambda c: -c["support"])
 
     # A reference with something distinctive in it ("Wakanda Industries") rules
@@ -300,7 +335,16 @@ def choose(candidates: Sequence[Dict[str, Any]], reference: str,
     # out nothing, because there is nothing in it to rule anything out WITH -
     # every entity of that kind stays in play and the context below is what
     # narrows it.
-    pointed_at = [c for c in scored if c["support"] > 0]
+    # In play means the REFERENCE points here, not that the candidate happens to
+    # be recent or in the open project - see SIGNALS above.
+    #
+    # Unless the reference says nothing at all. "The task" has nothing in it to
+    # match on, so the ambient signals ARE the evidence: the one in the open
+    # project, the one an active task names. That is what a bare reference
+    # means, and refusing to use them would make "the task" unanswerable even
+    # when exactly one is obviously in play.
+    pointed_at = ([c for c in scored if c["match"] > 0] if words
+                  else [c for c in scored if c["support"] > 0])
     in_play = pointed_at if words else list(scored)
     if not in_play:
         return {
@@ -372,7 +416,8 @@ def _task_candidates() -> List[Dict[str, Any]]:
         from core import task_manager
 
         return [{"kind": "task", "id": t.get("id"),
-                 "name": f"{t.get('name') or ''} {t.get('objective') or ''}".strip(),
+                 "name": (t.get("name") or t.get("objective") or "").strip(),
+                 "objective": t.get("objective"),
                  "status": t.get("status"), "project": t.get("project"),
                  "updated_at": t.get("updated_at")}
                 for t in task_manager.load_tasks()
@@ -388,7 +433,8 @@ def _past_task_candidates(limit: int = 25) -> List[Dict[str, Any]]:
         from core import task_history
 
         return [{"kind": "past_task", "id": r.get("task_id"),
-                 "name": f"{r.get('name') or ''} {r.get('request') or ''}".strip(),
+                 "name": (r.get("name") or r.get("request") or "").strip(),
+                 "request": r.get("request"),
                  "status": r.get("status"), "project": r.get("project"),
                  # `due` is what the date signal reads, and for a finished task
                  # the date that matters is when it finished.
@@ -458,6 +504,8 @@ def explain() -> Dict[str, Any]:
     return {
         "method": "deterministic signal matching, not semantic similarity",
         "signals": {name: spec["because"] for name, spec in SIGNALS.items()},
+        "what_makes_a_match": sorted(n for n, s in SIGNALS.items() if s["from_reference"]),
+        "what_only_ranks": sorted(n for n, s in SIGNALS.items() if not s["from_reference"]),
         "rule": (f"resolve when one candidate scores at least {MIN_SUPPORT} and leads "
                  f"the next by {MARGIN}; otherwise ask; never choose between two "
                  "comparable candidates"),
