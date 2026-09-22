@@ -222,6 +222,28 @@ def test_an_old_target_that_changed_identity_is_stale():
     assert ui.still_valid(target).state == ui.STALE
 
 
+def test_still_valid_checks_identity_itself_not_only_the_provider():
+    """Defence in depth, pinned directly.
+
+    Provider.still_there already filters by identity, so a mutation that removes
+    still_valid's own identity check survives - the base class catches it first.
+    This provider deliberately hands back a DIFFERENT element from still_there,
+    which is what a backend doing its own re-resolution on name alone would do,
+    and proves the second check is real work rather than decoration.
+    """
+    class LyingProvider(FakeProvider):
+        def still_there(self, target):
+            return element("Settings", role="button", automation_id="different")
+
+    target = element("Settings", role="button", automation_id="original")
+    target.observed_at = time.time() - ui.TARGET_MAX_AGE_SECONDS - 1
+    ui.reset_providers([LyingProvider([])])
+    found = ui.still_valid(target)
+    assert found.state == ui.STALE
+    assert found.may_act is False
+    assert "not the same element" in found.detail
+
+
 def test_an_old_target_that_is_identical_is_refreshed():
     target = element("Settings", role="button", automation_id="settings-1")
     target.observed_at = time.time() - ui.TARGET_MAX_AGE_SECONDS - 1
@@ -298,6 +320,59 @@ def test_resolution_is_fast_enough_to_do_before_every_click():
     for _ in range(200):
         ui.resolve("Thing 7")
     assert (time.perf_counter() - started) / 200 < 0.01
+
+
+def test_a_providers_availability_is_asked_once_not_once_per_click():
+    """The window-list provider answers "can I work here?" by enumerating the
+    desktop. Paying that on every resolution made resolution the slow path, so
+    the answer is remembered - and remembered by arithmetic, not by a timer."""
+    provider = FakeProvider([element("Settings", role="button")])
+    asked = []
+    provider.available = lambda: (asked.append(1), True)[1]
+    ui.reset_providers([provider])
+    for _ in range(50):
+        ui.resolve("Settings", "button")
+    assert len(asked) == 1, f"the desktop was enumerated {len(asked)} times for 50 clicks"
+
+
+def test_the_remembered_availability_does_expire():
+    """Remembered is not frozen: a machine that gains an accessibility stack
+    must be noticed without restarting Leti."""
+    provider = FakeProvider([])
+    asked = []
+    provider.available = lambda: (asked.append(1), True)[1]
+    assert provider.is_available(now=1000.0) is True
+    assert provider.is_available(now=1000.0 + ui.AVAILABILITY_MEMO_SECONDS - 1) is True
+    assert len(asked) == 1
+    assert provider.is_available(now=1000.0 + ui.AVAILABILITY_MEMO_SECONDS + 1) is True
+    assert len(asked) == 2, "the answer was kept forever"
+
+
+def test_a_provider_that_forgets_to_call_super_still_answers():
+    """The memo's state lives on the class, so a provider with its own __init__
+    degrades to asking rather than raising AttributeError mid-click."""
+    class OwnConstructor(ui.Provider):
+        name = "own"
+        method = ui.BY_ACCESSIBILITY
+
+        def __init__(self):
+            self.thing = object()
+
+        def available(self):
+            return True
+
+    assert OwnConstructor().is_available() is True
+
+
+def test_one_provider_remembering_does_not_answer_for_another():
+    a, b = FakeProvider([], ok=True), FakeProvider([], ok=False)
+    assert a.is_available() is True
+    assert b.is_available() is False
+
+
+def test_a_broken_availability_check_reads_as_unavailable():
+    exploding = FakeProvider([], explode=True)
+    assert exploding.is_available() is False
 
 
 def test_capabilities_reports_what_this_machine_can_do():

@@ -88,6 +88,12 @@ MAX_CANDIDATES = 5
 # would be the freeze this module exists to avoid.
 MAX_ELEMENTS_SCANNED = 2000
 
+# How long a provider's "can I work here?" answer is trusted before it is asked
+# again. Asking is not free - the window-list provider enumerates the desktop to
+# answer - and the answer changes about as often as a display server starts.
+# Re-checked by arithmetic on the next call that needs it, never by a timer.
+AVAILABILITY_MEMO_SECONDS = 60.0
+
 
 @dataclass
 class UITarget:
@@ -177,8 +183,34 @@ class Provider:
     name = "none"
     method = BY_ACCESSIBILITY
 
+    # Defaults on the class, not in an __init__, so a provider that writes its
+    # own constructor cannot accidentally lose the memo. Assignment below always
+    # lands on the instance, so nothing is shared between providers.
+    _availability: Optional[bool] = None
+    _asked_at = 0.0
+
     def available(self) -> bool:
         raise NotImplementedError
+
+    def is_available(self, now: Optional[float] = None) -> bool:
+        """available(), remembered for AVAILABILITY_MEMO_SECONDS.
+
+        Every resolution asks which provider to use, and one provider answers by
+        enumerating the desktop. Doing that per click is the kind of cost that
+        makes a reliability layer the slow path, so the answer is kept and it
+        expires by comparing two numbers - no timer, no thread, no refresh loop.
+        """
+        now = time.time() if now is None else now
+        if (self._availability is not None
+                and now - self._asked_at < AVAILABILITY_MEMO_SECONDS):
+            return self._availability
+        try:
+            self._availability = bool(self.available())
+        except Exception as e:
+            logger.debug(f"Provider {self.name} availability check failed: {e}")
+            self._availability = False
+        self._asked_at = now
+        return self._availability
 
     def active_window(self) -> Optional[Dict[str, Any]]:
         raise NotImplementedError
@@ -475,16 +507,13 @@ def reset_providers(replacement: Optional[Sequence[Provider]] = None) -> None:
 def available_provider() -> Optional[Provider]:
     """The strongest provider this machine can actually use, or None.
 
-    Asked on demand. Each provider's availability check is its own remembered
-    import, so a machine with no accessibility stack answers None in microseconds
-    after the first time.
+    Asked on demand, and only on demand - nothing here runs between clicks. Each
+    provider's answer is remembered for AVAILABILITY_MEMO_SECONDS, because one of
+    them answers by enumerating the desktop and a click should not pay for that.
     """
     for provider in providers():
-        try:
-            if provider.available():
-                return provider
-        except Exception as e:
-            logger.debug(f"Provider {provider.name} availability check failed: {e}")
+        if provider.is_available():
+            return provider
     return None
 
 
@@ -492,11 +521,7 @@ def capabilities() -> Dict[str, Any]:
     """What Leti can actually ask this machine. For diagnostics; contacts nothing."""
     out = []
     for provider in providers():
-        try:
-            ok = provider.available()
-        except Exception as e:
-            ok = False
-            logger.debug(f"{provider.name}: {e}")
+        ok = provider.is_available()
         out.append({"provider": provider.name, "method": provider.method,
                     "available": ok})
     best = available_provider()

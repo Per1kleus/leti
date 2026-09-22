@@ -385,6 +385,24 @@ async def test_a_crash_between_a_step_and_its_checkpoint_is_unknown(store):
     assert after["recovery"]["unknown_external_effect"] is True
 
 
+@pytest.mark.asyncio
+async def test_a_task_ending_releases_anything_the_per_call_path_missed(store):
+    """Defence in depth, pinned directly.
+
+    Every tool call releases what it claimed in a finally block, so by the time a
+    task ends there is usually nothing left - which means a mutation removing the
+    task runner's release_all survives on the strength of the other mechanism. A
+    lock acquired outside any tool call has no such cover, and that is exactly
+    what the safety net is for.
+    """
+    task = _task(["one"])
+    resources.acquire(resources.identity(resources.FILE, "/tmp/orphan"),
+                      resources.WRITE, task["id"])
+    assert resources.snapshot()["held"], "the test did not take the lock it meant to"
+    await TaskRunner(FakeOrchestrator()).run(task["id"])
+    assert resources.snapshot()["held"] == [], "a task ended still holding a lock"
+
+
 def test_checkpoint_writing_is_cheap(store):
     task = _task(["one", "two", "three"])
     cp.write(task, cp.STARTED)
