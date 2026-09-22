@@ -24,6 +24,7 @@ NEW_MODULES = [
     "core/world_state.py", "core/objectives.py", "core/connections.py",
     "core/autonomy.py", "core/task_history.py", "core/recovery.py",
     "core/task_conflicts.py", "core/task_control.py",
+    "core/ui_targets.py", "core/resources.py", "core/checkpoints.py",
 ]
 
 
@@ -56,6 +57,9 @@ def _imports(path):
 # --- One of each ----------------------------------------------------------------------
 
 SINGLETONS = {
+    "computer use engine v2": ["core/ui_targets.py"],
+    "resource ledger": ["core/resources.py"],
+    "checkpoints": ["core/checkpoints.py"],
     "orchestrator": ["core/orchestrator.py"],
     "task manager": ["core/task_manager.py"],
     "scheduler": ["core/system_scheduler.py", "tools/scheduler.py"],
@@ -167,6 +171,58 @@ def test_the_recovery_planner_reuses_the_one_classifier():
     assert "def classify(" not in source, "a second classifier"
 
 
+def test_there_is_one_ui_resolution_decision():
+    """choose() is the only place that turns candidates into a verdict."""
+    source = pathlib.Path("core/ui_targets.py").read_text()
+    assert source.count("def choose(") == 1
+    # And core/computer_use.py delegates rather than matching text itself.
+    session = pathlib.Path("core/computer_use.py").read_text()
+    assert "ui_targets.resolve" in session
+
+
+def test_there_is_one_resource_ledger():
+    """Nothing else keeps its own table of who holds what."""
+    import re as _re
+
+    ledgers = []
+    for path in pathlib.Path("core").glob("*.py"):
+        if _re.search(r"^_held:\s*Dict", path.read_text(), _re.M):
+            ledgers.append(path.name)
+    assert ledgers == ["resources.py"], ledgers
+
+
+def test_there_is_one_checkpoint_writer():
+    """One writer, and it owns no file: it rides the task store's existing save.
+
+    Checked with ast rather than by grepping the source - the module documents
+    that it does not write, and a substring search would fail on its own
+    docstring saying so.
+    """
+    names, imports = _code_names_of("core/checkpoints.py")
+    source = pathlib.Path("core/checkpoints.py").read_text()
+    assert source.count("def write(") == 1
+    for forbidden in ("atomic_write_text", "atomic_write_json", "store_path",
+                      "save_tasks", "open"):
+        assert forbidden not in names, f"core/checkpoints.py calls {forbidden}"
+
+
+def test_the_checkpoint_lives_in_the_existing_task_store():
+    manager = pathlib.Path("core/task_manager.py").read_text()
+    assert 'task["checkpoint"] = checkpoints.write(' in manager
+    assert "atomic_write_text" in manager
+
+
+def test_computer_use_still_has_one_session_class():
+    import re as _re
+
+    sessions = []
+    for path in list(pathlib.Path("core").glob("*.py")) + \
+            list(pathlib.Path("tools").glob("*.py")):
+        if _re.search(r"^class Session\b", path.read_text(), _re.M):
+            sessions.append(path.name)
+    assert sessions == ["computer_use.py"], sessions
+
+
 def test_there_is_one_failure_classifier():
     """core/task_manager.py asks core/world_state.py rather than keeping a list."""
     assert "_RECOVERABLE" not in pathlib.Path("core/task_manager.py").read_text()
@@ -227,6 +283,23 @@ def test_importing_every_new_module_starts_no_threads():
     for path in NEW_MODULES:
         __import__(path.replace("/", ".")[:-3])
     assert threading.active_count() == before
+
+
+def test_no_new_module_polls_or_scans():
+    """No accessibility daemon, no OCR loop, no filesystem watcher."""
+    for path in ("core/ui_targets.py", "core/resources.py", "core/checkpoints.py"):
+        source = pathlib.Path(path).read_text().lower()
+        for forbidden in ("while true", "inotify", "watchdog", "schedule.every",
+                          "setinterval", "time.sleep("):
+            assert forbidden not in source, f"{path} contains {forbidden}"
+
+
+def test_the_resource_ledger_is_not_persisted():
+    """A lock held by a process that no longer exists is not a lock."""
+    calls = _calls("core/resources.py")
+    for forbidden in ("write_text", "atomic_write_text", "atomic_write_json",
+                      "connect", "dump"):
+        assert forbidden not in calls
 
 
 def test_nothing_new_builds_a_permanent_index_or_a_vector_database():

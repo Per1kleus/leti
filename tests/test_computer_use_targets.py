@@ -228,3 +228,137 @@ def test_no_second_automation_framework_was_added():
             imports.add(node.module)
     for forbidden in ("pyautogui", "selenium", "playwright", "pynput", "mss"):
         assert forbidden not in imports, f"core/computer_use.py drives {forbidden} itself"
+
+
+# --- Resolution through the session ---------------------------------------------------
+
+def test_a_session_reports_how_a_target_was_resolved():
+    from core import ui_targets
+
+    session = _session()
+    aim = session.aim("click the Sign in button")
+    assert aim["state"] == ui_targets.UNIQUE_MATCH
+    assert aim["how"] == ui_targets.BY_OCR
+    assert "low" in aim["confidence"]
+    assert aim["prefer"], "a weak resolution did not say it was weak"
+
+
+def test_an_ambiguous_target_is_refused_by_the_session():
+    from core import ui_targets
+
+    session = _session("Settings in the sidebar and Settings in the menu")
+    aim = session.aim("click the Settings button")
+    assert aim["state"] == ui_targets.AMBIGUOUS
+    allowed, why = session.may_act("click", "the Settings button")
+    assert allowed is False
+
+
+def test_a_held_target_is_dropped_when_the_screen_is_read_again():
+    session = _session()
+    session.aim("click the Sign in button")
+    assert session.resolved is not None
+    session.observe(LOGIN)
+    assert session.resolved is None, "a target survived a fresh observation"
+
+
+def test_a_held_target_is_dropped_after_acting():
+    session = _session()
+    session.aim("click the Sign in button")
+    session.record("click", "the Sign in button")
+    assert session.resolved is None, "a target survived the click"
+
+
+def test_a_held_target_is_dropped_on_a_mismatch():
+    session = _session()
+    session.aim("click the Sign in button")
+    session.mismatch()
+    assert session.resolved is None
+
+
+def test_a_stale_target_is_refused_before_the_click():
+    import time as _time
+
+    from core import ui_targets
+
+    session = _session()
+    session.aim("click the Sign in button")
+    session.resolved.observed_at = _time.time() - ui_targets.TARGET_MAX_AGE_SECONDS - 1
+    session.observe("A completely different window about billing")
+    allowed, why = session.may_act("click", "the Sign in button")
+    assert allowed is False
+
+
+# --- Post-action verification ------------------------------------------------------------
+
+def test_an_action_nobody_looked_at_is_not_verified():
+    from core import verification
+
+    session = _session()
+    session.record("click", "the Sign in button")
+    found = session.verify_last_action("the dashboard")
+    assert found["result"] == verification.NOT_VERIFIED
+    assert "has not been looked at since" in found["detail"]
+
+
+def test_an_action_whose_result_matches_is_verified():
+    from core import verification
+
+    session = _session()
+    session.record("click", "the Sign in button")
+    found = session.verify_last_action(
+        "the dashboard", observed="A dashboard with your account menu")
+    assert found["result"] == verification.VERIFIED
+
+
+def test_an_action_whose_result_does_not_match_failed():
+    from core import verification
+
+    session = _session()
+    session.record("click", "the Sign in button")
+    found = session.verify_last_action(
+        "the dashboard", observed="An error saying the password is wrong")
+    assert found["result"] == verification.FAILED
+    assert "did not produce what was expected" in found["detail"]
+
+
+def test_an_action_with_no_expectation_cannot_be_confirmed():
+    from core import verification
+
+    session = _session()
+    session.record("click", "the Sign in button")
+    found = session.verify_last_action("", observed="A dashboard")
+    assert found["result"] == verification.NOT_VERIFIED
+
+
+def test_nothing_done_yet_is_not_applicable():
+    from core import verification
+
+    assert _session().verify_last_action("anything")["result"] == \
+        verification.NOT_APPLICABLE
+
+
+def test_verification_never_says_a_click_worked_because_it_returned():
+    import ast
+    import inspect
+
+    from core import computer_use as cu
+
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(
+        inspect.getsource(cu.Session.verify_last_action)))
+    literals = [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    for text in literals:
+        assert "successfully" not in text.lower()
+
+
+def test_an_application_change_is_noticed(monkeypatch):
+    from core import ui_targets
+
+    session = _session()
+    windows = iter([{"window": "Settings"}, {"window": "Mail"}])
+    monkeypatch.setattr(ui_targets, "active_window", lambda: next(windows, None))
+    session.observe("first screen")
+    session.observe("a completely different application")
+    assert (session.context or {}).get("window") == "Mail"

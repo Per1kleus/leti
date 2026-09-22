@@ -743,14 +743,20 @@ def _from_text(wanted: str, role: str, window: str, observation: str,
     """
     seen = str(observation or "")
     if not seen.strip():
+        # Two different answers, and collapsing them would be the imprecision
+        # this module exists to remove. A provider that looked and found nothing
+        # has ANSWERED: the element is not there. No provider and no observation
+        # is not an answer at all - nothing looked.
+        if had_provider:
+            return Resolution(
+                state=NOT_FOUND, wanted=wanted, method=BY_ACCESSIBILITY,
+                detail=(f"The interface was asked and has no '{wanted}' in the window "
+                        "in front. Read the screen if you think it should be there."))
         return Resolution(
             state=UNSUPPORTED, wanted=wanted, method=BY_OCR,
             detail=("Nothing has been read off the screen and this machine has no "
                     "accessibility provider, so there is no way to tell whether "
-                    f"'{wanted}' is there. Read the screen first."
-                    if not had_provider else
-                    f"The accessibility provider returned nothing for '{wanted}' "
-                    "and the screen has not been read. Read it and try again."))
+                    f"'{wanted}' is there. Read the screen first."))
 
     lowered, target = seen.lower(), _normalise(wanted)
     if not target:

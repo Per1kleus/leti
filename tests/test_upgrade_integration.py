@@ -419,3 +419,100 @@ async def test_an_ordinary_request_mentioning_stopping_is_not_a_stop(guard_facto
     await orch.handle_user_input("how do I stop a systemd service?")
     assert llm.seen, "an ordinary question was swallowed as a lifecycle command"
     assert task_manager.get_task(task["id"])["status"] != "cancelled"
+
+
+# --- Runtime resource claims at the tool boundary -------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_tool_call_claims_and_releases_what_it_touches(guard_factory, tmp_path):
+    from core import resources
+
+    resources.clear()
+    path = tmp_path / "x.txt"
+    call = {"content": None, "tool_calls": [
+        {"function": {"name": "write_file",
+                      "arguments": {"path": str(path), "content": "x"}}}]}
+    orch, llm, _ = _orchestrator(guard_factory, [call, {"content": "done"}])
+    await orch.handle_user_input("save it")
+    # Released on the way out, whatever happened.
+    assert resources.snapshot()["held"] == []
+    resources.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_held_resource_blocks_a_second_writer(guard_factory, tmp_path):
+    from core import resources
+
+    resources.clear()
+    path = tmp_path / "shared.txt"
+    resources.acquire(resources.identity(resources.FILE, str(path)),
+                      resources.WRITE, "some-other-task")
+    call = {"content": None, "tool_calls": [
+        {"function": {"name": "write_file",
+                      "arguments": {"path": str(path), "content": "x"}}}]}
+    orch, llm, _ = _orchestrator(guard_factory, [call, {"content": "I waited."}])
+    await orch.handle_user_input("save it")
+    tool_messages = [m for m in llm.seen[-1]["messages"] if m.get("role") == "tool"]
+    assert "waiting" in tool_messages[-1]["content"]
+    assert "Nothing was changed" in tool_messages[-1]["content"]
+    resources.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_tool_still_releases_its_resources(guard_factory, tmp_path):
+    from core import resources
+    from tools.base import BaseTool, ToolParameter, ToolResult
+
+    resources.clear()
+
+    class Exploding(BaseTool):
+        name = "write_file"
+        description = "write"
+        parameters = [ToolParameter(name="path", type="string", description="path"),
+                      ToolParameter(name="content", type="string", description="c")]
+
+        async def run(self, **kwargs):
+            raise RuntimeError("the disk caught fire")
+
+    call = {"content": None, "tool_calls": [
+        {"function": {"name": "write_file",
+                      "arguments": {"path": str(tmp_path / "y"), "content": "x"}}}]}
+    orch, llm, _ = _orchestrator(guard_factory, [call, {"content": "It failed."}])
+    orch.tool_registry.register(Exploding())
+    await orch.handle_user_input("save it")
+    assert resources.snapshot()["held"] == [], "a crashed tool leaked its lock"
+    resources.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_call_never_holds_anything(guard_factory, tmp_path):
+    """A lock is not a permission, and must never be able to look like one."""
+    from core import resources
+    from core.safety_guard import ConfirmationDenied
+
+    resources.clear()
+    guard, prompts = guard_factory(confirm=False, confirm_classes=["modify", "critical"])
+    call = {"content": None, "tool_calls": [
+        {"function": {"name": "write_file",
+                      "arguments": {"path": str(tmp_path / "z"), "content": "x"}}}]}
+    orch, llm, _ = _orchestrator(guard_factory, [call, {"content": "Not allowed."}])
+    orch.safety_guard = guard
+    await orch.handle_user_input("save it")
+    assert resources.snapshot()["held"] == []
+    resources.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_task_owns_the_resources_its_steps_touch(guard_factory):
+    orch, llm, _ = _orchestrator(guard_factory, [{"content": "ok"}])
+    seen = {}
+
+    original = orch._claim_resources
+
+    def watch(tool_name, arguments):
+        seen["owner"] = orch._resource_owner()
+        return original(tool_name, arguments)
+
+    orch._claim_resources = watch
+    await orch.handle_user_input("hello", owner="task-42")
+    assert orch._resource_owner() == "conversation", "the owner leaked past the turn"
