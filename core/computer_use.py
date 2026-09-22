@@ -54,7 +54,14 @@ MAX_PLAN_STEPS = 12            # a plan, not a program
 _CONSEQUENTIAL = re.compile(
     r"\b(send|submit|confirm|delete|remove|buy|purchase|pay|order|publish|post|"
     r"install|uninstall|overwrite|replace|sign|accept|apply|save|upload|share|"
-    r"transfer|discard)\b", re.I)
+    r"transfer|discard|"
+    # Leaving this machine by another name. An earlier list had none of these,
+    # so "email it to Chris" read as reversible - and the whole reason this list
+    # exists is that repeating a sent email sends it twice.
+    r"email|e-mail|mail|message|text|notify|reply|forward|invite|"
+    r"commit|push|merge|deploy|release|"
+    r"charge|refund|book|reserve|subscribe|unsubscribe|"
+    r"archive|empty|wipe|format|revoke|grant)\b", re.I)
 
 
 # Words that describe almost any screen. They carry no information about WHICH

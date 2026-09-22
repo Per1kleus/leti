@@ -353,13 +353,18 @@ def test_state_is_on_disk_and_a_restart_pauses_what_was_mid_step():
     task_manager._replace(task)
     task_manager._set_status(task["id"], RUNNING)
 
-    # A restart: the store is re-read from disk, and anything that was running is
-    # paused because nobody can know whether that step's side effects happened.
+    # A restart is a new process, and that is how a checkpoint tells "interrupted"
+    # from "running right now" - see core/checkpoints.py.
+    from core import checkpoints
+
+    checkpoints.new_generation_for_tests()
     recovered = task_manager.recover_interrupted()
     assert [t["id"] for t in recovered] == [task["id"]]
 
     stored = task_manager.get_task(task["id"])
-    assert stored["status"] == PAUSED
+    # Stopped either way; which stop depends on what the checkpoint says was in
+    # flight. Nothing already done is lost.
+    assert stored["status"] in (PAUSED, WAITING_FOR_USER)
     assert stored["steps"][0]["result"] == "kept"
     assert stored["current_step"] == 1
 

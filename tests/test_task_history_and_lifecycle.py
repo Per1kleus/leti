@@ -361,28 +361,67 @@ def test_a_stop_requested_without_a_status_change_still_settles(store):
 
 # --- Restart -------------------------------------------------------------------------
 
+def _as_if_restarted():
+    """Become a different process, which is what a restart is.
+
+    Checkpoints carry the id of the process that wrote them, so "written by a
+    process that is gone" is a comparison rather than a guess - and simulating
+    a restart honestly means changing the id, not just the status.
+    """
+    from core import checkpoints
+
+    checkpoints.new_generation_for_tests()
+
+
 @pytest.mark.parametrize("left_in,becomes", [
-    (RUNNING, PAUSED), (PAUSING, PAUSED), (RESUMING, PAUSED), (CANCELLING, CANCELLED),
+    (PAUSING, PAUSED), (RESUMING, PAUSED), (CANCELLING, CANCELLED),
 ])
 def test_a_restart_resolves_every_transitional_state(store, left_in, becomes):
     task = _task()
     task_manager._set_status(task["id"], left_in)
+    _as_if_restarted()
     task_manager.recover_interrupted()
     assert task_manager.get_task(task["id"])["status"] == becomes
+
+
+def test_a_task_interrupted_before_any_step_is_ready_to_resume(store):
+    """Nothing was in flight, so starting it again repeats nothing."""
+    from core import checkpoints
+
+    task = _task()
+    task_manager._set_status(task["id"], RUNNING)
+    _as_if_restarted()
+    recovered = task_manager.recover_interrupted()
+    assert recovered[0]["recovery"]["state"] == checkpoints.READY_TO_RESUME
+    assert task_manager.get_task(task["id"])["status"] == PAUSED
 
 
 def test_a_restart_never_silently_resumes(store):
     task = _task()
     task_manager._set_status(task["id"], RUNNING)
+    _as_if_restarted()
     recovered = task_manager.recover_interrupted()
-    assert recovered and "restarted" in recovered[0]["blocked_reason"]
+    assert recovered and "interrupted" in recovered[0]["blocked_reason"].lower()
+    # Stopped, whatever the verdict. Recovery decides what a task IS, never that
+    # it should run.
+    assert task_manager.get_task(task["id"])["status"] in (PAUSED, WAITING_FOR_USER)
 
 
 def test_a_restart_writes_what_it_found_to_the_history(store):
     task = _task()
     task_manager._set_status(task["id"], RUNNING)
+    _as_if_restarted()
     task_manager.recover_interrupted()
-    assert task_history.get(task["id"])["status"] == PAUSED
+    assert task_history.get(task["id"])["status"] in (PAUSED, WAITING_FOR_USER)
+
+
+def test_a_task_of_this_process_is_not_treated_as_interrupted(store):
+    """A running task belongs to the process running it. Only a checkpoint from
+    a process that is gone describes an interruption."""
+    task = _task()
+    task_manager._set_status(task["id"], RUNNING)
+    assert task_manager.recover_interrupted() == []
+    assert task_manager.get_task(task["id"])["status"] == RUNNING
 
 
 # --- Reaching the right task ----------------------------------------------------------

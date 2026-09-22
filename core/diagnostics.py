@@ -394,6 +394,59 @@ def watches_health() -> Dict[str, Any]:
     }
 
 
+def resource_locks_section() -> Dict[str, Any]:
+    """What is held, by whom, and who is waiting. Read-only; holds nothing.
+
+    Named for locks rather than resources because resources_section() above is
+    already CPU and memory - two different meanings of the word, and one of them
+    had the name first.
+    """
+    try:
+        from core import resources
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    try:
+        found = resources.snapshot()
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    return {
+        "status": "ok",
+        "held": found["held"],
+        "waiting": found["waiting"],
+        "long_held": found["long_held"],
+        "note": ("Locks exist so two pieces of work do not ruin each other's. "
+                 "They are not permissions and grant nothing."),
+    }
+
+
+def recovery_section() -> Dict[str, Any]:
+    """Tasks the previous session left behind, and why each can or cannot resume."""
+    try:
+        from core import checkpoints, task_manager
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    try:
+        tasks = task_manager.load_tasks()
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": f"the task store could not be read: {e}"}
+
+    interrupted = [t for t in tasks if t.get("recovery")]
+    return {
+        "status": "ok",
+        "generation": checkpoints.generation(),
+        "interrupted": len(interrupted),
+        "ready_to_resume": sum(1 for t in interrupted
+                               if t["recovery"].get("state") == checkpoints.READY_TO_RESUME),
+        "needs_you": sum(1 for t in interrupted
+                         if t["recovery"].get("state") == checkpoints.NEEDS_YOU),
+        "unknown_external_effects": [
+            {"task": t.get("id"), "name": t.get("name"),
+             "why": t["recovery"].get("why")}
+            for t in interrupted if t["recovery"].get("unknown_external_effect")],
+        "tasks": [checkpoints.describe(t) for t in interrupted][:10],
+    }
+
+
 def computer_use_section() -> Dict[str, Any]:
     """Open GUI sessions and anything in them nobody checked. Read-only."""
     try:
@@ -404,12 +457,25 @@ def computer_use_section() -> Dict[str, Any]:
         sessions = computer_use.active_sessions()
     except Exception as e:
         return {"status": UNAVAILABLE, "detail": str(e)}
+    try:
+        from core import ui_targets
+
+        how = ui_targets.capabilities()
+    except Exception:
+        how = {"best": None, "method": None}
     return {
         "status": "ok",
         "open_sessions": len(sessions),
+        # How targets are resolved on this machine, and what that is worth. No
+        # tree, no screenshot, no element list - one line.
+        "resolution": {"provider": how.get("best"), "method": how.get("method"),
+                       "confidence": how.get("note")},
         "sessions": [{
             "id": s.id, "goal": s.goal, "steps": s.steps_taken,
             "mismatches": s.mismatches,
+            "application": (s.context or {}).get("window"),
+            "resolved_target": (s.resolved.name if getattr(s, "resolved", None)
+                                else None),
             "observed_seconds_ago": (round(time.time() - s.observed_at, 1)
                                      if s.observed_at else None),
             "unverified": s.unverified_actions(),
@@ -432,6 +498,8 @@ def snapshot(registry: Any = None) -> Dict[str, Any]:
         "tasks": tasks_section(),
         "watch_health": watches_health(),
         "computer_use": computer_use_section(),
+        "resource_locks": resource_locks_section(),
+        "recovery": recovery_section(),
     }
 
 

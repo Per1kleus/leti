@@ -153,7 +153,8 @@ from tools.scheduler import (
     SchedulerRunner,
     set_runner,
 )
-from core.task_manager import TaskRunner, recover_interrupted
+from core.task_manager import (TaskRunner, interrupted_summary,
+                               recover_interrupted)
 from tools.autonomous import (
     ControlAutonomousTaskTool,
     ListAutonomousTasksTool,
@@ -700,10 +701,23 @@ async def build_app(start_scheduler: bool = True):
     set_watch_runner(task_runner)
     set_control_registry(tool_registry)
 
-    # A task that was mid-step when Leti last closed is marked paused rather than
-    # resumed: nothing can know whether that step's side effects happened.
-    for interrupted in recover_interrupted():
-        logger.info(f"Task '{interrupted['name']}' was interrupted by a restart; it is paused.")
+    # Tasks left behind by a process that is gone, assessed one at a time from
+    # their checkpoints - see core/checkpoints.py. Nothing is resumed here: this
+    # works out what each interrupted task IS (ready, needing a person, stopped)
+    # and says so. Starting one again is the user's decision, through the
+    # ordinary controls, which still meet SafetyGuard the ordinary way.
+    interrupted = recover_interrupted()
+    if interrupted:
+        summary = interrupted_summary(interrupted)
+        logger.warning(summary)
+        # Said out loud too, not only logged: a task that needs a person is no
+        # use sitting in a log file nobody opens.
+        try:
+            from core import diagnostics
+
+            diagnostics.record_activity("recovery", summary.splitlines()[0])
+        except Exception:
+            pass
 
     return llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler
 

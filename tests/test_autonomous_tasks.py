@@ -367,18 +367,22 @@ def test_the_task_manager_never_executes_a_tool_itself():
 
 # --- Restart recovery ---------------------------------------------------------------
 
-def test_a_task_interrupted_by_a_restart_is_paused_not_resumed():
+def test_a_task_interrupted_by_a_restart_is_stopped_not_resumed():
     """Nothing can know whether the step that was running had already had its
     effect, so it is never repeated automatically."""
+    from core import checkpoints
+
     task = _task()
     task_manager._set_status(task["id"], RUNNING)
+    checkpoints.new_generation_for_tests()      # a restart is a new process
 
     recovered = task_manager.recover_interrupted()
 
     assert [t["id"] for t in recovered] == [task["id"]]
     after = task_manager.get_task(task["id"])
-    assert after["status"] == PAUSED
-    assert "restarted" in after["blocked_reason"].lower()
+    assert after["status"] in (PAUSED, task_manager.WAITING_FOR_USER)
+    assert after["recovery"]["resume"] in (True, False)
+    assert "interrupted" in after["blocked_reason"].lower()
 
 
 def test_recovery_leaves_everything_else_alone():

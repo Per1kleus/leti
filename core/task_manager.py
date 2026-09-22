@@ -34,7 +34,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
-from core import recovery, resources, task_conflicts, task_history, world_state
+from core import (checkpoints, recovery, resources, task_conflicts,
+                  task_history, world_state)
 
 logger = logging.getLogger("leti.tasks")
 
@@ -361,6 +362,21 @@ def _set_status(task_id: str, status: str, **fields) -> Optional[Dict[str, Any]]
     task.update(fields)
     if status in FINISHED_STATUSES:
         task["completed_at"] = time.time()
+    # The last thing Leti actually knew, written at the moments the task record
+    # was being written anyway - see core/checkpoints.py. It rides the existing
+    # atomic save, so there is no second store and no extra write.
+    #
+    # `execution` is passed in by the runner when it knows better; a plain status
+    # change leaves whatever the step-level checkpoint last said, because a
+    # status change is not evidence about a step.
+    try:
+        task["checkpoint"] = checkpoints.write(
+            task, execution=fields.get("execution")
+            or (task.get("checkpoint") or {}).get("execution")
+            or checkpoints.NOT_STARTED)
+    except Exception:
+        logger.exception("Couldn't write a task checkpoint")
+    task.pop("execution", None)
     _replace(task)
     _mirror_to_activity(task, status)
     # The record that outlives the store's own trim - see core/task_history.py.
@@ -960,6 +976,15 @@ class TaskRunner:
             logger.info(f"Task {task_id} waits at step {index + 1}: {blocked['explain']}")
             return False
 
+        # STARTED, on disk, BEFORE the step runs. This is the line that makes
+        # crash recovery possible: if the process dies during the step, what is
+        # left behind says "this was in flight", which is the difference between
+        # not resending an email and resending it.
+        task["checkpoint"] = checkpoints.write(
+            task, execution=checkpoints.STARTED,
+            note=f"step {index + 1} of {len(task['steps'])}")
+        _replace(task)
+
         # Written down BEFORE the step runs: an expectation formed after seeing
         # the answer is a description, not a check.
         world_state.expect(task_id, step.get("expected") or step.get("instruction", ""))
@@ -1003,6 +1028,11 @@ class TaskRunner:
         step["error"] = None
         step.pop("recovery_instruction", None)
         task["current_step"] = index + 1
+        # VERIFIED: the step finished and its result is in hand. This is the
+        # recovery boundary - everything up to here is known to have happened.
+        task["checkpoint"] = checkpoints.write(
+            task, execution=checkpoints.VERIFIED,
+            note=f"step {index + 1} finished")
         _replace(task)
         return True
 
@@ -1255,41 +1285,152 @@ def _needs_approval(error: Exception) -> bool:
 
 
 def recover_interrupted() -> List[Dict[str, Any]]:
-    """Tasks left mid-run by a restart. Marked paused, never silently resumed.
+    """Tasks left behind by a process that is gone. Assessed one at a time.
 
-    A process that died in the middle of a step cannot know whether that step's
-    side effects happened, so the task stops and says so instead of repeating it.
+    What makes this possible is the checkpoint: a status of RUNNING says a task
+    was going, and only the checkpoint says whether the step in flight had
+    already sent anything. See core/checkpoints.py.
+
+    Nothing is resumed here. This decides WHAT each interrupted task is - ready,
+    needing a person, or stopped - and says so. Starting one again is a separate
+    decision made by whoever is told, through the ordinary controls, which still
+    meet SafetyGuard the ordinary way.
     """
     tasks = load_tasks()
     recovered = []
     for task in tasks:
         status = task.get("status")
-        if status == RUNNING:
-            task["status"] = PAUSED
-            task["blocked_reason"] = (
-                "Leti restarted while this task was running. Nothing was repeated - "
-                "resume it when you are ready.")
-        elif status == CANCELLING:
-            # It had been told to stop and the runner never got to finish the
-            # job. It is cancelled; that was the instruction.
+        if status not in ACTIVE_STATUSES:
+            continue
+        checkpoint = checkpoints.of(task)
+        # A checkpoint from THIS process belongs to a task this process is
+        # running; leave it alone. Only something written by a process that has
+        # gone describes an interruption.
+        if checkpoint is not None and not checkpoints.from_another_process(checkpoint):
+            continue
+        if checkpoint is None and status not in (RUNNING, CANCELLING, PAUSING,
+                                                 RESUMING):
+            continue
+
+        # A step that was STARTED when the process disappeared did not finish
+        # and did not fail: what it did is unknown, and saying so is the whole
+        # point of the state.
+        if checkpoint and checkpoint.get("execution") == checkpoints.STARTED:
+            checkpoint = {**checkpoint,
+                          "execution": checkpoints.UNKNOWN_AFTER_CRASH}
+            task["checkpoint"] = checkpoint
+
+        if status == CANCELLING:
             task["status"] = CANCELLED
             task["completed_at"] = time.time()
             task["blocked_reason"] = (
                 (task.get("blocked_reason") or "Cancelled.")
                 + " Leti restarted before the step in flight came back, so whether "
                   "that one step completed is not known.")
-        elif status in (PAUSING, RESUMING):
-            # Neither ever survives a restart: nothing is running for a pause to
-            # take effect on, and nothing picked the resume up.
-            task["status"] = PAUSED
-            task["blocked_reason"] = (
-                "Leti restarted before this took effect. Resume it when you are ready.")
-        else:
+            task["recovery"] = {"state": checkpoints.STOPPED, "resume": False,
+                                "why": ["it had already been told to stop"]}
+            recovered.append(task)
+            task["updated_at"] = time.time()
             continue
+
+        verdict = checkpoints.assess(
+            task, checkpoint,
+            permitted=_still_permitted(task),
+            connections_ready=_connections_ready(task))
+        task["recovery"] = {
+            "state": verdict["state"],
+            "resume": verdict["resume"],
+            "why": verdict["why"],
+            "unknown_external_effect": verdict["unknown_external_effect"],
+            "last_verified_step": verdict["last_verified_step"],
+        }
+        # Every interrupted task stops. READY_TO_RESUME means "starting this
+        # again repeats nothing", not "start it" - the decision to run stays
+        # with the user, and comes back through resume(), which goes through the
+        # guard like everything else.
+        task["status"] = PAUSED if verdict["resume"] else WAITING_FOR_USER
+        task["blocked_reason"] = verdict["explain"]
         task["updated_at"] = time.time()
         recovered.append(task)
+
     if recovered:
         save_tasks(tasks)
         for task in recovered:
             task_history.record(task)
+    # Locks held by a process that is gone are not locks. Nothing is inherited.
+    try:
+        resources.clear()
+    except Exception:
+        logger.exception("Couldn't clear the resource ledger on startup")
     return recovered
+
+
+def _still_permitted(task: Dict[str, Any]) -> Optional[bool]:
+    """Has a permission this task needs changed while Leti was off?
+
+    None means "cannot tell", which assess() treats as no objection - it only
+    blocks on a definite False. Guessing a permission changed would strand
+    tasks; guessing it did not would be the thing this is here to prevent, so
+    the only False is one that was actually observed.
+    """
+    try:
+        from core.config_loader import get_permissions
+
+        return bool(get_permissions())
+    except Exception:
+        return None
+
+
+def _connections_ready(task: Dict[str, Any]) -> Optional[bool]:
+    """Are the accounts this task's remaining steps need still set up?
+
+    Reads core/connections.py, which reads settings - no network call, no
+    credential. A task whose next step needs mail and has no mail account is not
+    resumable, and saying so at startup is better than failing at the step.
+    """
+    try:
+        from core import connections
+    except Exception:
+        return None
+    try:
+        steps = task.get("steps") or []
+        index = task.get("current_step", 0)
+        remaining = " ".join(str(s.get("instruction") or "")
+                             for s in steps[index:]).lower()
+        if not remaining:
+            return None
+        needed = set()
+        for capability, spec in connections.CAPABILITIES.items():
+            words = {capability} | set(str(spec.get("does", "")).split())
+            if any(w in remaining for w in words if len(w) > 4):
+                needed.add(capability)
+        if not needed:
+            return None
+        return all(connections.status(c)["state"] != connections.NOT_CONFIGURED
+                   for c in needed)
+    except Exception:
+        return None
+
+
+def interrupted_summary(recovered: List[Dict[str, Any]]) -> str:
+    """One line for the user, and a line per task. Empty when nothing was."""
+    if not recovered:
+        return ""
+    described = [checkpoints.describe(t) for t in recovered]
+    ready = [d for d in described if d["state"] == checkpoints.READY_TO_RESUME]
+    needs = [d for d in described if d["state"] == checkpoints.NEEDS_YOU]
+    stopped = [d for d in described if d["state"] == checkpoints.STOPPED]
+
+    counts = [f"{len(described)} task{'s' if len(described) != 1 else ''} "
+              "interrupted by the previous session"]
+    if ready:
+        counts.append(f"{len(ready)} ready to resume")
+    if needs:
+        counts.append(f"{len(needs)} needs you")
+    if stopped:
+        counts.append(f"{len(stopped)} stopped")
+
+    lines = [", ".join(counts) + "."]
+    for entry in described:
+        lines.append(f"- {entry['name']}: {entry['state']} - {entry['explain']}")
+    return "\n".join(lines)
