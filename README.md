@@ -1103,6 +1103,143 @@ model. The interface shows one line when there is more than one task
 ("3 active tasks - 1 needs you, 1 waiting, 1 running") and shows whichever task
 needs a person rather than whichever is first.
 
+## Asking the interface, not the screenshot
+
+A screenshot says the word *Settings* appears somewhere. It does not say there
+is an enabled button named Settings in this window - and the difference matters
+when two things are called Settings, when one is greyed out, when the word is in
+a tooltip, or when the list scrolled between looking and clicking.
+
+So `core/ui_targets.py` asks the operating system when it can, in this order:
+
+1. native accessibility / UI automation (Windows UI Automation, macOS
+   accessibility, AT-SPI)
+2. structured application information (which windows exist)
+3. visible text plus window context
+4. screenshot / OCR text
+5. coordinates
+
+Every resolution reports **which route answered it**, so a click made on screen
+text is never mistaken for one made on an element the interface named. The
+screenshot path is not removed - it is the fallback it should always have been,
+and on a machine with no accessibility stack it is still what happens.
+
+Seven states, and **exactly one of them may act**:
+
+| | |
+|---|---|
+| **UNIQUE_MATCH** | one element, clearly ahead, enabled and visible - act |
+| **AMBIGUOUS** | two the evidence cannot separate - ask, never pick |
+| **PARTIAL_MATCH** | close, not close enough to click |
+| **DISABLED** | it is there and clicking it would do nothing |
+| **STALE** | it was there; it is not the same thing now |
+| **NOT_FOUND** | the interface was asked and it is not there |
+| **UNSUPPORTED** | nothing could answer - not the same as absent |
+
+`NOT_FOUND` and `UNSUPPORTED` are deliberately different facts: *asked and
+absent* versus *nothing looked*.
+
+A resolved element is evidence about a screen, not a fact about an application,
+so it is dropped on every action, observation and mismatch, and checked against
+its own identity before the click if held more than twenty seconds. Position is
+not part of that identity - a window that moved still holds the same button -
+but a changed name or automation id is a different button however little it
+moved.
+
+**Nothing runs when nothing is happening.** No accessibility daemon, no tree
+cache that outlives a session, no desktop scan, no polling. A provider is
+imported the first time a resolution needs one; availability is asked at most
+once a minute. A query walks one window's descendants, filtered and bounded at
+2,000 nodes, and throws the result away. At most five candidates leave the
+module, each a few fields wide - resolution costs about **2.5 µs**.
+
+Afterwards the loop closes: the action is compared against what was expected in
+the existing VERIFIED / NOT VERIFIED / FAILED words. An action nobody has looked
+at since is **NOT VERIFIED**, which is not the same as failed - and never
+"clicked successfully" because the click API returned.
+
+## What a task is actually holding
+
+`core/task_conflicts.py` reads a plan and predicts what it will need. That is a
+guess, and it misses everything the plan does not spell out: *"tidy up the
+project"* never mentions `report.md`, so two tasks could both start and both
+write it.
+
+`core/resources.py` is the authoritative half. It watches the **tool boundary** -
+the one place where what a task is about to touch is already written down, in
+the arguments the tool was called with - and claims before the call, releases
+after it, whatever happened. No tracing, no filesystem watcher, no scanning:
+`read_file`'s `path` argument already says which file.
+
+    PLAN DECLARATION (a prediction) + RUNTIME OBSERVATION (the truth)
+    -> RESOURCE SET -> CONFLICT CHECK -> ACTION
+
+Four modes - READ, WRITE, EXCLUSIVE, CONTROL - and only two readers coexist.
+Files resolve through `realpath`, so `./report.md`, `~/proj/report.md` and a
+symlink to it are one resource rather than three.
+
+**Acquisition is atomic by construction.** `acquire()` checks and records in one
+synchronous function with no `await` anywhere inside it, so two coroutines on
+the same event loop cannot both succeed: the second cannot run until the first
+returns. No thread, no lock. About **2.7 µs** per acquire-and-release.
+
+A conflict is a **wait**, never a failure. The blocked task goes to
+WAITING_FOR_EXTERNAL with the owner named in plain words:
+
+> Task A is currently using project.py (write). This task needs write access to
+> the same thing, so it is waiting.
+
+and is woken when the owner releases - event-driven, on the only occasion a lock
+can clear. Nothing polls. The owner *failing* releases its locks exactly as
+finishing does.
+
+The ledger is in memory and never persisted, because **a lock held by a process
+that no longer exists is not a lock**. And it grants nothing: the claim happens
+*after* SafetyGuard authorises, so a refused call never holds anything.
+
+## Coming back after a crash
+
+A task that was running when the process died leaves a status saying RUNNING and
+nothing else. From that, two very different situations look identical: the step
+had not started, and the step had sent an email and the process died before the
+answer came back. Treating the second as the first **resends the email**.
+
+`core/checkpoints.py` records the one thing status cannot:
+
+| | |
+|---|---|
+| **NOT_STARTED** | nothing was attempted |
+| **STARTED** | attempted, outcome not yet known |
+| **VERIFIED** | finished and checked - the recovery boundary |
+| **UNKNOWN_AFTER_CRASH** | it was STARTED when the process disappeared |
+
+That last state is the point. It is not *failed* - failing is something that was
+observed - and it is not *done*. What follows depends on whether repeating the
+step could do damage.
+
+The checkpoint lives **inside the task**, in the store that already existed,
+written by the save path that already went through `atomic_write`. No second
+database. It is written at the transitions that were persisting anyway:
+**STARTED on disk before a step runs**, VERIFIED once its result is in hand. A
+few hundred bytes - no screenshots, no UI trees, no model context, no
+conversation - and about **3.2 µs** to build.
+
+Each process gets an id at import, and a checkpoint carries the id of the
+process that wrote it, so *"written by a process that is gone"* is a comparison
+rather than a guess. No marker file, no heartbeat, nothing left behind when the
+power cuts.
+
+On startup each interrupted task is assessed **individually** against five
+conditions - a valid checkpoint, nothing irreversible in doubt, permissions
+unchanged, connections available, the next action safe to retry - and:
+
+    A -> READY TO RESUME     B -> NEEDS YOU     C -> WAITING
+
+**Nothing resumes itself.** READY_TO_RESUME means "starting this again repeats
+nothing", not "start it": the decision stays with the user and comes back
+through `resume()`, which meets SafetyGuard like everything else. Locks held by
+the dead process are cleared, and the task is told what it had been holding.
+
 ## Aiming at a thing, not a pixel
 
 A coordinate is the weakest possible description of a target: wrong the moment
@@ -1564,6 +1701,9 @@ leti/
 │   ├── github_client.py       # GitHub over the API, with a token it never says
 │   ├── intent.py              # What the request IS, read deterministically before it is sent
 │   ├── context_engine.py      # Which context this request needs - chosen, not accumulated
+│   ├── ui_targets.py          # Which element that is, asked of the OS before the screenshot
+│   ├── resources.py           # What a task is actually holding, at the tool boundary
+│   ├── checkpoints.py         # The last thing Leti knew, written before it could be lost
 │   ├── task_history.py        # What happened to a task after the store trimmed it
 │   ├── task_control.py        # "Stop" reaching the right task, through the one resolver
 │   ├── task_conflicts.py      # Two tasks, one file: which one waits
@@ -1749,3 +1889,22 @@ To add a new tool:
 - Concurrency is capped at three and is about not blocking on somebody else's
   server, not throughput: every step of every task still goes through the one
   orchestrator, which serialises turns.
+- Accessibility resolution needs a provider the machine actually has. Windows UI
+  Automation goes through `uiautomation` or `pywinauto`, macOS through PyObjC
+  *and* an accessibility grant, Linux through AT-SPI - none of which Leti
+  installs. Without one, targets fall back to the text read off the screen, and
+  that is reported on every resolution rather than hidden. The macOS provider
+  currently names the frontmost application but does not enumerate elements.
+- Runtime resource tracking covers the tools whose arguments name what they
+  touch. A tool that opens a file it was never told about is not tracked, and a
+  shell command that writes something is tracked as a command rather than as the
+  files it wrote.
+- Resource locks coordinate Leti's own tasks with each other. They say nothing
+  about another program on the machine editing the same file.
+- Crash recovery can say a step was in flight; it cannot say what that step did.
+  For an irreversible step that is deliberately the end of the automatic path -
+  the task waits for a person rather than guessing - and there is no external
+  receipt or idempotency key to consult.
+- The checkpoint is written before a step and after it. A crash *between* the
+  tool call and the checkpoint is exactly the case reported as
+  UNKNOWN_AFTER_CRASH: named honestly rather than resolved.
