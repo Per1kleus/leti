@@ -178,7 +178,7 @@ class SlowOrchestrator:
         self.seen = []
 
     async def handle_user_input(self, text, session_id="default", voice_mode=False,
-                                preapproved=False):
+                                preapproved=False, owner=""):
         import asyncio
 
         self.seen.append(text)
@@ -252,7 +252,7 @@ async def test_one_task_failing_does_not_stop_another(store):
             self.seen = []
 
         async def handle_user_input(self, text, session_id="default",
-                                    voice_mode=False, preapproved=False):
+                                    voice_mode=False, preapproved=False, owner=""):
             self.seen.append(text)
             await asyncio.sleep(0.01)
             if "explode" in text:

@@ -173,10 +173,44 @@ def _why(name: str, wanted: str, held: str) -> str:
     return f"Both tasks need {name} and at least one of them changes it."
 
 
+def _runtime_conflicts(task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What this task's declaration wants that somebody is ACTUALLY holding.
+
+    The declaration is a prediction; core/resources.py is the truth. A task
+    whose plan says it will write report.md must not start while another task
+    has report.md open, even if that other task never declared it - which is the
+    whole point of tracking what tools really touch.
+    """
+    try:
+        from core import resources
+    except Exception:
+        return []
+    found = []
+    for entry in (task.get("declared_resources") or declare(task)):
+        name, mode = entry["name"], entry["mode"]
+        # The declaration's vocabulary and the ledger's are the same three words
+        # for the overlapping cases; a declared CONTROL is a runtime CONTROL.
+        blocker = resources.conflict_for(name, mode, str(task.get("id") or ""))
+        if blocker is None:
+            continue
+        found.append({
+            "resource": name, "wanted_as": mode, "held_as": blocker.mode,
+            "held_by": blocker.task_id, "runtime": True,
+            "why": (f"Another task has {name} open right now "
+                    f"({blocker.mode}), whatever its plan said it would need."),
+        })
+    return found
+
+
 def may_start(task: Dict[str, Any],
               running: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Can this task start right now? The whole answer, including why not."""
-    found = conflicts(task, running)
+    """Can this task start right now? The whole answer, including why not.
+
+    Two sources, and they answer different questions. The declarations predict
+    what each running task will need; the runtime ledger says what is open at
+    this instant. A conflict from either is a conflict.
+    """
+    found = conflicts(task, running) + _runtime_conflicts(task)
     if not found:
         return {"ok": True, "conflicts": [], "wait_for": []}
     return {

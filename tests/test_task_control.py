@@ -43,7 +43,7 @@ class FakeOrchestrator:
         self.behaviour = behaviour or (lambda text, n: f"did: {text[-30:]}")
 
     async def handle_user_input(self, text, session_id="default", voice_mode=False,
-                                preapproved=False):
+                                preapproved=False, owner=""):
         self.seen.append(text)
         self.approvals.append(bool(preapproved))
         result = self.behaviour(text, len(self.seen))

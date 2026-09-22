@@ -34,7 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path
-from core import recovery, task_conflicts, task_history, world_state
+from core import recovery, resources, task_conflicts, task_history, world_state
 
 logger = logging.getLogger("leti.tasks")
 
@@ -788,8 +788,14 @@ class TaskRunner:
         """
         started = []
         for task in load_tasks():
-            if task.get("status") not in (QUEUED, RESUMING):
+            # A task waiting on a resource is waiting on exactly the thing that
+            # just became free, so it is woken here too. Nothing polls: this runs
+            # because a task finished, which is the only moment a lock can clear.
+            if task.get("status") not in (QUEUED, RESUMING, WAITING_FOR_EXTERNAL):
                 continue
+            if (task.get("status") == WAITING_FOR_EXTERNAL
+                    and not task.get("waiting_for_tasks")):
+                continue          # waiting on something else entirely; leave it
             if self.start_in_background(task["id"]):
                 started.append(task["id"])
         return started
@@ -801,7 +807,8 @@ class TaskRunner:
             return {"task_id": task_id, "status": "missing"}
         # RESUMING is a startable state: it is what resume() and skip_step() leave
         # behind, and the runner picking it up is what turns it into RUNNING.
-        if task.get("status") not in (QUEUED, RUNNING, RESUMING):
+        if task.get("status") not in (QUEUED, RUNNING, RESUMING,
+                                      WAITING_FOR_EXTERNAL):
             return describe(task)
 
         self._running.add(str(task_id))      # already claimed by start_in_background
@@ -853,6 +860,15 @@ class TaskRunner:
             restore_unattended()
             self._running.discard(str(task_id))
             world_state.forget(task_id)
+            # Everything this task was holding, let go of - completed, failed,
+            # cancelled or abandoned. A lock released only on the happy path is
+            # a lock that deadlocks on the unhappy one.
+            try:
+                freed = resources.release_all(task_id)
+                if freed:
+                    logger.debug(f"Task {task_id} released {len(freed)} resource(s)")
+            except Exception:
+                logger.exception("Couldn't release a task's resources")
             # Nothing is ever left mid-transition by the runner: whatever else
             # happened, a task that was told to pause or cancel ends up in the
             # state it was told to be in.
@@ -932,12 +948,24 @@ class TaskRunner:
                             "before reporting it finished.")
         if step.get("recovery_instruction"):
             instruction += f"\n\n{step['recovery_instruction']}"
+        # Is anything this task needs held by somebody else right now? Checked
+        # per step, not only at the start: a long task acquires and releases as
+        # it goes, so the answer changes between steps. A conflict is a WAIT,
+        # never a failure - the task has not gone wrong, it is queueing.
+        blocked = self._blocked_by(task)
+        if blocked is not None:
+            _set_status(task_id, WAITING_FOR_EXTERNAL,
+                        blocked_reason=blocked["explain"],
+                        waiting_for_tasks=blocked["wait_for"])
+            logger.info(f"Task {task_id} waits at step {index + 1}: {blocked['explain']}")
+            return False
+
         # Written down BEFORE the step runs: an expectation formed after seeing
         # the answer is a description, not a check.
         world_state.expect(task_id, step.get("expected") or step.get("instruction", ""))
         try:
             answer = await self.orchestrator.handle_user_input(
-                instruction, preapproved=approved)
+                instruction, preapproved=approved, owner=task_id)
         except asyncio.CancelledError:
             raise
         except Exception as e:

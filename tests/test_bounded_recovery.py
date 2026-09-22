@@ -26,7 +26,7 @@ class FakeOrchestrator:
         self.seen = []
 
     async def handle_user_input(self, text, session_id="default", voice_mode=False,
-                               preapproved=False):
+                               preapproved=False, owner=""):
         self.seen.append(text)
         result = self.behaviour(text, len(self.seen))
         if isinstance(result, Exception):

@@ -25,7 +25,7 @@ from core import intent as intent_reader
 from core import context_engine, entities, modes, performance, task_control
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
-from core import artifacts, connections, diagnostics, verification
+from core import artifacts, connections, diagnostics, resources, verification
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import Routing, last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
@@ -290,6 +290,7 @@ _DEFAULT_MODE = performance.Mode()
 
 
 class Orchestrator:
+    _owning_task = None              # set per turn; see handle_user_input
     _intent = _DEFAULT_INTENT
     _mode = _DEFAULT_MODE
     _context = None                  # the last context package, for diagnostics
@@ -355,14 +356,24 @@ class Orchestrator:
     # Main entry point: handle one user utterance/turn end-to-end
     # ------------------------------------------------------------------ #
     async def handle_user_input(self, user_text: str, session_id: str = "default",
-                                voice_mode: bool = False, preapproved: bool = False) -> str:
+                                voice_mode: bool = False, preapproved: bool = False,
+                                owner: str = "") -> str:
         """One turn. `preapproved` is the caller saying the user has already agreed
         to what this turn will do - the task runner passes it for a step the user
         approved in the interface. It feeds the SAME pre-approval SafetyGuard
         already honours for voice, with the same limit: an irreversible action is
         never covered by it and still stops to ask."""
         async with self._turn_lock:
-            return await self._handle_one_turn(user_text, session_id, voice_mode, preapproved)
+            # Who owns whatever this turn touches - a task id when the task
+            # runner is driving, the conversation when a person is. Set inside
+            # the lock, which is what makes it safe: one turn runs at a time, so
+            # there is never a moment where two owners are in play.
+            self._owning_task = str(owner) or None
+            try:
+                return await self._handle_one_turn(user_text, session_id, voice_mode,
+                                                   preapproved)
+            finally:
+                self._owning_task = None
 
     async def _handle_one_turn(self, user_text: str, session_id: str, voice_mode: bool,
                                preapproved: bool = False) -> str:
@@ -749,6 +760,23 @@ class Orchestrator:
                 },
             )
 
+        # What this call is actually about to touch - see core/resources.py. The
+        # tool boundary is the one instrumentation point: the arguments already
+        # say what the tool will use, so nothing has to be traced, watched or
+        # scanned. Most tools touch nothing worth tracking and this is empty.
+        #
+        # The claim is made AFTER authorisation, deliberately. A lock is not a
+        # permission and must never be able to look like one: a call SafetyGuard
+        # refuses never gets as far as holding anything.
+        claimed = self._claim_resources(tool_name, arguments)
+        if claimed.get("blocked"):
+            return ToolResult(success=False, error=claimed["explain"],
+                              output={"waiting_on": claimed["held_by"],
+                                      "resource": claimed["resource"],
+                                      "note": ("Another piece of work is using this. "
+                                               "Nothing was changed. Wait for it to "
+                                               "finish, or stop the other one.")})
+
         _tool_started = time.perf_counter()
         try:
             result = await tool.run(**arguments)
@@ -771,6 +799,73 @@ class Orchestrator:
             except Exception:
                 pass
             return self._explain_failure(tool_name, ToolResult(success=False, error=str(e)))
+        finally:
+            # Released whatever happened - returned, raised, or was cancelled.
+            # A resource let go only on the happy path is a resource that
+            # deadlocks on the unhappy one.
+            self._release_resources(claimed)
+
+    def _claim_resources(self, tool_name: str,
+                         arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Take what this call needs, or report who has it.
+
+        Atomic: core/resources.acquire has no await in it, so two tasks on this
+        event loop cannot both succeed. Never raises - a resource reading that
+        fails must not stop a tool running, because the worst case of not
+        tracking is the behaviour Leti had before runtime tracking existed.
+        """
+        owner = self._resource_owner()
+        try:
+            wanted = resources.for_tool(tool_name, arguments)
+            if not wanted:
+                return {"owner": owner, "taken": []}
+            taken: List[str] = []
+            for entry in wanted:
+                outcome = resources.acquire(entry["resource"], entry["mode"], owner,
+                                            reason=tool_name)
+                if not outcome["acquired"]:
+                    # Give back whatever this call already took, so a partial
+                    # claim never becomes a lock nobody releases.
+                    for name in taken:
+                        resources.release(name, owner)
+                    return {"owner": owner, "taken": [], "blocked": True,
+                            "resource": outcome["resource"],
+                            "held_by": outcome["held_by"],
+                            "explain": resources.describe_conflict(
+                                outcome, self._task_name(outcome["held_by"]))}
+                taken.append(entry["resource"])
+            return {"owner": owner, "taken": taken}
+        except Exception as e:
+            logger.debug(f"Resource claim for {tool_name} skipped: {e}")
+            return {"owner": owner, "taken": []}
+
+    def _release_resources(self, claimed: Dict[str, Any]) -> None:
+        try:
+            for name in claimed.get("taken") or []:
+                resources.release(name, claimed["owner"])
+        except Exception as e:
+            logger.debug(f"Couldn't release a resource: {e}")
+
+    def _resource_owner(self) -> str:
+        """Who is holding this - the running task, or this conversation.
+
+        A turn typed by the user is as much a holder as a task step is: the
+        point is that two things do not write the same file, and one of them
+        being a person at the keyboard does not change that.
+        """
+        return getattr(self, "_owning_task", None) or "conversation"
+
+    @staticmethod
+    def _task_name(task_id: str) -> str:
+        if not task_id or task_id == "conversation":
+            return "Something you asked for directly"
+        try:
+            from core import task_manager
+
+            task = task_manager.get_task(task_id)
+            return f"'{task.get('name') or task.get('objective')}'" if task else task_id
+        except Exception:
+            return task_id
 
     def _explain_failure(self, tool_name: str, result: ToolResult) -> ToolResult:
         """When an external call fails and its account is not set up, say so.
