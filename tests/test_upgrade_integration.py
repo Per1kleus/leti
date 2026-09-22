@@ -459,6 +459,47 @@ async def test_a_held_resource_blocks_a_second_writer(guard_factory, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_half_taken_claim_is_given_back_not_left_locked(guard_factory, tmp_path):
+    """move_file wants two resources. If the second is held by someone else, the
+    first was already taken - and a tool call that never runs must not leave a
+    lock behind. Every other release path runs after the tool; this one is the
+    only cover for a claim that was abandoned halfway."""
+    from core import resources
+    from tools.base import BaseTool, ToolParameter, ToolResult
+
+    class MoveTool(BaseTool):
+        name = "move_file"
+        description = "move a file"
+        parameters = [
+            ToolParameter(name="source_path", type="string", description="from"),
+            ToolParameter(name="destination_path", type="string", description="to")]
+
+        async def run(self, **kwargs):
+            return ToolResult(success=True, output={"success": True, "message": "Moved"})
+
+    resources.clear()
+    source = tmp_path / "from.txt"
+    destination = tmp_path / "to.txt"
+    # Somebody else has the destination. The source is free, and gets taken first.
+    resources.acquire(resources.identity(resources.FILE, str(destination)),
+                      resources.WRITE, "some-other-task")
+    call = {"content": None, "tool_calls": [
+        {"function": {"name": "move_file",
+                      "arguments": {"source_path": str(source),
+                                    "destination_path": str(destination)}}}]}
+    orch, llm, _ = _orchestrator(guard_factory, [call, {"content": "I waited."}])
+    orch.tool_registry.register(MoveTool())
+    await orch.handle_user_input("move it")
+
+    still_held = resources.snapshot()["held"]
+    assert {hold["task"] for hold in still_held} <= {"some-other-task"}, (
+        f"a half-taken claim was left locked: {still_held}")
+    assert not any(hold["resource"].endswith("from.txt") for hold in still_held), (
+        "the source end was taken and never given back")
+    resources.clear()
+
+
+@pytest.mark.asyncio
 async def test_a_failing_tool_still_releases_its_resources(guard_factory, tmp_path):
     from core import resources
     from tools.base import BaseTool, ToolParameter, ToolResult
