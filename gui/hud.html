@@ -922,6 +922,20 @@
   }
   .artifact-body::-webkit-scrollbar{ width:6px; height:6px; }
   .artifact-body::-webkit-scrollbar-thumb{ background:var(--cyan-dim); }
+  /* Mathematics. MathML is laid out by the browser itself, so this only sets the
+     size and the spacing between expressions - the notation needs no help. */
+  .math-row{
+    padding:10px 4px; border-bottom:1px solid rgba(120,200,220,.12);
+    overflow-x:auto; text-align:center;
+  }
+  .math-row:last-child{ border-bottom:none; }
+  .math-row math{ font-size:20px; color:var(--ice); }
+  .math-row math[display="inline"]{ font-size:15px; }
+  /* A surface with no MathML support shows the LaTeX instead of an empty box. */
+  .math-row code{
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+    color:var(--amber); word-break:break-all;
+  }
   .artifact-grip{
     position:absolute; right:0; bottom:0; width:15px; height:15px;
     cursor:nwse-resize; touch-action:none;
@@ -4191,6 +4205,7 @@
     table:    'LETI // ANALYSIS',
     research: 'LETI // RESEARCH',
     document: 'LETI // DOCUMENT',
+    math:     'LETI // MATHEMATICS',
   };
   let artifactZ = 1;
   let artifactCascade = 0;
@@ -4405,12 +4420,89 @@
     if(payload.truncated) body.appendChild(moreLine('...'));
   }
 
+  // ---------- Mathematics ----------
+  // The payload is a TREE of MathML elements, never a string of markup. Each node
+  // is built with createElementNS and its text set with textContent, so there is
+  // no parser to feed and nothing a expression could contain that would become a
+  // tag, an attribute, a handler or a script. The element name is checked against
+  // the same list core/math_render.py builds from; neither side trusts the other
+  // to have checked, which is the point of having two.
+  const MATHML_NS = 'http://www.w3.org/1998/Math/MathML';
+  const MATHML_ELEMENTS = new Set([
+    'math','mrow','mi','mn','mo','mtext','msup','msub','msubsup',
+    'mfrac','msqrt','mroot','munderover','munder','mover',
+    'mtable','mtr','mtd','mfenced','mspace','mstyle',
+  ]);
+  const MATHML_MAX_NODES = 600;
+
+  function buildMathML(node, budget){
+    if(!node || typeof node !== 'object' || budget.left-- <= 0) return null;
+    const name = node.e;
+    if(typeof name !== 'string' || !MATHML_ELEMENTS.has(name)) return null;
+    const el = document.createElementNS(MATHML_NS, name);
+    // display is the one attribute that is ever set, and only to one of two
+    // known words. Nothing from the payload is used as an attribute name.
+    if(name === 'math') el.setAttribute('display', node.display === 'inline' ? 'inline' : 'block');
+    if(typeof node.t === 'string' && node.t) el.textContent = node.t.slice(0, 200);
+    const children = Array.isArray(node.c) ? node.c : [];
+    for(const child of children){
+      const built = buildMathML(child, budget);
+      if(built) el.appendChild(built);
+    }
+    return el;
+  }
+
+  function artifactMath(payload){
+    const items = Array.isArray(payload.items) ? payload.items.slice(0, 6) : [];
+    if(!items.length) return;
+    const body = createArtifact('math', payload.title || 'Mathematics',
+                                560, Math.min(420, 90 + items.length * 78));
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'math-row';
+      const built = buildMathML(item.mathml, {left: MATHML_MAX_NODES});
+      if(built){
+        row.appendChild(built);
+      }else{
+        // Nothing renderable came through. The LaTeX is shown as plain text
+        // rather than an empty box: it still says what was meant.
+        const fallback = document.createElement('code');
+        fallback.textContent = String(item.latex || '').slice(0, 400);
+        row.appendChild(fallback);
+      }
+      body.appendChild(row);
+    });
+  }
+
+  // ---------- The answer, when it is asked for ----------
+  // Leti speaks; the words are held in Python (core/transcript.py) and this is
+  // the panel that shows them. One panel, reused: asking twice does not stack
+  // two windows, and hiding removes it without touching anything else.
+  let transcriptPanel = null;
+
+  function showTranscript(text){
+    if(transcriptPanel && transcriptPanel.isConnected){
+      const existing = transcriptPanel.querySelector('.artifact-body');
+      if(existing){ existing.textContent = text; return; }
+    }
+    const body = createArtifact('document', 'What Leti said', 560, 380);
+    body.style.whiteSpace = 'pre-wrap';
+    body.textContent = text;              // text, never markup
+    transcriptPanel = body.closest('.artifact');
+  }
+
+  function hideTranscript(){
+    if(transcriptPanel && transcriptPanel.isConnected) transcriptPanel.remove();
+    transcriptPanel = null;
+  }
+
   const ARTIFACT_RENDERERS = {
     images: artifactImages,
     diagram: artifactDiagram,
     table: artifactTable,
     research: artifactResearch,
     document: artifactDocument,
+    math: artifactMath,
   };
 
   function artifactName(payload){
@@ -4435,6 +4527,14 @@
 
   window.showVisual = function(payload){
     if(!payload || IS_PUCK_WINDOW) return;
+    // The transcript is not an artifact - it is the answer that was spoken,
+    // shown because somebody asked to read it. One panel, opened and closed by
+    // the same rule Python already applied (core/transcript.py), never offered.
+    if(payload.type === 'transcript'){
+      if(payload.visible) showTranscript(String(payload.text || ''));
+      else hideTranscript();
+      return;
+    }
     const render = ARTIFACT_RENDERERS[payload.type];
     if(!render) return;              // an unknown kind is a no-op, not a broken window
     // The backend decided (see core/artifacts.should_open). The page does not get

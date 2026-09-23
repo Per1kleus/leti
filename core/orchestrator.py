@@ -25,7 +25,8 @@ from core import intent as intent_reader
 from core import context_engine, entities, modes, performance, task_control
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
-from core import artifacts, connections, diagnostics, resources, verification
+from core import (artifacts, connections, diagnostics, math_render, resources,
+                  transcript, verification)
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import Routing, last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
@@ -457,6 +458,26 @@ class Orchestrator:
                 self._set_state(AgentState.IDLE)
                 return answer
 
+        # Asking to see the text, or to stop seeing it, is answered from what
+        # Leti already said. No model call, no regeneration: the words shown are
+        # the same string that was spoken, because showing is a panel opening
+        # over a buffer that never went anywhere.
+        #
+        # Handled here, with the other deterministic commands, for the reason
+        # they are: a request that only works when the model agrees it was a
+        # request is a request that sometimes gets an essay instead.
+        showing = intent_reader.transcript_command(user_text)
+        if showing is not None:
+            handled = await self._show_or_hide(showing)
+            if handled is not None:
+                answer = handled["answer"]
+                self.session_memory.add_turn("assistant", answer, session_id)
+                if self.speak_callback:
+                    self._set_state(AgentState.SPEAKING)
+                    await self.speak_callback(answer)
+                self._set_state(AgentState.IDLE)
+                return answer
+
         # "Run full Leti diagnostics" is a command too, and answered the same way:
         # deterministically, here, without a model round trip and without costing
         # Default Mode a tool schema. Every check reads; none of them changes,
@@ -471,6 +492,12 @@ class Orchestrator:
             self._set_state(AgentState.IDLE)
             return answer
 
+        # From here on this is an ordinary turn, so it gets its own response to
+        # collect against. Started BEFORE the tools run: a chart drawn halfway
+        # through belongs to this answer, and starting the response afterwards
+        # would throw it away just as "show that graph again" needed it.
+        transcript.begin()
+
         messages = await self._build_messages(user_text)
         _turn_started = time.perf_counter()
         final_answer = await self._tool_calling_loop(messages)
@@ -479,6 +506,11 @@ class Orchestrator:
                                     len(final_answer or ""))
         except Exception:
             pass
+
+        # The answer becomes the current response: held, hidden, and ready to be
+        # shown the moment somebody asks. This replaces nothing - the session
+        # memory below still keeps the conversation exactly as it did.
+        transcript.said(final_answer)
 
         self.session_memory.add_turn("assistant", final_answer, session_id)
         # If this answer was a list, remember its order, so "compare the first
@@ -688,6 +720,11 @@ class Orchestrator:
                             visual, _called_tool_name(call), last_user_message(messages))
                         try:
                             await self.visual_callback(visual)
+                            # Kept so "show that graph again" shows THAT graph
+                            # rather than recomputing one. Remembering is not
+                            # showing: an offered visual is remembered too, and
+                            # is what a later "show me the chart" opens.
+                            transcript.add_visual(visual)
                         except Exception:
                             logger.exception("visual_callback failed")
 
@@ -695,6 +732,77 @@ class Orchestrator:
 
         logger.warning("Max tool iterations reached without a final answer.")
         return "I made several attempts but couldn't complete that within my step limit. Want me to keep going?"
+
+    async def _show_or_hide(self, action: str) -> Optional[Dict[str, Any]]:
+        """Answer a show/hide request from what is already held, or None.
+
+        None means "this was not something I can show", and the caller falls
+        through to an ordinary turn rather than insisting - "show me the graph"
+        when no graph was made is a request to MAKE one, and refusing it would
+        be worse than the panel it was trying to avoid.
+
+        Nothing here generates, regenerates or asks anything. Every branch reads
+        core/transcript.py and pushes what it finds through the visual_callback
+        that already exists.
+        """
+        if action == intent_reader.HIDE_TEXT:
+            transcript.hide()
+            await self._push_visual({"type": "transcript", "visible": False})
+            return {"answer": "Hidden."}
+
+        if action == intent_reader.SHOW_TEXT:
+            shown = transcript.reveal()
+            if not shown["shown"]:
+                return None
+            await self._push_visual({"type": "transcript", "visible": True,
+                               "text": shown["text"]})
+            return {"answer": shown["answer"]}
+
+        if action == intent_reader.SHOW_MATH:
+            # The equation that was already in the answer, rendered. If there
+            # was none, this was not a request to show one - it was a request
+            # to work one out, and that is an ordinary turn.
+            visual = math_render.visual(transcript.current().text)
+            if visual is None:
+                return None
+            await self._push_visual(visual)
+            transcript.add_visual(visual)
+            return {"answer": "There it is."}
+
+        if action == intent_reader.SHOW_LAST_VISUAL:
+            remembered = [v for v in transcript.visuals()
+                          if v.get("type") != "transcript"]
+            if not remembered:
+                return None
+            if len({v.get("type") for v in remembered}) > 1:
+                # Several different things were made and "show me the graph"
+                # does not say which. Asking beats guessing, which is what the
+                # existing entity rules do everywhere else.
+                kinds = sorted({str(v.get("type")) for v in remembered})
+                return {"answer": "I have " + " and a ".join(kinds) +
+                                  " from that. Which one do you want?"}
+            visual = dict(remembered[-1])
+            visual["offer"] = False          # asked for by name: open it
+            await self._push_visual(visual)
+            return {"answer": "Here it is again."}
+
+        return None
+
+    async def _push_visual(self, visual: Dict[str, Any]) -> None:
+        """Send a payload to whatever surface can render it, if there is one.
+
+        Awaited rather than scheduled: this is a deterministic command with no
+        model call to overlap with, and a panel that opens some time after the
+        turn ends is a panel that races the next thing the user says. A page
+        that is not connected is not an error, and a surface that throws must
+        not take the turn down with it.
+        """
+        if not self.visual_callback:
+            return
+        try:
+            await self.visual_callback(visual)
+        except Exception:
+            logger.exception("Couldn't show a visual.")
 
     async def _execute_tool_call(self, call: Dict[str, Any]) -> ToolResult:
         # Read defensively: a malformed call is a failed tool result, never an

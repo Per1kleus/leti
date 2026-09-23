@@ -18,6 +18,7 @@ import logging
 import sys
 from typing import Dict
 
+from core import speech, transcript
 from core.config_loader import ensure_data_dirs, get_settings
 from core.llm_client import OllamaClient
 from core.orchestrator import Orchestrator
@@ -609,10 +610,28 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
     safety_guard.set_confirmation_callback(make_voice_confirmation_callback(tts, transcriber))
 
     async def speak(text: str) -> None:
-        print(f"Leti: {text}")
-        await tts.speak(text)
+        # Voice mode speaks; it does not print the answer. The terminal is the
+        # display here, so printing the whole reply is exactly the transcript
+        # that core/transcript.py exists to keep hidden - and "show me the text"
+        # prints it, through the same path the GUI uses.
+        if transcript.is_visible():
+            print(f"Leti: {text}")
+        for utterance in speech.utterances(text):
+            await tts.speak(utterance)
+        transcript.mark_spoken()
+
+    async def show(visual: dict) -> None:
+        """The terminal's visual surface: what it can show is text.
+
+        A graph cannot be drawn here and is not pretended at - the GUI has the
+        panels. What the terminal CAN honour is a request to read the answer,
+        which is the one that matters when there is no screen to put it on.
+        """
+        if visual.get("type") == "transcript" and visual.get("visible"):
+            print(f"\nLeti said:\n{visual.get('text', '')}\n")
 
     orchestrator.speak_callback = speak
+    orchestrator.visual_callback = show
 
     if continuous:
         from audio.wake_word import WakeWordListener

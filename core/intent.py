@@ -324,6 +324,86 @@ def asks_for_diagnostics(text: str) -> Optional[Dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# Asking to see, or to stop seeing
+#
+# Leti speaks its answers and does not print them (see core/transcript.py). That
+# only works if asking for the text is RELIABLE, so this reads it the way mode
+# commands and lifecycle commands are read: deterministically, here, with no
+# model round trip. A request the model has to agree is a request is a request
+# that sometimes gets an essay instead of the text.
+#
+# Deliberately narrow. These fire only on a short sentence that is entirely
+# about showing or hiding, so "show me how to write a for loop" is a question
+# about for loops and "can you show the file contents" is a request for a file.
+# --------------------------------------------------------------------------- #
+
+SHOW_TEXT = "show_text"
+HIDE_TEXT = "hide_text"
+SHOW_MATH = "show_math"
+SHOW_LAST_VISUAL = "show_last_visual"
+
+TRANSCRIPT_ACTIONS = (SHOW_TEXT, HIDE_TEXT, SHOW_MATH, SHOW_LAST_VISUAL)
+
+# What the thing being asked for is called. Split by what it refers to, because
+# "show me the equation" and "show me the answer" want different panels.
+_TEXT_NOUN = (r"(?:the\s+|that\s+|your\s+|my\s+)?"
+              r"(?:text|transcript|answer|reply|response|words|explanation|"
+              r"writing|wrote|said|everything you said|what you said|"
+              r"full answer|whole answer|written answer)")
+_MATH_NOUN = (r"(?:the\s+|that\s+|those\s+)?"
+              r"(?:equation|equations|formula|formulas|formulae|math|maths|"
+              r"mathematics|derivation|working|calculation)")
+_VISUAL_NOUN = (r"(?:the\s+|that\s+|those\s+)?"
+                r"(?:graph|graphs|chart|charts|plot|plots|image|images|picture|"
+                r"pictures|photo|photos|diagram|diagrams|visual|visuals|figure)")
+
+_SHOW = r"(?:show|display|open|reveal|print|bring up|put up|pull up)"
+_HIDE = r"(?:hide|close|dismiss|clear|take down|put away|get rid of)"
+_LEAD = r"^\W*(?:please\s+|leti,?\s+|just\s+|ok(?:ay)?,?\s+|can you\s+|could you\s+|"          r"would you\s+|i want to\s+|i\'d like to\s+|let me\s+)*"
+_TAIL = r"(?:\s+(?:please|now|again|too|as well))?[\s,.!?]*$"
+
+_TRANSCRIPT = (
+    # Hiding first: "close the transcript" must never be read as showing it.
+    (HIDE_TEXT, re.compile(_LEAD + _HIDE + r"\s+" + _TEXT_NOUN + _TAIL, re.I)),
+    (HIDE_TEXT, re.compile(_LEAD + r"(?:stop showing|don\'t show)\s+" + _TEXT_NOUN + _TAIL, re.I)),
+    (SHOW_MATH, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:only\s+)?" + _MATH_NOUN + _TAIL, re.I)),
+    (SHOW_LAST_VISUAL, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:only\s+)?" + _VISUAL_NOUN + _TAIL, re.I)),
+    (SHOW_TEXT, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:all\s+of\s+)?" + _TEXT_NOUN + _TAIL, re.I)),
+    # "let me read that", "let me see what you said" - asking to read, not to be told.
+    (SHOW_TEXT, re.compile(_LEAD + r"(?:read|see)\s+" + _TEXT_NOUN + _TAIL, re.I)),
+    # "let me read that" on its own. Only after "let me"/"can i" and only for
+    # READ: a bare "show me that" could mean anything on screen, but nobody
+    # reads a graph.
+    (SHOW_TEXT, re.compile(
+        r"^\W*(?:please\s+|leti,?\s+)?(?:let me|can i|could i|i want to|i\'d like to)\s+"
+        r"read\s+(?:that|it|this)" + _TAIL, re.I)),
+)
+
+# The longest a request may be and still be only about showing something. Past
+# this there is a question in there too, and answering it is the ordinary turn.
+TRANSCRIPT_MAX_CHARS = 60
+
+
+def transcript_command(text: str) -> Optional[str]:
+    """SHOW_TEXT / HIDE_TEXT / SHOW_MATH / SHOW_LAST_VISUAL, or None.
+
+    None for every ordinary request, which is almost all of them. The caller
+    answers a match from what it already has - see core/transcript.py - so a
+    false positive costs a panel and a false negative costs a model call; the
+    patterns above are tuned for the second, which is the cheaper mistake.
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped or len(stripped) > TRANSCRIPT_MAX_CHARS:
+        return None
+    for action, pattern in _TRANSCRIPT:
+        if pattern.match(stripped):
+            return action
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # What KIND of thing the user just said
 #
 # `shape` above is about what a request is ABOUT - files, mail, the screen - and

@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Set
 
+from core import speech, transcript
 from core.orchestrator import Orchestrator
 from core.safety_guard import SafetyGuard
 from tools.system_health import SystemReportTool
@@ -588,21 +589,42 @@ def _serve_headless(note: str = "", url: str = "") -> None:
 
 def _make_gui_speak_callback(api: LetiAPI, tts):
     """Unified reply handler for every input channel (typed, voice, from the desktop
-    window or a phone): shows the reply as a bubble, speaks it, and focuses the text
-    input once Leti finishes - satisfying "focus text after Leti finishes speaking"
-    identically regardless of which surface triggered the turn."""
+    window or a phone): speaks the reply and focuses the text input once Leti
+    finishes - satisfying "focus text after Leti finishes speaking" identically
+    regardless of which surface triggered the turn.
+
+    Leti SPEAKS the answer; it does not print it. The text is held by
+    core/transcript.py and shown when the user asks for it, which is what makes
+    this voice-first rather than a chat window that also makes noise. Two things
+    still appear without being asked for:
+
+      - the reply, when there is no voice at all. A machine with no espeak has
+        no other way to receive an answer, and silence is not an interface.
+      - anything the user already asked to see: if the transcript panel is open,
+        the next answer goes into it, because they asked to read Leti and have
+        not asked to stop.
+
+    The speech itself goes through core/speech.py: mathematical notation becomes
+    the words a person would say, and the answer is cut at sentence boundaries so
+    a long one can be interrupted without waiting for the end of it.
+    """
 
     async def _speak(text: str) -> None:
-        api.push("appendLetiReply", text)
+        if tts is None or transcript.is_visible():
+            api.push("appendLetiReply", text)
         if tts is None:
             # Text-only: the reply is already on screen, and pretending to speak
             # would leave the orb stuck in its speaking animation.
             api.push("focusChatInput")
             return
         api.push("setHudState", "speaking")
-        await tts.speak(text)
-        api.push("setHudState", "idle")
-        api.push("focusChatInput")
+        try:
+            for utterance in speech.utterances(text):
+                await tts.speak(utterance)
+        finally:
+            transcript.mark_spoken()
+            api.push("setHudState", "idle")
+            api.push("focusChatInput")
 
     return _speak
 
