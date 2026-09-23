@@ -2151,6 +2151,23 @@
     }, 4000);
   };
 
+  // Clicking the core while Leti is talking stops it talking. The orb is what
+  // the eye is already on when the voice is going, so it is where "enough" is
+  // aimed - and it is the only control needed, because stopping the voice is
+  // one thing rather than a panel of them.
+  //
+  // It stops the SPEAKING only. Work that is running is stopped by the task
+  // controls, which is the authority on that and is not touched here. The
+  // answer survives: "show me the text" afterwards shows what would have been
+  // said, including the part that never was.
+  orbPath.style.cursor = 'pointer';
+  orbPath.addEventListener('click', () => {
+    if(agentState !== 'speaking') return;
+    callApi('stop_speaking').then(() => {
+      rtLog('state', 'Stopped talking. The answer is still here - ask to see it.');
+    }).catch(() => {});
+  });
+
   document.getElementById('settingsBtn').onclick = () => openSettingsModal();
 
   setMode('idle');

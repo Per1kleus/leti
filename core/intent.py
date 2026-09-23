@@ -341,8 +341,9 @@ SHOW_TEXT = "show_text"
 HIDE_TEXT = "hide_text"
 SHOW_MATH = "show_math"
 SHOW_LAST_VISUAL = "show_last_visual"
+SHOW_BOTH = "show_both"          # the words AND what was drawn
 
-TRANSCRIPT_ACTIONS = (SHOW_TEXT, HIDE_TEXT, SHOW_MATH, SHOW_LAST_VISUAL)
+TRANSCRIPT_ACTIONS = (SHOW_TEXT, HIDE_TEXT, SHOW_MATH, SHOW_LAST_VISUAL, SHOW_BOTH)
 
 # What the thing being asked for is called. Split by what it refers to, because
 # "show me the equation" and "show me the answer" want different panels.
@@ -363,7 +364,16 @@ _LEAD = r"^\W*(?:please\s+|leti,?\s+|just\s+|ok(?:ay)?,?\s+|can you\s+|could you
 _TAIL = r"(?:\s+(?:please|now|again|too|as well))?[\s,.!?]*$"
 
 _TRANSCRIPT = (
-    # Hiding first: "close the transcript" must never be read as showing it.
+    # Asking for both, first: "show me the full answer and the graph" contains
+    # "show me the full answer", and matching that alone would silently drop
+    # half of what was asked for.
+    (SHOW_BOTH, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:all\s+of\s+)?" +
+                           _TEXT_NOUN + r"\s+and\s+" + _VISUAL_NOUN + _TAIL, re.I)),
+    (SHOW_BOTH, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?" +
+                           _VISUAL_NOUN + r"\s+and\s+" + _TEXT_NOUN + _TAIL, re.I)),
+    (SHOW_BOTH, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:all\s+of\s+)?" +
+                           _TEXT_NOUN + r"\s+and\s+" + _MATH_NOUN + _TAIL, re.I)),
+    # Hiding next: "close the transcript" must never be read as showing it.
     (HIDE_TEXT, re.compile(_LEAD + _HIDE + r"\s+" + _TEXT_NOUN + _TAIL, re.I)),
     (HIDE_TEXT, re.compile(_LEAD + r"(?:stop showing|don\'t show)\s+" + _TEXT_NOUN + _TAIL, re.I)),
     (SHOW_MATH, re.compile(_LEAD + _SHOW + r"\s+(?:me\s+|us\s+)?(?:only\s+)?" + _MATH_NOUN + _TAIL, re.I)),
@@ -682,8 +692,11 @@ _LIFECYCLE = (
     # wanted and the cost of a spurious one is a task that has to be resumed.
     (STOP, re.compile(
         r"^\W*(?:please\s+|leti,?\s+|just\s+|now\s+|ok(?:ay)?,?\s+)?"
-        r"(?:stop|halt|abort|cancel|quit|kill)"
-        r"(?:\s+(?:it|that|this|them|everything|all of it|all tasks|"
+        r"(?:stop|halt|abort|cancel|quit|kill|be quiet|shut up|enough)"
+        # "talking" and "speaking" are here because stopping the voice is a stop
+        # like any other - see core/transcript.py's stop_speaking. The task
+        # controls still decide what happens to running WORK.
+        r"(?:\s+(?:it|that|this|them|everything|all of it|all tasks|talking|speaking|"
         r"the\s+[\w-]+(?:\s+[\w-]+)?|my\s+[\w-]+(?:\s+[\w-]+)?))?"
         r"[\s,.!?]*$", re.I)),
     (PAUSE, re.compile(
@@ -748,6 +761,11 @@ def lifecycle_command(text: str) -> Optional[Dict[str, Any]]:
                 "", stripped, flags=re.I)
             hint = re.sub(r"^(?:it|that|this|them|the|my|with|on)\b\s*", "", hint,
                           flags=re.I).strip(" ,.!?")
+            # "Stop talking" names the voice, not a task. Left as no hint at all
+            # so the task controls read it as a bare stop rather than hunting for
+            # a task called "talking".
+            if hint.lower() in ("talking", "speaking", "quiet", "be quiet", "up"):
+                hint = ""
             # status and waiting are about every task, not one of them, so a
             # hint scraped off the question would only mislead the resolver.
             if action in (STATUS, WAITING):

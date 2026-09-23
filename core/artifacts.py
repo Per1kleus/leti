@@ -250,7 +250,40 @@ _VISUAL_REQUEST = (
     "visualise", "visualize", "visualisation", "visualization", "visual",
     "draw", "sketch", "illustrate", "screenshot", "screenshots",
     "look like", "looks like", "side by side", "side-by-side",
+    # Mathematics is something to look at too, and asking for a formula is
+    # asking to see one. Added to the one list that already answers "did they
+    # ask?" rather than a second list somewhere else.
+    "equation", "equations", "formula", "formulas", "formulae",
+    "derivation", "derive", "working",
 )
+
+# The subset of the above that is specifically about mathematics. A request that
+# matches one of these AND produces an answer with notation in it gets the
+# notation rendered - see core/math_render.py. Everything else stays text.
+_MATHEMATICAL_REQUEST = (
+    "equation", "equations", "formula", "formulas", "formulae",
+    "derivation", "derive", "derivation", "working", "math", "maths",
+    "mathematics", "mathematically", "notation", "expression", "expressions",
+)
+
+
+def asked_to_see_mathematics(user_text: str) -> bool:
+    """Did the person ask for the mathematics, rather than the answer?
+
+    "What is 2 + 2" does not match, and must not: a panel for a number that was
+    spoken in one word is the decoration this whole module exists to prevent.
+    "Derive the bending equation and show me the formulas" does.
+
+    Same word-boundary matching as asked_to_see_something, against the user's
+    own message only - never against what Leti replied.
+    """
+    if not isinstance(user_text, str) or not user_text.strip():
+        return False
+    words = _WORD.findall(user_text.lower())
+    if not words:
+        return False
+    joined = " " + " ".join(words) + " "
+    return any(f" {word} " in joined for word in _MATHEMATICAL_REQUEST)
 
 _WORD = re.compile(r"[a-z0-9]+")
 

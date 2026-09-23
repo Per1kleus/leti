@@ -483,6 +483,25 @@ def computer_use_section() -> Dict[str, Any]:
     }
 
 
+def output_section() -> Dict[str, Any]:
+    """How the current answer is being delivered: spoken, held, shown.
+
+    Says what is held and never what it says. The words of an answer are the
+    conversation, and a diagnostics panel is not where the conversation belongs -
+    so this reports a character count and a list of visual KINDS, and no text.
+    """
+    try:
+        from core import math_render, transcript
+    except Exception as e:
+        return {"status": UNAVAILABLE, "detail": str(e)}
+    held = transcript.section()
+    return {**held,
+            "transcript_default": "hidden",
+            "math_elements_allowed": len(math_render.ELEMENTS),
+            "note": ("Leti speaks the answer and holds the text. Asking to see it "
+                     "shows the same words - nothing is generated again.")}
+
+
 def snapshot(registry: Any = None) -> Dict[str, Any]:
     """Everything the panel shows, in one cheap call."""
     return {
@@ -500,6 +519,7 @@ def snapshot(registry: Any = None) -> Dict[str, Any]:
         "computer_use": computer_use_section(),
         "resource_locks": resource_locks_section(),
         "recovery": recovery_section(),
+        "output": output_section(),
     }
 
 

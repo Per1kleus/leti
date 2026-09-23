@@ -448,9 +448,24 @@ class Orchestrator:
         # user may have meant something else entirely by it.
         control = intent_reader.lifecycle_command(user_text)
         if control is not None:
+            # "Stop" means stop talking too, not only stop working. Setting the
+            # flag rather than reaching for the engine keeps this on one path:
+            # the speak callback reads it between utterances, and the surface
+            # that owns the engine interrupts the one already playing.
+            was_speaking = False
+            if control.get("action") == intent_reader.STOP:
+                was_speaking = transcript.is_speaking()
+                transcript.stop_speaking()
             handled = task_control.apply(control, runner=_task_runner())
             if handled is not None:
                 answer = handled["answer"]
+                # "Stop" while Leti is talking and nothing is running is not
+                # "there is nothing to stop" - the talking stopped. Saying
+                # otherwise would read as the stop having failed.
+                if (was_speaking and handled.get("ok") is False
+                        and not handled.get("needs_choice")):
+                    answer = ("Stopped. The answer is still here if you want to "
+                              "read it.")
                 self.session_memory.add_turn("assistant", answer, session_id)
                 if self.speak_callback:
                     self._set_state(AgentState.SPEAKING)
@@ -511,6 +526,18 @@ class Orchestrator:
         # shown the moment somebody asks. This replaces nothing - the session
         # memory below still keeps the conversation exactly as it did.
         transcript.said(final_answer)
+
+        # If the request was for the mathematics rather than the answer - "derive
+        # the bending equation and show me the formulas" - and the answer has
+        # notation in it, the notation is rendered. Both halves are required:
+        # asking alone renders nothing when there is nothing to render, and an
+        # equation alone opens no panel, because "what is two plus two" is
+        # answered in one spoken word and a window for it is decoration.
+        if artifacts.asked_to_see_mathematics(user_text):
+            equations = math_render.visual(final_answer)
+            if equations is not None:
+                transcript.add_visual(equations)
+                await self._push_visual(equations)
 
         self.session_memory.add_turn("assistant", final_answer, session_id)
         # If this answer was a list, remember its order, so "compare the first
@@ -768,6 +795,24 @@ class Orchestrator:
             await self._push_visual(visual)
             transcript.add_visual(visual)
             return {"answer": "There it is."}
+
+        if action == intent_reader.SHOW_BOTH:
+            # Both were asked for, so both are shown, and the answer names only
+            # what actually appeared. Nothing is regenerated for either half.
+            parts = []
+            shown = transcript.reveal()
+            if shown["shown"]:
+                await self._push_visual({"type": "transcript", "visible": True,
+                                         "text": shown["text"]})
+                parts.append("the text")
+            for half in (intent_reader.SHOW_MATH, intent_reader.SHOW_LAST_VISUAL):
+                answered = await self._show_or_hide(half)
+                if answered is not None and "Which one" not in answered["answer"]:
+                    parts.append("math" if half == intent_reader.SHOW_MATH else "the visual")
+                    break
+            if not parts:
+                return None
+            return {"answer": "Here " + ("they are." if len(parts) > 1 else "it is.")}
 
         if action == intent_reader.SHOW_LAST_VISUAL:
             remembered = [v for v in transcript.visuals()

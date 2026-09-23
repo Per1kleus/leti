@@ -71,8 +71,9 @@ _current = Response()
 
 def clear() -> None:
     """Forget the current response. Tests, and a session that has ended."""
-    global _current
+    global _current, _speaking, _asked_to_stop
     _current = Response()
+    _speaking, _asked_to_stop = False, False
 
 
 def begin() -> Response:
@@ -112,6 +113,54 @@ def mark_spoken() -> None:
     """The voice finished with this answer. Read by the tests that prove hiding
     the text does not touch the speaking, and by diagnostics."""
     _current.spoken = True
+
+
+# --------------------------------------------------------------------------- #
+# Speaking, and being told to stop
+#
+# "Stop" already means something in Leti: core/task_control.py stops the work
+# that is running, and it stays the authority on that. Nothing here cancels a
+# task, a tool or a turn. What it cancels is the SPEAKING - which nothing else
+# owned, because until now the answer was one utterance and there was nothing
+# to stop between.
+#
+# It is a flag, read between utterances, plus the engine's own interrupt for the
+# one already playing. No thread, no queue, no second cancellation path.
+# --------------------------------------------------------------------------- #
+
+_speaking = False
+_asked_to_stop = False
+
+
+def start_speaking() -> None:
+    """A new answer is about to be said. Clears any stop left from the last one."""
+    global _speaking, _asked_to_stop
+    _speaking, _asked_to_stop = True, False
+
+
+def stop_speaking() -> None:
+    """Say no more of this answer.
+
+    The answer itself is untouched - that is the whole point of stopping being
+    safe. "Stop" then "show me the answer" shows what would have been said,
+    including the part that never was.
+    """
+    global _asked_to_stop
+    _asked_to_stop = True
+
+
+def finished_speaking() -> None:
+    global _speaking
+    _speaking = False
+
+
+def is_speaking() -> bool:
+    return _speaking
+
+
+def should_stop_speaking() -> bool:
+    """Checked between utterances. True means say nothing further."""
+    return _asked_to_stop
 
 
 def add_visual(visual: Dict[str, Any]) -> None:
@@ -188,5 +237,7 @@ def section() -> Dict[str, Any]:
         "visible": _current.visible,
         "spoken": _current.spoken,
         "visuals": [v.get("type") for v in _current.visuals],
+        "speaking": _speaking,
+        "asked_to_stop": _asked_to_stop,
         "age_seconds": round(_current.age(), 1) if _current.text else 0.0,
     }

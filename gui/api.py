@@ -48,6 +48,7 @@ SYNC_METHODS = {
     "get_personality", "set_personality", "get_activity",
     "get_tasks", "control_task", "get_computer_use",
     "get_watch", "control_watch", "get_proactive", "get_mode", "set_mode",
+    "stop_speaking",
     "get_connections", "get_context_report",
 }
 ASYNC_METHODS = {"send_text_message", "get_system_stats", "get_weather",
@@ -71,6 +72,9 @@ class LetiAPI:
         # than at the next launch. None means voice isn't available at all here.
         self.enable_voice: Any = None
         self.voice_active = False
+        # Set by run_gui_mode once the voice stack is loaded. None means there is
+        # nothing to interrupt, which is the text-only case.
+        self.tts: Any = None
         self._background: Set[Any] = set()   # strong refs; asyncio only holds weak ones
         # Set by run_gui_mode when there are native windows to switch between.
         # None means the page is being viewed in a browser (or a phone), where
@@ -394,6 +398,29 @@ class LetiAPI:
 
         return diagnostics.recent_activity()
 
+    def stop_speaking(self) -> dict:
+        """Stop the voice now, and say no more of this answer.
+
+        Synchronous on purpose. The turn that is speaking holds the turn lock,
+        so anything routed through send_text_message would queue behind the very
+        speech it was trying to stop. This is not a second cancellation system:
+        it cancels the SPEAKING, which nothing else owned, and leaves
+        core/task_control.py the authority on stopping work.
+
+        The answer survives. "Stop" then "show me the answer" shows what would
+        have been said, including the part that never was.
+        """
+        from core import transcript
+
+        transcript.stop_speaking()
+        if self.tts is not None:
+            try:
+                self.tts.interrupt()
+            except Exception as e:
+                logger.warning(f"Couldn't interrupt speech: {e}")
+        self.push("setHudState", "idle")
+        return {"stopped": True, "answer_kept": bool(transcript.current().text)}
+
     # ---- Long-running tasks. A VIEW of core/task_manager.py and a set of
     # controls that go back into it - there is no second task store here, no
     # second runner, and nothing in this file executes a step. ----
@@ -618,10 +645,17 @@ def _make_gui_speak_callback(api: LetiAPI, tts):
             api.push("focusChatInput")
             return
         api.push("setHudState", "speaking")
+        transcript.start_speaking()
         try:
             for utterance in speech.utterances(text):
+                # Checked between utterances, which is the only place it can be
+                # checked without a second thread. The one already playing is
+                # cut by the engine's own interrupt (see LetiAPI.stop_speaking).
+                if transcript.should_stop_speaking():
+                    break
                 await tts.speak(utterance)
         finally:
+            transcript.finished_speaking()
             transcript.mark_spoken()
             api.push("setHudState", "idle")
             api.push("focusChatInput")
@@ -736,6 +770,7 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         else:
             print("Voice models ready.")
 
+    api.tts = tts
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
     orchestrator.visual_callback = _make_gui_visual_callback(api)
 
