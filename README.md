@@ -1522,6 +1522,90 @@ Leti asks which folder instead of searching everything.
 Nothing is sent anywhere: every one of these tools reads from disk and returns,
 and they carry the same permission class `read_file` does.
 
+## Leti speaks; the text waits until you ask
+
+An assistant that says everything it says and also prints it is a chat window
+that makes noise. The eye wins, the voice becomes decoration, and you end up
+reading an answer you already heard.
+
+So the answer is **spoken, and the words are held rather than printed**:
+
+    QWEN -> RESPONSE BUFFER -+-> speech -> natural chunks -> TTS -> speaker
+                             |
+                             +-> visual need -> image / chart / math -> panel
+
+    the words themselves: HIDDEN, until you ask
+
+Asking is deterministic and free. "Show me the text", "show the answer", "let me
+read that", "open the transcript" - read by `core/intent.py` the way mode and
+lifecycle commands already are, before anything reaches the model. The words you
+are shown are **the same string that was spoken**, because showing is a panel
+opening over a buffer that never went anywhere. Nothing is regenerated, nothing
+is asked twice, and no second answer can disagree with the first.
+
+Hiding is the same in reverse, and it is only about the panel. The text stays,
+the speech is not stopped, no task is cancelled and memory is untouched.
+
+Two things still appear without being asked for: the reply when there is no
+voice at all, because silence is not an interface; and the next answer while the
+panel is already open, because you asked to read Leti and have not asked to stop.
+
+**Task state is not the transcript.** What Leti is DOING - the current task, its
+step, waiting, retrying, needs-you - keeps its own panel and is unaffected. What
+is hidden is the conversational answer, not the machine's state.
+
+## Saying it in pieces, and saying the mathematics
+
+`core/speech.py` sits between the answer and the engine, because text written to
+be read is not text to be spoken.
+
+A model asked about kinetic energy writes `\(E_k = \frac{1}{2}mv^2\)`, and an
+engine handed that says *"backslash left paren E sub k"*. So notation is rewritten
+into the words a person uses - **"one half m v squared"** - and the original is
+left for the visual layer, which wants exactly the markup speech cannot use.
+**Raw LaTeX never reaches the engine**, and every utterance is checked for it,
+not only the answer as a whole.
+
+The answer is then cut where a person pauses. Not token by token, which is the
+stutter that makes synthetic speech sound synthetic, and not all at once, which
+leaves nothing to interrupt. A full stop inside `3.14`, `Dr. Adams`, `/etc/hosts`,
+`example.com/a.b`, `report.md`, `U.S.` or `9.8 m/s` is **not** the end of
+anything, and a sentence too short to be said alone is joined to the next one.
+
+**"Stop" stops the talking too.** The flag is read between utterances and the one
+already playing is cut by the engine's own interrupt. Clicking the core while
+Leti talks does it; so does saying so. The answer survives in full - including
+the part that was never said - so "stop" then "show me the answer" shows all of
+it. Work that is running is still stopped by the task controls, which remain the
+authority on that.
+
+## An equation you can look at
+
+`core/math_render.py` reads the LaTeX a model writes and emits **MathML**, which
+every browser lays out natively - the desktop window, a browser and a phone
+alike. Nothing is installed, downloaded or served, and nothing is rasterised: a
+picture of an equation cannot be selected, searched or scaled.
+
+sympy is already here and already emits LaTeX (`tools/engineering.py` returns
+`sympy.latex(result)` for every symbolic answer), but it cannot READ LaTeX
+without antlr4 - so the reader is a small recursive descent over the subset that
+appears in an answer. Fractions, integrals, derivatives, summations, roots,
+sub- and superscripts, Greek letters, matrices and engineering units all render.
+
+The payload is a **tree of named elements, never a string of markup**, and the
+page builds each node with `createElementNS` and sets text with `textContent`.
+That shape is the security argument rather than a filter: there is no parser
+anywhere in the path, so an expression cannot become a tag, an attribute, a
+handler or a script, however it was written. Both sides check the same element
+list, and neither trusts the other to have done it.
+
+A panel opens only when the mathematics was asked for - "show me the equation",
+or a request like *"derive the bending equation and show me the formulas"* whose
+answer actually contains notation. **"What is 2 + 2" opens nothing**: it is
+answered in one spoken word, and a window for that is decoration. An expression
+that cannot be read comes back as nothing at all rather than half an equation on
+screen.
+
 ## The interface
 
 Three columns, and the middle one is the point.
@@ -1704,6 +1788,9 @@ leti/
 │   ├── ui_targets.py          # Which element that is, asked of the OS before the screenshot
 │   ├── resources.py           # What a task is actually holding, at the tool boundary
 │   ├── checkpoints.py         # The last thing Leti knew, written before it could be lost
+│   ├── speech.py              # How an answer is said, and where it is safe to pause
+│   ├── math_render.py         # An equation you can look at, as MathML the browser lays out
+│   ├── transcript.py          # What Leti just said, kept so it can be shown without being said again
 │   ├── task_history.py        # What happened to a task after the store trimmed it
 │   ├── task_control.py        # "Stop" reaching the right task, through the one resolver
 │   ├── task_conflicts.py      # Two tasks, one file: which one waits
@@ -1854,6 +1941,30 @@ To add a new tool:
 
 ## Known Limitations
 
+- Ollama's responses are not streamed. `core/llm_client.py` asks for a whole
+  message and gets one, so an answer is chunked for speech once it is complete
+  rather than while it is being written. The buffer that speech is cut from is
+  exactly what a token stream would feed, so the seam is there - but until the
+  client streams, Leti cannot begin speaking a long answer before the model has
+  finished it.
+- "Stop" reaches the voice immediately through the interface (clicking the core,
+  or any client calling `stop_speaking`), because that path is synchronous. A
+  SPOKEN "stop" goes through the ordinary turn, which waits on the turn lock the
+  speaking turn is holding - so it is acted on once the current answer ends.
+- Mathematical rendering reads the subset of LaTeX that appears in an answer.
+  Environments beyond the matrix ones, alignment, `\left`/`\right` sizing, cases
+  and commutative diagrams are not implemented; an expression using them either
+  renders without that structure or comes back as nothing and stays text.
+- MathML needs a surface that lays it out. Every current browser does; an old
+  embedded WebView might not, and there the LaTeX is shown as text instead of an
+  empty box.
+- Mathematics is spoken by a shallow rewrite, not by reading the parsed tree. It
+  says "one half m v squared" well and a deeply nested expression clumsily - the
+  guarantee is only that no markup reaches the engine, not that every expression
+  is read beautifully.
+- The response buffer holds one answer. "Show me what you said before that" is
+  not answerable from it; the conversation is in memory, but only the current
+  answer can be put on screen.
 - Local models are weaker at multi-step tool planning than large hosted
   models — complex chained tasks may need more explicit instructions or a
   higher tool-iteration cap.

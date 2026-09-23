@@ -497,7 +497,13 @@ def visual(text: str, title: str = "") -> Optional[Dict[str, Any]]:
     for expression in expressions:
         tree = to_mathml(expression["latex"], expression["display"])
         if tree is not None:
-            rendered.append({"mathml": tree, "latex": expression["latex"]})
+            # The LaTeX is echoed only so a surface with no MathML support can
+            # show something rather than an empty box, and it is displayed as
+            # text. Angle brackets go for the same reason they go from \text:
+            # this payload should not carry anything that reads as a tag, so
+            # that embedding it somewhere careless cannot end badly either.
+            rendered.append({"mathml": tree,
+                             "latex": _ANGLE.sub("", expression["latex"])})
     if not rendered:
         return None
     return {"type": "math", "title": title or "Mathematics", "items": rendered}

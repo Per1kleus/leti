@@ -265,6 +265,18 @@ def test_no_text_an_expression_carries_can_open_a_tag(hostile):
             assert text in ("<", ">"), f"a tag could be opened: {text!r}"
 
 
+def test_the_echoed_latex_cannot_read_as_a_tag_either():
+    """The payload's latex field exists so a surface without MathML can show
+    something. It is displayed as text, and it also carries no angle bracket -
+    so embedding this payload somewhere careless still cannot open a tag."""
+    for hostile in _HOSTILE:
+        visual = mr.visual(f"We have \\({hostile}\\) here.")
+        if visual is None:
+            continue
+        for item in visual["items"]:
+            assert "<" not in item["latex"] and ">" not in item["latex"], item["latex"]
+
+
 def test_the_payload_is_data_with_no_markup_string_in_it():
     visual = mr.visual(r"We have \[E_k = \frac{1}{2}mv^2\] here.")
     import json
