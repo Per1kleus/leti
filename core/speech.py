@@ -335,3 +335,134 @@ def contains_markup(text: str) -> bool:
     if not isinstance(text, str):
         return False
     return bool(re.search(r"\\[A-Za-z]+|\\[\[\]()]|\$\$?|\{|\}|\^|(?<!\w)_(?!\w)", text))
+
+
+# --------------------------------------------------------------------------- #
+# Speaking while the answer is still being written
+#
+# A streamed answer arrives as fragments: "The acce", "leration of", " the obj".
+# None of those is something to say. `Stream` is the buffer between the model and
+# the engine - it collects fragments and hands back whole utterances the moment a
+# whole one exists, and nothing before that.
+#
+# It adds no rules of its own. Where a sentence ends, what a full stop is not the
+# end of, and how notation is said are all decided by the functions above, which
+# is the point: a second copy of those rules living in the streaming path would
+# drift from the first one and only be noticed by ear.
+#
+# No thread, no queue, no timer. It is a string and an index, advanced by the
+# caller on each fragment it receives.
+# --------------------------------------------------------------------------- #
+
+# Math delimiters, and how to tell an open span from a closed one. A fragment
+# ending mid-expression must never be spoken: `say` only rewrites a span it can
+# see the end of, so "the result is \( \frac{a" would reach the engine as markup.
+_MATH_PAIRS = ((r"\(", r"\)"), (r"\[", r"\]"))
+
+
+def _math_is_open(text: str) -> bool:
+    """Is there an expression in here that has been started and not finished?"""
+    for opener, closer in _MATH_PAIRS:
+        if text.count(opener) > text.count(closer):
+            return True
+    # $$ first: every $$ is also two $, so counting $ alone would never balance.
+    if text.count("$$") % 2:
+        return True
+    if (text.count("$") - 2 * text.count("$$")) % 2:
+        return True
+    # A brace or a command left open belongs to an expression still being typed.
+    inside = text.rsplit("\\(", 1)[-1] if "\\(" in text else text
+    return inside.count("{") > inside.count("}")
+
+
+def _protected_spans(text: str):
+    """Where a full stop is part of something rather than the end of a sentence."""
+    spans = []
+    for pattern in _PROTECTED:
+        spans.extend((m.start(), m.end()) for m in pattern.finditer(text))
+    spans.extend((m.start(), m.end()) for m in _ABBREVIATION.finditer(text))
+    return spans
+
+
+def _boundaries(text: str):
+    """Every index this text could be cut at, in order. A cut here is a pause."""
+    spans = _protected_spans(text)
+    out = []
+    for match in re.finditer(r"[.!?…:;][\"'”’)\]]*(?=\s)|\n", text):
+        at = match.start()
+        if any(start <= at < end for start, end in spans):
+            continue
+        out.append(match.end())
+    return out
+
+
+class Stream:
+    """The buffer between a model writing and a voice speaking.
+
+    Fed fragments; hands back whole utterances. `feed` returns a list - usually
+    empty, because most fragments do not finish a sentence - and `flush` returns
+    whatever is left when the model stops.
+
+    Text goes in exactly once and comes out exactly once. What `text` holds at
+    the end is what was fed, character for character, so the answer the buffer
+    reconstructs is the answer the model wrote.
+    """
+
+    def __init__(self) -> None:
+        self.text = ""          # everything fed, in order, unmodified
+        self._pending = ""      # the part not yet handed over to be said
+
+    def feed(self, fragment: str) -> List[str]:
+        """Add a fragment. Returns the utterances that are now complete."""
+        if not fragment:
+            return []
+        self.text += fragment
+        self._pending += fragment
+        return self._take()
+
+    def _take(self) -> List[str]:
+        # An expression that has been started and not finished is not sayable at
+        # all: `say` rewrites what it can see the end of, so cutting here would
+        # hand the engine a backslash and a brace.
+        if _math_is_open(self._pending):
+            if len(self._pending) <= MAX_SPOKEN_CHARS:
+                return []
+            # Past the ceiling with an expression still open, the model is not
+            # going to close it. Said as prose rather than held forever.
+
+        cut = self._cut()
+        if cut <= 0:
+            return []
+        complete, self._pending = self._pending[:cut], self._pending[cut:]
+        return utterances(complete)
+
+    def _cut(self) -> int:
+        """Where the pending text can be cut, or 0 for nowhere yet."""
+        found = _boundaries(self._pending)
+        if found:
+            return found[-1]
+        if len(self._pending) < MAX_CHUNK_CHARS:
+            return 0
+        # A sentence past the ceiling with no punctuation in it. Cut at the last
+        # space that is not inside something - a word, a number, a url, a path or
+        # an expression are all things a cut would break.
+        spans = _protected_spans(self._pending)
+        for match in reversed(list(re.finditer(r"\s+", self._pending))):
+            at = match.start()
+            if any(start <= at < end for start, end in spans):
+                continue
+            if _math_is_open(self._pending[:at]):
+                continue
+            if at >= MIN_CHUNK_CHARS:
+                return match.end()
+        return 0
+
+    def flush(self) -> List[str]:
+        """Everything still held, said. Called when the model has finished."""
+        rest, self._pending = self._pending, ""
+        return utterances(rest)
+
+    @property
+    def pending(self) -> str:
+        """What is held back, waiting for a boundary. For tests and diagnostics."""
+        return self._pending

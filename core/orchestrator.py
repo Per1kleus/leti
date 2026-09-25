@@ -26,7 +26,7 @@ from core import context_engine, entities, modes, performance, task_control
 from core.intent_signals import contains_explicit_denial, contains_request_approval
 from core.llm_client import OllamaClient
 from core import (artifacts, connections, diagnostics, math_render, resources,
-                  transcript, verification)
+                  speech, transcript, verification)
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
 from core.tool_router import Routing, last_user_message, select_tools_for
 from memory.session_memory import SessionMemory
@@ -290,8 +290,26 @@ _DEFAULT_INTENT = intent_reader.Intent()
 _DEFAULT_MODE = performance.Mode()
 
 
+def _is_stop(user_text: str) -> bool:
+    """Is this message nothing but "stop"?
+
+    Read with the lifecycle reader that already decides what a stop is, so there
+    is one answer to that question rather than two that can disagree. Only a bare
+    stop jumps the queue: "stop the research task" names work, and work is the
+    task controls' business on the ordinary path.
+    """
+    try:
+        command = intent_reader.lifecycle_command(user_text)
+    except Exception:
+        return False
+    return bool(command) and command.get("action") == intent_reader.STOP \
+        and not command.get("hint")
+
+
 class Orchestrator:
     _owning_task = None              # set per turn; see handle_user_input
+    interrupt_callback = None        # the speech engine's own interrupt, if any
+    _spoke_while_streaming = False   # set per turn; see _ask
     _intent = _DEFAULT_INTENT
     _mode = _DEFAULT_MODE
     _context = None                  # the last context package, for diagnostics
@@ -305,6 +323,7 @@ class Orchestrator:
         vector_memory: VectorMemory,
         speak_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         visual_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        interrupt_callback: Optional[Callable[[], None]] = None,
     ):
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -313,6 +332,9 @@ class Orchestrator:
         self.vector_memory = vector_memory
         self.speak_callback = speak_callback
         self.visual_callback = visual_callback
+        # Set by whichever surface owns the speech engine (gui/api.py, main.py).
+        # None means there is nothing playing to cut, which is the text-only case.
+        self.interrupt_callback = interrupt_callback
 
         self.state = AgentState.IDLE
         self._state_listeners: List[Callable[[AgentState], None]] = []
@@ -364,6 +386,18 @@ class Orchestrator:
         approved in the interface. It feeds the SAME pre-approval SafetyGuard
         already honours for voice, with the same limit: an irreversible action is
         never covered by it and still stops to ask."""
+        # "Stop" cannot queue behind the thing it is stopping. Every other
+        # message waits its turn, and should - two turns interleaving their tool
+        # calls is the reason the lock exists. A stop is the one message whose
+        # whole meaning is that the turn in flight should end, so it is read
+        # before the lock and acted on immediately.
+        #
+        # Only while a turn is actually running. With nothing in flight there is
+        # nothing to jump, and the ordinary path answers it properly - including
+        # the task controls, which stay the authority on stopping work.
+        if self._turn_lock.locked() and _is_stop(user_text):
+            return self._stop_now(session_id)
+
         async with self._turn_lock:
             # Who owns whatever this turn touches - a task id when the task
             # runner is driving, the conversation when a person is. Set inside
@@ -512,6 +546,7 @@ class Orchestrator:
         # through belongs to this answer, and starting the response afterwards
         # would throw it away just as "show that graph again" needed it.
         transcript.begin()
+        self._spoke_while_streaming = False
 
         messages = await self._build_messages(user_text)
         _turn_started = time.perf_counter()
@@ -525,6 +560,13 @@ class Orchestrator:
         # The answer becomes the current response: held, hidden, and ready to be
         # shown the moment somebody asks. This replaces nothing - the session
         # memory below still keeps the conversation exactly as it did.
+        if transcript.should_stop_speaking():
+            # Stopped part-way. What arrived is already in the buffer (see _ask),
+            # and the turn ends here rather than recording an empty answer over
+            # it, persisting it or looking for a visual in it.
+            self._set_state(AgentState.IDLE)
+            return final_answer
+
         transcript.said(final_answer)
 
         # If the request was for the mathematics rather than the answer - "derive
@@ -550,7 +592,10 @@ class Orchestrator:
             logger.debug("Couldn't note what this answer listed.")
         await self._maybe_persist_to_long_term(user_text, final_answer)
 
-        if self.speak_callback:
+        # Said already, sentence by sentence, while the model was still writing
+        # it - so saying it again here would be the answer twice. The streamed
+        # path speaks through the same one callback; what changes is only WHEN.
+        if self.speak_callback and not self._spoke_while_streaming:
             self._set_state(AgentState.SPEAKING)
             await self.speak_callback(final_answer)
 
@@ -692,8 +737,9 @@ class Orchestrator:
         )
 
         for iteration in range(max_iterations):
-            response = await self.llm_client.chat(messages, tools=tool_schemas)
-            message = response.get("message", {})
+            message = await self._ask(messages, tool_schemas)
+            if message is None:
+                return ""              # stopped; the turn unwinds above
             tool_calls = message.get("tool_calls")
 
             if not tool_calls:
@@ -759,6 +805,32 @@ class Orchestrator:
 
         logger.warning("Max tool iterations reached without a final answer.")
         return "I made several attempts but couldn't complete that within my step limit. Want me to keep going?"
+
+    def _stop_now(self, session_id: str = "default") -> str:
+        """End the answer in flight, without waiting for it.
+
+        Three things, none of which can block: the flag that the speech loop and
+        the model stream both read between pieces, the engine's own interrupt for
+        the utterance already playing, and a reply. The turn itself notices at
+        its next check and unwinds on its own - cooperative, so there is no
+        thread to kill and no socket left half-read.
+
+        It stops the ANSWER. Work that is running is stopped by the task
+        controls, which a stop with nothing in flight still goes through.
+        """
+        transcript.stop_speaking()
+        if self.interrupt_callback is not None:
+            try:
+                self.interrupt_callback()
+            except Exception:
+                logger.exception("Couldn't interrupt the voice.")
+        answer = "Stopped."
+        try:
+            self.session_memory.add_turn("assistant", answer, session_id)
+        except Exception:
+            logger.debug("Couldn't record the stop in the session.")
+        self._set_state(AgentState.IDLE)
+        return answer
 
     async def _show_or_hide(self, action: str) -> Optional[Dict[str, Any]]:
         """Answer a show/hide request from what is already held, or None.
@@ -848,6 +920,97 @@ class Orchestrator:
             await self.visual_callback(visual)
         except Exception:
             logger.exception("Couldn't show a visual.")
+
+    async def _ask(self, messages: List[Dict[str, Any]],
+                   tool_schemas: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """One model call. Streamed where that buys something, whole where it does not.
+
+        Streaming is what lets Leti start speaking before the model has finished
+        writing - the fragments feed core/speech.py's buffer, which hands back
+        whole sentences and nothing smaller. It is the same ONE call either way:
+        this replaces the whole-response request, it does not add to it.
+
+        The whole-response path stays for a client that has no stream_response -
+        every test double, and any caller that wants a message in one piece.
+
+        None means the user said stop. The caller returns and the turn unwinds.
+        """
+        if not hasattr(self.llm_client, "stream_response") or self.speak_callback is None:
+            response = await self.llm_client.chat(messages, tools=tool_schemas)
+            return response.get("message", {})
+
+        buffer = speech.Stream()
+        said_anything = False
+        stopped = False
+        cut_short = ""
+        message: Dict[str, Any] = {}
+
+        async for event in self.llm_client.stream_response(
+                messages, tools=tool_schemas,
+                should_stop=transcript.should_stop_speaking):
+            if event.get("done"):
+                stopped = bool(event.get("stopped"))
+                message = event.get("message") or {}
+                if event.get("error") and not stopped:
+                    cut_short = str(event["error"])
+                    logger.warning(f"Streamed answer ended early: {cut_short}")
+                break
+            fragment = event.get("text")
+            if not fragment:
+                continue
+            # A tool call in flight is not an answer. Whatever prose came with it
+            # is a preamble the loop is about to throw away, so it is not spoken.
+            for utterance in buffer.feed(fragment):
+                if transcript.should_stop_speaking():
+                    stopped = True
+                    break
+                await self._say(utterance)
+                said_anything = True
+            if stopped:
+                break
+
+        if stopped:
+            # Silenced, not discarded. What the model managed to write is kept, so
+            # "stop" then "show me the answer" shows it - including the part that
+            # was never said out loud.
+            partial = (message.get("content") or buffer.text).strip()
+            if partial:
+                transcript.said(partial)
+            return None
+        if not message.get("tool_calls"):
+            for utterance in buffer.flush():
+                if transcript.should_stop_speaking():
+                    return None
+                await self._say(utterance)
+                said_anything = True
+
+        if cut_short:
+            # Half an answer presented as a whole one is the failure mode to
+            # avoid: the user hears something that stops mid-thought and has no
+            # way to know the model was interrupted rather than finished. So it
+            # is said, and it is part of the answer that gets kept.
+            #
+            # Nothing is retried here. core/llm_client.py's fallback model is the
+            # one retry policy and it covers the REQUEST; a connection that died
+            # halfway through an answer is not a request to make again, and a
+            # second call on its own initiative is a second call.
+            note = ("I could not finish that - the connection to the model "
+                    "stopped partway through.")
+            message["content"] = ((message.get("content") or "").rstrip()
+                                  + ("\n\n" if message.get("content") else "") + note)
+            if not message.get("tool_calls"):
+                await self._say(note)
+                said_anything = True
+
+        # What was said is not said again at the end of the turn.
+        self._spoke_while_streaming = said_anything
+        return message
+
+    async def _say(self, utterance: str) -> None:
+        if self.speak_callback is None:
+            return
+        self._set_state(AgentState.SPEAKING)
+        await self.speak_callback(utterance)
 
     async def _execute_tool_call(self, call: Dict[str, Any]) -> ToolResult:
         # Read defensively: a malformed call is a failed tool result, never an

@@ -632,6 +632,9 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
 
     orchestrator.speak_callback = speak
     orchestrator.visual_callback = show
+    # So a spoken "stop" cuts the utterance already playing, rather than only
+    # stopping the next one. The same engine, the same interrupt.
+    orchestrator.interrupt_callback = tts.interrupt
 
     if continuous:
         from audio.wake_word import WakeWordListener

@@ -305,13 +305,25 @@ def test_the_loop_routes_once_per_turn_not_once_per_iteration():
 
 
 def test_the_loop_still_hands_the_same_schemas_to_the_model():
+    """Routed once, then handed to the model on every pass - by either route.
+
+    The call itself moved into _ask when streaming arrived, so the schemas are
+    followed through both functions: the loop computes them and passes them on,
+    and _ask gives them to the streamed request AND the whole-response one. A
+    path that quietly dropped them would offer the model no tools at all.
+    """
     import inspect
 
     from core.orchestrator import Orchestrator
 
-    source = inspect.getsource(Orchestrator._tool_calling_loop)
-    assert "schemas_for(routing.tool_names)" in source
-    assert "tools=tool_schemas" in source
+    loop = inspect.getsource(Orchestrator._tool_calling_loop)
+    assert "schemas_for(routing.tool_names)" in loop
+    assert "self._ask(messages, tool_schemas)" in loop
+
+    ask = inspect.getsource(Orchestrator._ask)
+    assert ask.count("tools=tool_schemas") == 2, (
+        "both the streamed and the whole-response request must carry the "
+        f"routed schemas; found {ask.count('tools=tool_schemas')}")
 
 
 def test_last_user_message_reads_the_most_recent_user_turn():

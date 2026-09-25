@@ -88,9 +88,13 @@ def begin() -> Response:
     A turn answered without the model - showing, hiding, a mode command - never
     calls this, which is what stops "show me the text" from clearing the very
     answer it was asked to show.
+
+    A stop belongs to the answer it stopped, so it is cleared here. Without that,
+    saying "stop" once would silence every answer after it.
     """
-    global _current
+    global _current, _asked_to_stop
     _current = Response()
+    _asked_to_stop = False
     return _current
 
 

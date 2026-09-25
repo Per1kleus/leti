@@ -772,6 +772,11 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
 
     api.tts = tts
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
+    # The engine's own interrupt, reachable from the orchestrator - which is
+    # where a spoken "stop" arrives. Not a second cancellation path: it is the
+    # same tts.interrupt() the interface control calls, given one more caller.
+    if tts is not None:
+        orchestrator.interrupt_callback = tts.interrupt
     orchestrator.visual_callback = _make_gui_visual_callback(api)
 
     # The interface's core and its RT-LOG read the state machine that already
