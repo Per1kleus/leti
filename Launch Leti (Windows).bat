@@ -1,94 +1,129 @@
 @echo off
-REM Double-click this to launch Leti's interface in its own window.
+REM ===========================================================================
+REM  Double-click this to start Leti. That is the whole instruction.
 REM
-REM First run: creates leti_env\ in this folder and installs everything from
-REM requirements.txt automatically - no manual "pip install" needed. Every
-REM run after that just launches, unless requirements.txt has changed, in
-REM which case it re-syncs the venv first.
+REM  First run: prepares a private Python environment in this folder, installs
+REM  everything requirements.txt asks for, and makes sure Ollama is running with
+REM  the models Leti is configured for. Nothing is installed system-wide, no
+REM  administrator prompt appears, and PATH is not touched.
+REM
+REM  If this machine has no Python at all, one is fetched into leti_runtime\.
+REM  Your own Python, if you have one, is never written to.
+REM
+REM  Every run after the first is a quick check and then Leti starts.
+REM
+REM  Two jobs, deliberately split:
+REM    - this file finds SOME Python to run, because it is what runs when there
+REM      is none. Batch is the only language guaranteed to be here.
+REM    - launcher\bootstrap.py does everything after that, because it is also
+REM      what Leti.exe uses, and one copy of that logic is the point.
+REM
+REM  Developers: nothing here is required. `python main.py --mode gui` from a
+REM  prepared checkout works exactly as it always did.
+REM ===========================================================================
 setlocal enabledelayedexpansion
 
-REM %~dp0 is always this .bat file's own folder, regardless of where it was
-REM double-clicked from - so this works no matter where the project lives.
+REM %~dp0 is this file's own folder, wherever it was double-clicked from.
 cd /d "%~dp0"
 
-echo Leti - starting the interface
-echo (from: %cd%)
+echo Leti
 echo.
 
-set "VENV_DIR=leti_env"
-set "VENV_PYTHON=%VENV_DIR%\Scripts\python.exe"
-set "HASH_MARKER=%VENV_DIR%\.requirements_hash"
-set "PLAYWRIGHT_MARKER=%VENV_DIR%\.playwright_installed"
+set "RUNTIME_DIR=leti_runtime"
+set "RUNTIME_PYTHON=%RUNTIME_DIR%\python.exe"
+set "VENV_PYTHON=leti_env\Scripts\python.exe"
+set "PY_VERSION=3.11.9"
+set "PY_URL=https://www.python.org/ftp/python/%PY_VERSION%/python-%PY_VERSION%-embed-amd64.zip"
 
-where python >nul 2>nul
-if not %errorlevel%==0 (
-    echo ERROR: No Python found on this system. Install Python 3.10+ from python.org first,
-    echo making sure to check "Add python.exe to PATH" during setup, then re-run this.
+if not exist "requirements.txt" (
+    echo Leti could not find its own files.
+    echo   What failed: requirements.txt is not in this folder.
+    echo   It was trying to: work out which packages Leti needs.
+    echo   Keep this launcher inside the Leti folder it came with.
+    echo.
     pause
-    exit /b 1
+    exit /b 2
 )
 
-REM --- First run (or a deleted venv): create it -----------------------------
-if not exist "%VENV_PYTHON%" (
-    echo First run detected - setting up leti_env\ ^(this only happens once^)...
-    python -m venv "%VENV_DIR%"
+REM --- Find a Python to run the setup with ----------------------------------
+REM Order: one this launcher prepared earlier, then the system's, then fetch.
+REM Only enough to run launcher\bootstrap.py - which then decides properly, and
+REM will build a venv from a system Python when there is a good one.
+set "SETUP_PYTHON="
+if exist "%VENV_PYTHON%"    set "SETUP_PYTHON=%VENV_PYTHON%"
+if not defined SETUP_PYTHON if exist "%RUNTIME_PYTHON%" set "SETUP_PYTHON=%RUNTIME_PYTHON%"
+
+if not defined SETUP_PYTHON (
+    for %%P in (py.exe python.exe python3.exe) do (
+        if not defined SETUP_PYTHON (
+            where %%P >nul 2>nul
+            if !errorlevel!==0 set "SETUP_PYTHON=%%P"
+        )
+    )
+)
+
+if not defined SETUP_PYTHON (
+    echo Preparing Leti...
+    echo   No Python on this machine - fetching Leti's own ^(about 11 MB^).
+    echo   Nothing is installed system-wide and PATH is not changed.
+    echo.
+    REM PowerShell ships with Windows 10 and later, so this needs nothing that
+    REM is not already here. TLS 1.2 is set explicitly because the default on
+    REM older builds is too old for python.org.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+      "$ErrorActionPreference='Stop';" ^
+      "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;" ^
+      "New-Item -ItemType Directory -Force -Path '%RUNTIME_DIR%' | Out-Null;" ^
+      "Invoke-WebRequest -Uri '%PY_URL%' -OutFile '%RUNTIME_DIR%\python-embed.zip' -UseBasicParsing;" ^
+      "Expand-Archive -Path '%RUNTIME_DIR%\python-embed.zip' -DestinationPath '%RUNTIME_DIR%' -Force;" ^
+      "Remove-Item '%RUNTIME_DIR%\python-embed.zip' -Force"
     if not !errorlevel!==0 (
-        echo ERROR: Could not create the virtual environment. Make sure Python was installed
-        echo with the standard installer from python.org ^(the "venv" module ships with it^).
+        echo Leti could not finish setting itself up.
+        echo   What failed: Python could not be downloaded.
+        echo   It was trying to: fetch a private copy of Python, because this
+        echo                     machine has none Leti can use.
+        echo   Trying again is safe - setup carries on from the last step that finished.
+        echo   If this keeps happening, check whether a firewall or proxy is
+        echo   blocking https://www.python.org, or install Python 3.11+ from
+        echo   python.org and run this launcher again.
+        echo.
         pause
         exit /b 1
     )
-    echo Virtual environment created.
-    echo.
-)
-
-REM --- Install/update dependencies, but only when requirements.txt actually
-REM changed since the last successful install (hash-gated via PowerShell's
-REM Get-FileHash, built into Windows 10+). ---
-for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash requirements.txt -Algorithm SHA256).Hash" 2^>nul`) do set "CURRENT_HASH=%%H"
-
-if "%CURRENT_HASH%"=="" (
-    echo ERROR: Could not read requirements.txt - is this really the Leti project folder?
-    pause
-    exit /b 1
-)
-
-set "STORED_HASH="
-if exist "%HASH_MARKER%" (
-    for /f "usebackq delims=" %%H in ("%HASH_MARKER%") do set "STORED_HASH=%%H"
-)
-
-if not "%CURRENT_HASH%"=="%STORED_HASH%" (
-    echo Installing dependencies into leti_env\ ^(first run, or requirements.txt changed^)...
-    echo This can take a few minutes the first time - it's downloading everything Leti needs.
-    echo.
-    "%VENV_PYTHON%" -m pip install --upgrade pip --quiet
-    "%VENV_PYTHON%" -m pip install -r requirements.txt
-    if not !errorlevel!==0 (
-        echo ERROR: Dependency installation failed - see the pip output above for which
-        echo package failed and why. Fix that, then re-run this launcher - it will pick up
-        echo where it left off.
+    if not exist "%RUNTIME_PYTHON%" (
+        echo Leti could not finish setting itself up.
+        echo   What failed: the downloaded Python is not where it was expected.
+        echo   It was trying to: unpack Python into the Leti folder.
+        echo   Trying again is safe - delete the leti_runtime folder first.
+        echo.
         pause
         exit /b 1
     )
-    > "%HASH_MARKER%" echo %CURRENT_HASH%
-    echo Dependencies installed.
+    set "SETUP_PYTHON=%RUNTIME_PYTHON%"
+    echo   Python fetched.
     echo.
 )
 
-REM --- Playwright's browser binary is a separate download from the pip
-REM package itself, and only needs doing once per venv. ---
-if not exist "%PLAYWRIGHT_MARKER%" (
-    echo Downloading the Playwright browser ^(needed for web browsing/automation^)...
-    "%VENV_PYTHON%" -m playwright install chromium
-    if !errorlevel!==0 (
-        echo. > "%PLAYWRIGHT_MARKER%"
-    ) else (
-        echo Warning: Playwright browser install failed - browser automation won't work until
-        echo you run: leti_env\Scripts\python.exe -m playwright install chromium
-    )
+REM --- Everything else is launcher\bootstrap.py ------------------------------
+REM It opens up the fetched runtime's path file, gives it pip, installs whatever
+REM is missing from requirements.txt, and starts main.py. Leti.exe runs the same
+REM module, so there is one description of what a prepared machine looks like.
+"%SETUP_PYTHON%" launcher\leti_launcher.py --setup-only
+set "SETUP_STATUS=!errorlevel!"
+if not "!SETUP_STATUS!"=="0" (
     echo.
+    echo Setup did not finish. Nothing is broken - running this launcher again
+    echo carries on from the last step that completed.
+    echo.
+    pause
+    exit /b !SETUP_STATUS!
 )
+
+REM The interpreter bootstrap.py settled on, which may be a venv it just built
+REM rather than the one that ran the setup. Settled before Ollama is checked,
+REM because the model list is read out of settings.yaml with it.
+set "LETI_PYTHON=%SETUP_PYTHON%"
+if exist "%VENV_PYTHON%" set "LETI_PYTHON=%VENV_PYTHON%"
 
 call :ensure_ollama
 if not !errorlevel!==0 (
@@ -96,26 +131,26 @@ if not !errorlevel!==0 (
     exit /b 1
 )
 
-"%VENV_PYTHON%" main.py --mode gui
+set "PYTHONPATH=%cd%;%PYTHONPATH%"
+"%LETI_PYTHON%" main.py --mode gui
 set "STATUS=%errorlevel%"
 
 echo.
 if not "%STATUS%"=="0" (
-    echo Leti exited with an error (code %STATUS%^) - see the output above for details.
+    echo Leti exited with an error ^(code %STATUS%^) - see above, and logs\ in this folder.
+    pause
 ) else (
     echo Leti closed.
 )
-pause
 exit /b 0
 
 REM ---------------------------------------------------------------------------
-REM Ensures Ollama is installed, running, and has the models Leti needs. This is
-REM what actually fixes "couldn't reach Ollama" instead of just warning about it:
-REM installs it if missing, starts it as a background service if it's not
-REM already running (survives after this window closes via Start-Process, not
-REM tied to this cmd session), and pulls whatever models config/settings.yaml
-REM asks for (ollama pull is cheap/no-op if already present, so this is safe to
-REM run on every launch, not just the first).
+REM Ollama: installed if missing, started if not running, and asked for whatever
+REM models config/settings.yaml names. Left in this file rather than moved into
+REM bootstrap.py because it is Windows package management rather than Python
+REM environment management, and because core/model_setup.py already owns the
+REM question of WHICH model this machine should run - this only makes sure the
+REM server is there for it to ask.
 REM ---------------------------------------------------------------------------
 :ensure_ollama
 where ollama >nul 2>nul
@@ -166,12 +201,33 @@ if not !errorlevel!==0 (
     echo.
 )
 
+REM Skipped once the models have been confirmed present, so a normal launch does
+REM not shell out to ollama four times. The marker is removed by changing
+REM config/settings.yaml, which is the only thing that changes the answer.
+set "MODEL_MARKER=data\.models_pulled"
+if exist "%MODEL_MARKER%" (
+    for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash 'config\settings.yaml' -Algorithm SHA256).Hash" 2^>nul`) do set "CFG_HASH=%%H"
+    set "STORED_CFG="
+    for /f "usebackq delims=" %%H in ("%MODEL_MARKER%") do set "STORED_CFG=%%H"
+    if "!CFG_HASH!"=="!STORED_CFG!" exit /b 0
+)
+
 echo Checking Leti's configured models ^(skips anything already downloaded^)...
 echo First run can take a while and needs several GB of disk space - ollama shows its own progress below.
-for /f "usebackq delims=" %%M in (`"%VENV_PYTHON%" -c "import yaml; cfg=yaml.safe_load(open('config/settings.yaml')); o=cfg.get('ollama',{}); [print(m) for m in [o.get('reasoning_model'), o.get('fallback_reasoning_model'), o.get('vision_model'), o.get('embedding_model')] if m]"`) do (
+set "PULL_OK=1"
+for /f "usebackq delims=" %%M in (`"%LETI_PYTHON%" -c "import yaml; cfg=yaml.safe_load(open('config/settings.yaml')); o=cfg.get('ollama',{}); [print(m) for m in [o.get('reasoning_model'), o.get('fallback_reasoning_model'), o.get('vision_model'), o.get('embedding_model')] if m]" 2^>nul`) do (
     echo   - %%M
     ollama pull "%%M"
-    if not !errorlevel!==0 echo     Warning: failed to pull '%%M' - Leti may not work correctly until this succeeds.
+    if not !errorlevel!==0 (
+        echo     Warning: failed to pull '%%M' - Leti may not work correctly until this succeeds.
+        set "PULL_OK=0"
+    )
+)
+if "!PULL_OK!"=="1" (
+    for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash 'config\settings.yaml' -Algorithm SHA256).Hash" 2^>nul`) do (
+        if not exist "data" mkdir "data"
+        > "%MODEL_MARKER%" echo %%H
+    )
 )
 echo.
 exit /b 0

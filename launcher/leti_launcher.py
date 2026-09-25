@@ -1,0 +1,149 @@
+"""Leti.exe: what happens when somebody double-clicks Leti for the first time.
+
+This is the whole program inside the executable. It carries a Python of its own -
+that is what makes a .exe a .exe - and it uses it for exactly one thing: running
+launcher/bootstrap.py, which prepares a real Python environment in the Leti folder
+and then starts main.py with it.
+
+WHY IT DOES NOT SIMPLY CONTAIN LETI
+
+An executable with Leti and all twenty-seven dependencies inside it would be
+several gigabytes - Whisper and its tensor library alone are most of that - and it
+would have to be rebuilt and re-downloaded for every change to any of them. It
+also could not install anything, because a frozen interpreter has no venv and no
+ensurepip: PyInstaller unpacks a runtime, not a Python installation.
+
+So the executable is a front door rather than a container. It is small, it is the
+same on every release, and what it prepares is an ordinary Python environment that
+can be inspected, repaired and updated like any other.
+
+THE CONSOLE
+
+It is a console program, because the first run genuinely has something to say: it
+downloads a few hundred megabytes and the person who started it should be able to
+see that this is what is happening rather than that nothing is. Once Leti's own
+window is up the console has nothing left to report, so it is hidden. If setup
+fails it stays, with the reason on it, because a window that vanishes is the
+failure this is meant to avoid.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def project_root() -> Path:
+    """The Leti folder: the one holding main.py.
+
+    Frozen, sys.executable is Leti.exe, so the folder to look in is the one it
+    sits in - and then its parent, so the executable can also live in a bin\\
+    subfolder. Unfrozen, this file's own grandparent is the repository, which is
+    what makes the launcher runnable from a checkout without being built.
+    """
+    if getattr(sys, "frozen", False):
+        here = Path(sys.executable).resolve().parent
+    else:
+        here = Path(__file__).resolve().parent.parent
+    for candidate in (here, here.parent, Path.cwd()):
+        if (candidate / "main.py").exists() and (candidate / "requirements.txt").exists():
+            return candidate
+    return here
+
+
+def hide_console() -> None:
+    """Put the setup window away once there is nothing left to report.
+
+    Windows only, and never fatal: a console that will not hide is a cosmetic
+    problem, and taking the launch down over it would not be.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        window = ctypes.windll.kernel32.GetConsoleWindow()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 0)     # SW_HIDE
+    except Exception:
+        pass
+
+
+def wait_for_the_user() -> None:
+    """Hold the window open so a message can be read.
+
+    Only ever called when something went wrong. A launcher that closes on failure
+    leaves somebody looking at a folder with no idea what happened.
+    """
+    try:
+        input("Press Enter to close this window. ")
+    except Exception:
+        pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    root = project_root()
+    # The project folder goes on the path so `import core` works - the bootstrap
+    # reuses core/atomic_write.py, and this file is inside the project when it is
+    # run from a checkout rather than from the executable.
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
+    try:
+        from launcher import bootstrap
+    except Exception:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from launcher import bootstrap
+
+    arguments = list(argv if argv is not None else sys.argv[1:])
+    # --setup-only is for checking that a machine can be prepared without then
+    # opening the interface. Everything else is passed to Leti untouched, so the
+    # executable can start any mode main.py supports rather than only the GUI.
+    setup_only = "--setup-only" in arguments
+    if setup_only:
+        arguments.remove("--setup-only")
+
+    progress = bootstrap.Progress()
+    if not (root / "main.py").exists():
+        progress.problem(
+            "Leti's own files are not next to this launcher",
+            "find main.py in this folder, or the one above it",
+            retry_is_safe=False)
+        progress.say("  Keep Leti.exe inside the Leti folder it came with.")
+        wait_for_the_user()
+        return 2
+
+    try:
+        python = bootstrap.prepare(root, progress)
+    except bootstrap.SetupFailed as failure:
+        progress.problem(failure.what, failure.trying, failure.retry_is_safe,
+                         logs=root / "logs")
+        wait_for_the_user()
+        return 1
+    except KeyboardInterrupt:
+        # Closed halfway through on purpose. Nothing is broken: every step records
+        # only that it finished, so the next launch carries on from the last one
+        # that did.
+        progress.say()
+        progress.say("Setup stopped. Starting Leti again will carry on from here.")
+        return 130
+    except Exception as e:
+        progress.problem(f"something unexpected went wrong ({type(e).__name__})",
+                         "prepare Leti's Python environment", retry_is_safe=True,
+                         logs=root / "logs")
+        wait_for_the_user()
+        return 1
+
+    if setup_only:
+        progress.say("Setup finished. Leti was not started (--setup-only).")
+        return 0
+
+    hide_console()
+    try:
+        return bootstrap.start_leti(python, root, arguments or None)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

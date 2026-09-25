@@ -19,6 +19,16 @@ __pycache__/
 venv/
 env/
 
+# --- What the Windows launchers make ------------------------------------------
+# The environment either launcher prepares in the project folder, and the output
+# of launcher/build_exe.py. All of it is rebuildable from what IS committed, and
+# leti_runtime\ in particular is a whole Python interpreter.
+leti_env/
+leti_runtime/
+build/
+dist/
+*.spec.bak
+
 # --- Editors / OS ------------------------------------------------------------
 .vscode/
 .idea/

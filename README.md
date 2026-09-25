@@ -175,6 +175,106 @@ searches and pages you explicitly ask it to visit.
 
 ---
 
+## Starting Leti on Windows
+
+Two ways in, and they are the same Leti. Neither needs Python, pip, a terminal,
+an environment to activate or a PATH to configure.
+
+### Leti.exe
+
+Put it in the Leti folder - the one holding `main.py` - and double-click it.
+
+    Leti.exe
+       -> checks Python            -> fetches one if there is none
+       -> checks the packages      -> installs only what is missing
+       -> verifies                 -> starts Leti
+
+About 10 MB, and the same on every release: it carries a Python of its own for
+one purpose, which is to prepare a real environment in the folder and start
+`main.py` with it. It deliberately does **not** contain Leti - an executable with
+Whisper's tensor library inside it is several gigabytes, has to be rebuilt for
+every dependency bump, and could not install anything anyway, because a frozen
+interpreter has no `venv` and no `ensurepip`.
+
+The window shows what it is doing, because the first run downloads a few hundred
+megabytes and somebody waiting deserves to know that is what is happening. It
+hides itself once Leti's own window is up, and stays - with the reason on it - if
+setup fails.
+
+**Building it** (on Windows, from the project folder):
+
+```
+python launcher\build_exe.py
+```
+
+which installs PyInstaller if needed, builds `launcher/Leti.spec`, and checks the
+result. Or directly:
+
+```
+python -m PyInstaller --clean --noconfirm launcher/Leti.spec
+```
+
+PyInstaller is not in `requirements.txt`: it is needed to make a release, not to
+run Leti.
+
+### Launch Leti (Windows).bat
+
+Double-click it. Same steps, no executable to build - useful if you would rather
+not run a downloaded binary, or you already have the repository.
+
+Batch, because it is the one language guaranteed to be on a Windows machine that
+has nothing installed. It does exactly two things itself: finds *some* Python -
+fetching one with PowerShell if there is none - and then hands over to
+`launcher/bootstrap.py`, which is the same module `Leti.exe` runs. One
+description of what a prepared machine looks like, reached two ways.
+
+It also makes sure Ollama is installed and running and has the models
+`config/settings.yaml` names. *Which* model this machine should run is not its
+business: `core/model_setup.py` asks that on first launch, inside Leti, where it
+can see the hardware.
+
+For a desktop and Start Menu shortcut with Leti's icon:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts\install_windows_launcher.ps1
+```
+
+### What it puts where, and what it never touches
+
+| | |
+|---|---|
+| `leti_env\` | the environment, built from a system Python when there is a good one |
+| `leti_runtime\` | a Python fetched because the machine had none |
+| `data\launch_setup.json` | what has finished, so the next launch does not redo it |
+| `logs\setup_pip.log` | what a failed install printed, if one did |
+
+All four are inside the Leti folder. Nothing is installed system-wide, no
+administrator prompt appears, PATH is not changed, and your own Python - if you
+have one - is never written to. Uninstalling is deleting the folder.
+
+### After the first launch
+
+    double-click  ->  quick check  ->  Leti
+
+The quick check is a few `stat` calls: `requirements.txt` is the same file it
+was, the last run finished, and every package's metadata folder is still on disk.
+Under half a second, and it downloads nothing.
+
+That last clause is what makes a broken install repair itself. `pip uninstall`
+removes a metadata folder, so a package taken away is noticed on the very next
+launch and put back - a record saying all is well is only believed while the
+folders it points at are still there.
+
+Setup is safe to interrupt. Every step records that it *finished*, never that it
+started, so closing the window halfway leaves the same state as never having run
+it, and the next launch carries on from the last step that completed.
+
+### Developers
+
+Nothing above is required. `python main.py --mode gui` from a prepared checkout
+works exactly as it always did, `main.py` knows nothing about any of this, and no
+module in `core/`, `tools/`, `gui/`, `audio/` or `memory/` imports `launcher/`.
+
 ## Prerequisites
 
 1. **Ollama installed and running.**
