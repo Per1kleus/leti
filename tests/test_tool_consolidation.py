@@ -184,7 +184,6 @@ class _FakePsutil:
 
     def Process(self, pid):  # noqa: N802 - mirrors psutil's own name
         self.process_lookups += 1
-        outer = self
 
         class _P:
             def name(self):

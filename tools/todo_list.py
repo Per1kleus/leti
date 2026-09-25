@@ -74,7 +74,11 @@ class AddTodoItemTool(BaseTool):
 
     async def run(self, text: str, **kwargs) -> ToolResult:
         item = add_todo(text)
-        return ToolResult(success=True, output=f"Added to your to-do list: {text}")
+        # The id comes back, so "mark that one done" does not need a second call
+        # to list_todo_items to find out what it was. It was being discarded.
+        return ToolResult(success=True, output={
+            "message": f"Added to your to-do list: {text}",
+            "item_id": item["id"], "text": item["text"]})
 
 
 class ListTodoItemsTool(BaseTool):

@@ -13,11 +13,7 @@ answer for a text file; a correct answer instead of nonsense for the rest.
 """
 from __future__ import annotations
 
-import fnmatch
-import os
 import shutil
-from pathlib import Path
-from typing import Optional
 
 from core.config_loader import resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult

@@ -15,7 +15,6 @@ way the accept path is testable at all.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import struct
 import sys

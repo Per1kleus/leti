@@ -13,7 +13,7 @@ running of them is plain deterministic code.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from core import task_manager
 from tools.base import BaseTool, ToolParameter, ToolResult

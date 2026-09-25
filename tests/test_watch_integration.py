@@ -73,7 +73,7 @@ def test_the_router_reaches_them_without_falling_back(registry, request_text, ex
 async def test_a_triggered_watch_starts_a_task_rather_than_acting_itself(registry, monkeypatch):
     """Seeing a condition is not permission to act on it. The action becomes a
     task, which the orchestrator runs and SafetyGuard authorises call by call."""
-    watch = watches.save_new(watches.create(
+    watches.save_new(watches.create(
         "cpu", "cpu_above", {"percent": 90}, action="start_task",
         action_target="find out what is using the CPU", cooldown_minutes=0))
     monkeypatch.setattr(watches, "evaluate_condition", lambda w: (True, {}))

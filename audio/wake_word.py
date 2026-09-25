@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict
 
 import numpy as np
 import pyaudio

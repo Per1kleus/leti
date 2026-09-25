@@ -14,13 +14,11 @@ from __future__ import annotations
 import asyncio
 import email
 import imaplib
-import re
 import smtplib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 
 from core.config_loader import get_settings

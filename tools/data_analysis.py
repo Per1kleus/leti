@@ -19,7 +19,6 @@ from instead of somewhere the user has to be told about.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -614,7 +613,7 @@ class AnalyzeDatasetTool(BaseTool):
                     value_column = parts[1] if len(parts) > 1 else ""
                     order_column = parts[2] if len(parts) > 2 else ""
                     if value_column not in frame.columns or order_column not in frame.columns:
-                        results[raw] = {"error": f"Needs 'trend:<value>:<order>' with real columns."}
+                        results[raw] = {"error": "Needs 'trend:<value>:<order>' with real columns."}
                         continue
                     ordered = frame[[order_column, value_column]].dropna().sort_values(order_column)
                     values = pd.to_numeric(ordered[value_column], errors="coerce").dropna()

@@ -35,7 +35,6 @@ reason, never as an empty extraction that reads like an empty document.
 from __future__ import annotations
 
 import csv
-import io
 import json
 import logging
 import math
@@ -376,7 +375,9 @@ def _docx_sections(path: Path) -> Iterable[Tuple[str, str]]:
     label, buffer, number, table_number = None, [], 0, 0
 
     def flush():
-        nonlocal buffer, number, label
+        # `label` is only read here, so it needs no nonlocal - declaring
+        # one said this function assigns it, which it does not.
+        nonlocal buffer, number
         if not buffer:
             return None
         number += 1

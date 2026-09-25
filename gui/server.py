@@ -191,7 +191,7 @@ class LetiWebServer:
         return ws
 
     async def _dispatch_call(self, ws: web.WebSocketResponse, data: Dict[str, Any]) -> None:
-        from gui.api import ASYNC_METHODS, SYNC_METHODS
+        from gui.api import SYNC_METHODS
 
         call_id = data.get("id")
         method = data.get("method", "")
@@ -252,16 +252,16 @@ class LetiWebServer:
                 f"may already be using it - set a different gui.port in config/settings.yaml."
             )
 
-        print(f"\nLeti's interface is running.")
+        print("\nLeti's interface is running.")
         print(f"  On this computer: http://127.0.0.1:{self.port}/")
         if not self.allow_remote:
-            print(f"  (Listening on 127.0.0.1 only - nothing else on the network can reach it.)")
+            print("  (Listening on 127.0.0.1 only - nothing else on the network can reach it.)")
         if self.allow_remote:
             print(f"  From your phone (same Wi-Fi): http://{_lan_ip()}:{self.port}/?token={self.token}")
-            print(f"  Open that in your phone's browser, then use its menu to 'Add to Home Screen'")
-            print(f"  for an app-like icon. This is LAN-only - never port-forward it to the internet.\n")
+            print("  Open that in your phone's browser, then use its menu to 'Add to Home Screen'")
+            print("  for an app-like icon. This is LAN-only - never port-forward it to the internet.\n")
         else:
-            print(f"  Remote access is disabled (gui.enable_remote_access: false in settings.yaml).\n")
+            print("  Remote access is disabled (gui.enable_remote_access: false in settings.yaml).\n")
 
     async def stop(self) -> None:
         if self.runner:

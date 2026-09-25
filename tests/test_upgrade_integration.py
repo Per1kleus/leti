@@ -502,7 +502,7 @@ async def test_a_half_taken_claim_is_given_back_not_left_locked(guard_factory, t
 @pytest.mark.asyncio
 async def test_a_failing_tool_still_releases_its_resources(guard_factory, tmp_path):
     from core import resources
-    from tools.base import BaseTool, ToolParameter, ToolResult
+    from tools.base import BaseTool, ToolParameter
 
     resources.clear()
 
@@ -529,7 +529,6 @@ async def test_a_failing_tool_still_releases_its_resources(guard_factory, tmp_pa
 async def test_a_refused_call_never_holds_anything(guard_factory, tmp_path):
     """A lock is not a permission, and must never be able to look like one."""
     from core import resources
-    from core.safety_guard import ConfirmationDenied
 
     resources.clear()
     guard, prompts = guard_factory(confirm=False, confirm_classes=["modify", "critical"])

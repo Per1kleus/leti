@@ -23,7 +23,7 @@ import os
 import re
 import shlex
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -68,7 +68,7 @@ def _humanize_tool_call(tool_name: str, arguments: Dict[str, Any]) -> str:
         "delete_contact": lambda a: f"delete the contact with ID {_get('contact_id')}",
         "clear_user_profile": lambda a: "erase everything I remember about you (name and all saved facts)",
         "login_to_social_platform": lambda a: f"open a browser window for you to log in to {_get('platform')} (I won't see your password)",
-        "browser_fill_form": lambda a: f"fill out a form on the current page",
+        "browser_fill_form": lambda a: "fill out a form on the current page",
         # close_app's parameter is window_title, not app_name - naming the wrong key
         # here rendered the prompt as "Leti wants to close ." with the target missing,
         # on a tool that closes windows. Alternatives are kept as fallbacks.

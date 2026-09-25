@@ -5,12 +5,10 @@ conversations survive restarts and can be reviewed/audited later.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from collections import deque
 from contextlib import closing
-from pathlib import Path
 from typing import Any, Deque, Dict, List
 
 from core.config_loader import get_settings, resolve_path

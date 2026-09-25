@@ -8,7 +8,6 @@ and never twice - is the specification.
 """
 from __future__ import annotations
 
-import json
 
 import pytest
 

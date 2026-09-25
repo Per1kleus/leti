@@ -25,7 +25,6 @@ import json
 import subprocess
 import sys
 import types
-from pathlib import Path
 
 import pytest
 
@@ -764,7 +763,7 @@ def cloned(tmp_path):
 
 
 def test_a_push_lands_when_the_remote_has_not_moved(cloned):
-    work, run = cloned["work"], cloned["run"]
+    work = cloned["work"]
     (work / "a.py").write_text("x = 2\n")
     asyncio.run(git_ops.commit(work, "change a", ["a.py"]))
 

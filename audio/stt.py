@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 import pyaudio

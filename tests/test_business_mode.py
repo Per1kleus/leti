@@ -20,7 +20,6 @@ had rather than a second one.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 import time

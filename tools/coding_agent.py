@@ -25,7 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core import coding, git_ops, github_client, modes
+from core import coding, git_ops, github_client
 from core.config_loader import resolve_path
 from tools.base import BaseTool, ToolParameter, ToolResult
 

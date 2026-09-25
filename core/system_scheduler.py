@@ -19,7 +19,6 @@ again without disturbing anything else the user has scheduled.
 """
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess

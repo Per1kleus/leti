@@ -29,7 +29,7 @@ import logging
 import math
 import struct
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.atomic_write import atomic_write_text
 from core.config_loader import resolve_path

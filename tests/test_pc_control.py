@@ -7,7 +7,6 @@ confirmation prompt, which therefore has to describe what will actually happen.
 """
 from __future__ import annotations
 
-import asyncio
 import shutil
 import sys
 import types

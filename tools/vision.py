@@ -6,7 +6,6 @@ Ollama vision model a question about what's on screen.
 from __future__ import annotations
 
 import base64
-import io
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional

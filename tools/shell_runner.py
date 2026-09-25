@@ -20,7 +20,6 @@ whichever tool is asked to run it.
 from __future__ import annotations
 
 import asyncio
-import shlex
 from pathlib import Path
 from typing import Optional
 

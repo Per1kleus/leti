@@ -15,11 +15,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import tempfile
 import time
 import types
 from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 

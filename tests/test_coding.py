@@ -5,14 +5,11 @@ passed. Everything else here is about not lying to the model about what happened
 """
 from __future__ import annotations
 
-import pathlib
 
 import pytest
 
-from tools.coding import (
-    InspectProjectTool, InstallDependencyTool, RunCodeTool, RunTestsTool,
-    detect_test_command, find_interpreter, normalize_language,
-)
+from tools.coding import (InspectProjectTool, InstallDependencyTool, RunCodeTool,
+                          RunTestsTool, detect_test_command, normalize_language)
 
 
 @pytest.mark.parametrize("given,expected", [

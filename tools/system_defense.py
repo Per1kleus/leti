@@ -18,7 +18,7 @@ import platform
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
 from tools.base import BaseTool, ToolParameter, ToolResult
 from tools.command_runner import run_command

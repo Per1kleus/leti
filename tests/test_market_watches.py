@@ -515,9 +515,8 @@ def test_accelerating_attention_is_detected(searches):
     watch = trend_watch()
     for _ in range(3):
         observe(watch["id"], searches, 1)
-    outcome = None
     for _ in range(3):
-        outcome = observe(watch["id"], searches, 12)
+        observe(watch["id"], searches, 12)
     evidence = watches.get_watch(watch["id"])["condition_state"]["evidence"]
     assert evidence["phase"].startswith("accelerating"), evidence
     assert evidence["ratio"] > 1.6

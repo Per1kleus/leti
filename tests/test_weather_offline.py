@@ -8,9 +8,7 @@ tests are as much about the labelling as the fallback.
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import time
 
 import httpx
 import pytest

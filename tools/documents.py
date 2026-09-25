@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from core import documents
 from core.config_loader import resolve_path

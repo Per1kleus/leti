@@ -9,10 +9,9 @@ import pytest
 
 import tools.business as business
 import tools.contacts as contacts
-from tools.business import (
-    BusinessDashboardTool, ListBusinessDataTool, NextActionsTool,
-    RecordBusinessDataTool, UpdateLeadTool, contact_name, summarize,
-)
+from tools.business import (BusinessDashboardTool, ListBusinessDataTool,
+                            NextActionsTool, RecordBusinessDataTool, UpdateLeadTool,
+                            summarize)
 from tools.contacts import AddContactTool
 
 

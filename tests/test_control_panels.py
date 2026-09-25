@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 from core import settings_editor as se

@@ -8,14 +8,12 @@ stops future actions, and a cancelled task is never reported as completed.
 from __future__ import annotations
 
 import json
-import time
 
 import pytest
 
 from core import task_control, task_history, task_manager
-from core.task_manager import (CANCELLED, CANCELLING, COMPLETED, FAILED, PAUSED,
-                               PAUSING, QUEUED, RESUMING, RETRYING, RUNNING,
-                               WAITING_FOR_USER, TaskRunner)
+from core.task_manager import (CANCELLED, CANCELLING, COMPLETED, PAUSED, PAUSING,
+                               RESUMING, RUNNING, WAITING_FOR_USER, TaskRunner)
 
 
 @pytest.fixture(autouse=True)

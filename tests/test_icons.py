@@ -8,7 +8,6 @@ their format promises.
 """
 from __future__ import annotations
 
-import json
 import re
 import struct
 from pathlib import Path

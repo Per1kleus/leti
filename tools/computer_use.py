@@ -8,7 +8,7 @@ orchestrator calls and SafetyGuard authorises exactly as always.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from core import computer_use
 from tools.base import BaseTool, ToolParameter, ToolResult

@@ -5,11 +5,10 @@ import shutil
 
 import pytest
 
-from tools.projects import (
-    CreateProjectTool, DeleteProjectTool, ListProjectsTool, OpenProjectTool,
-    UpdateProjectTool, get_active_project, project_dir, projects_root,
-    resolve_project, safe_project_path, set_active_project,
-)
+from tools.projects import (CreateProjectTool, DeleteProjectTool, ListProjectsTool,
+                            OpenProjectTool, UpdateProjectTool, get_active_project,
+                            project_dir, resolve_project, safe_project_path,
+                            set_active_project)
 
 
 @pytest.fixture(autouse=True)

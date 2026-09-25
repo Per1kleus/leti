@@ -16,9 +16,8 @@ import pytest
 import core.system_scheduler as system_scheduler
 import tools.scheduler as scheduler
 from core.safety_guard import ConfirmationDenied
-from tools.scheduler import (
-    CreateScheduledTaskTool, SchedulerRunner, load_tasks, save_tasks, scheduler_lock,
-)
+from tools.scheduler import (CreateScheduledTaskTool, SchedulerRunner, load_tasks,
+                             save_tasks)
 
 
 @pytest.fixture(autouse=True)
@@ -70,8 +69,9 @@ def test_the_lock_excludes_a_second_process(tmp_path):
 async def test_due_tasks_are_skipped_while_another_process_holds_the_lock(monkeypatch):
     from contextlib import contextmanager
 
-    result = await CreateScheduledTaskTool().run(
+    created = await CreateScheduledTaskTool().run(
         name="T", instruction="Do it.", schedule_type="interval", every_minutes=60)
+    assert created.success, created.error
     tasks = load_tasks()
     tasks[0]["next_run"] = time.time() - 1
     save_tasks(tasks)

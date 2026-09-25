@@ -19,7 +19,7 @@ sys.modules.setdefault("chromadb", types.ModuleType("chromadb"))
 
 import main  # noqa: E402
 from core import tool_router  # noqa: E402
-from core.tool_router import CATEGORIES, Routing, last_user_message, route, select_tools_for  # noqa: E402
+from core.tool_router import CATEGORIES, last_user_message, route, select_tools_for  # noqa: E402
 
 
 @pytest.fixture(scope="module")
