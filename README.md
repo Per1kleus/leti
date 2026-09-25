@@ -1579,6 +1579,62 @@ the part that was never said - so "stop" then "show me the answer" shows all of
 it. Work that is running is still stopped by the task controls, which remain the
 authority on that.
 
+## Saying it before it is finished
+
+Ollama streams. Leti used to ask for a whole message and wait for it, which on a
+long answer is silence for as long as the answer takes and then all of it at
+once - a transcript being read out rather than somebody talking.
+
+    Qwen writes -> NDJSON fragments -> speech.Stream -> whole sentences -> TTS
+                              |
+                              +-> the same response buffer, assembled once
+
+`core/llm_client.py` gained `stream_response`; `chat()` is untouched and is still
+what every other caller uses. It is the same **one** call - streaming replaces
+the whole-response request rather than adding to it.
+
+The fragments feed a `Stream` in `core/speech.py`, which hands back whole
+sentences and **nothing smaller**. It adds no rules of its own: where a sentence
+ends, what a full stop is not the end of, and how notation is said are the
+functions that were already there. A second copy of those rules living in the
+streaming path would drift from the first and only be noticed by ear.
+
+Measured against a real socket: the first utterance is ready **84 ms into a
+206 ms answer**. A sentence with no punctuation in it is handed over once it
+passes the ceiling, cut at whitespace and never inside a word, a number, a path,
+a url or an expression.
+
+An expression split across fragments is **held until it closes**. `\( \frac{a`
+is not sayable - `say` only rewrites a span it can see the end of - so cutting
+there would hand the engine a backslash and a brace.
+
+A connection that dies mid-answer keeps what arrived, says that it stopped, and
+retries nothing: the fallback model is the one retry policy and it covers the
+request, not a socket that died halfway through an answer.
+
+## Stop, without waiting for what you are stopping
+
+The turn that is speaking holds the turn lock, so a "stop" routed through the
+ordinary path arrived *after* the answer it was meant to stop. A bare stop is now
+read **before** the lock and acted on at once.
+
+It sets one flag, which the speech loop and the model stream both read between
+pieces, and calls the engine's own interrupt for the utterance already playing.
+No thread is killed, nothing is signalled, and there is no second cancellation
+system: work that is running is still stopped by the task controls, and a stop
+that names a task ("stop the research task") goes to them on the ordinary path.
+
+The stream stops because its body closes. That needed care - a generator
+suspended at a `yield` inside its own `async with` is never resumed once the
+caller stops iterating, so the socket would have stayed open until the collector
+noticed. Against a real server the generation stops **seven fragments in rather
+than two hundred**.
+
+Stopping silences; it does not discard. What the model managed to write is kept,
+so "stop" then "show me the answer" shows it - including the part that was never
+said aloud. A stop belongs to the answer it stopped and is cleared when the next
+turn begins: without that, saying it once would mute everything after.
+
 ## An equation you can look at
 
 `core/math_render.py` reads the LaTeX a model writes and emits **MathML**, which
@@ -1941,16 +1997,17 @@ To add a new tool:
 
 ## Known Limitations
 
-- Ollama's responses are not streamed. `core/llm_client.py` asks for a whole
-  message and gets one, so an answer is chunked for speech once it is complete
-  rather than while it is being written. The buffer that speech is cut from is
-  exactly what a token stream would feed, so the seam is there - but until the
-  client streams, Leti cannot begin speaking a long answer before the model has
-  finished it.
-- "Stop" reaches the voice immediately through the interface (clicking the core,
-  or any client calling `stop_speaking`), because that path is synchronous. A
-  SPOKEN "stop" goes through the ordinary turn, which waits on the turn lock the
-  speaking turn is holding - so it is acted on once the current answer ends.
+- Streaming feeds the VOICE. A turn with no speak_callback - text-only, because
+  the machine has no espeak - takes the whole-response path, which is simpler and
+  ends in the same answer. Nothing is lost by it; there is just nothing to start
+  early for.
+- A preamble the model writes before calling a tool is not spoken. The loop
+  throws that prose away and answers again afterwards, so saying it would be
+  telling the user something provisional as though it were the answer.
+- Roughly one screenful of generation is already on the wire when a stop lands,
+  so the model does a little work that is thrown away. Measured against a real
+  server: seven fragments of two hundred. Cutting it closer would mean reading
+  the socket less eagerly, which would slow every answer to speed up a stop.
 - Mathematical rendering reads the subset of LaTeX that appears in an answer.
   Environments beyond the matrix ones, alignment, `\left`/`\right` sizing, cases
   and commutative diagrams are not implemented; an expression using them either
