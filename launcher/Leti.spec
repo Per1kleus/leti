@@ -49,6 +49,10 @@ a = Analysis(
         "zipfile",
         "hashlib",
         "core.atomic_write",
+        # Imported lazily by bootstrap.place_shortcuts and by the launcher's
+        # --install-shortcuts branch. Without it the executable builds, runs, and
+        # silently never puts Leti on the Desktop.
+        "launcher.shortcuts",
     ],
     hookspath=[],
     runtime_hooks=[],

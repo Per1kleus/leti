@@ -601,27 +601,19 @@ def fetch_runtime(root: Path, progress: Progress,
                           f"({type(e).__name__})", "unpack Python into the Leti folder")
     archive.unlink(missing_ok=True)
 
+    # Resolved AGAIN, after extraction. Before it, python_in had nothing to find
+    # and returned its fallback - Scripts\python.exe, which is where a venv keeps
+    # its interpreter and not where the embeddable package keeps one. Checking the
+    # stale answer failed every time, on the one path a machine with no Python
+    # takes.
+    interpreter = python_in(target)
     if not interpreter.exists():
         raise SetupFailed("the downloaded Python is not where it was expected",
                           "unpack Python into the Leti folder")
     _open_up_path_file(target)
     progress.done()
 
-    progress.step("Giving it a package installer...")
-    get_pip = target / "get-pip.py"
-    try:
-        download(GET_PIP_URL, get_pip)
-        done = _run([interpreter, str(get_pip), "--no-warn-script-location"], runner,
-                    capture_output=True, text=True, timeout=900)
-    except Exception as e:
-        raise SetupFailed(f"pip could not be installed ({type(e).__name__})",
-                          "add a package installer to Leti's private Python")
-    finally:
-        get_pip.unlink(missing_ok=True)
-    if done.returncode != 0:
-        raise SetupFailed("pip could not be installed",
-                          "add a package installer to Leti's private Python")
-    progress.done()
+    _bootstrap_pip(interpreter, progress, run=runner, fetch=download)
     return interpreter
 
 
@@ -700,18 +692,62 @@ def install_packages(python: Path, root: Path, names: Sequence[str],
 
 
 def ensure_pip(python: Path, progress: Progress,
-               run: Optional[Callable] = None) -> None:
-    """Make sure the interpreter has pip, without assuming how it got there."""
+               run: Optional[Callable] = None,
+               fetch: Optional[Callable] = None) -> None:
+    """Make sure the interpreter has pip, however it came to be here.
+
+    Three ways, in order of how little they cost. It already has pip, which is
+    every venv and every second launch. It has ensurepip, which is every ordinary
+    installation. Or it has neither - which is the embeddable package, and is not
+    a corner case: the .bat launcher unpacks one of those itself when the machine
+    has no Python, and then this is the only thing that can give it pip.
+
+    An earlier version stopped at ensurepip. The embeddable zip ships no Lib\
+    tree, so there is no ensurepip in it, and every install after that failed on
+    exactly the machine this was all written for.
+    """
     runner = run or subprocess.run
     try:
         done = _run([python, "-m", "pip", "--version"], runner,
                     capture_output=True, text=True, timeout=120)
         if done.returncode == 0:
             return
-        _run([python, "-m", "ensurepip", "--upgrade"], runner,
-             capture_output=True, text=True, timeout=600)
     except Exception:
         pass
+    try:
+        done = _run([python, "-m", "ensurepip", "--upgrade"], runner,
+                    capture_output=True, text=True, timeout=600)
+        if getattr(done, "returncode", 1) == 0:
+            return
+    except Exception:
+        pass
+    _bootstrap_pip(python, progress, run=runner, fetch=fetch)
+
+
+def _bootstrap_pip(python: Path, progress: Progress,
+                   run: Optional[Callable] = None,
+                   fetch: Optional[Callable] = None) -> None:
+    """Fetch get-pip.py and run it. The last resort, and the embeddable one."""
+    runner = run or subprocess.run
+    download = fetch or _download
+    progress.step("Giving it a package installer...")
+    get_pip = Path(python).parent / "get-pip.py"
+    try:
+        download(GET_PIP_URL, get_pip)
+        done = _run([python, str(get_pip), "--no-warn-script-location"], runner,
+                    capture_output=True, text=True, timeout=900)
+    except Exception as e:
+        raise SetupFailed(f"pip could not be installed ({type(e).__name__})",
+                          "add a package installer to Leti's private Python")
+    finally:
+        try:
+            get_pip.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if getattr(done, "returncode", 1) != 0:
+        raise SetupFailed("pip could not be installed",
+                          "add a package installer to Leti's private Python")
+    progress.done()
 
 
 def _write_log(root: Path, name: str, done: Any) -> Path:
@@ -810,7 +846,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
             python = fetch_runtime(root, progress, fetch, runner)
     else:
         progress.done()
-    ensure_pip(python, progress, runner)
+    ensure_pip(python, progress, runner, fetch)
     write_state(root, python=str(python))
 
     # The quick check. Everything below shells out - about a second and a half of
@@ -823,6 +859,12 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     if (state.get("requirements") == fingerprint and state.get("complete")
             and all_present(witnesses)):
         progress.step("Everything is already installed.")
+        # Not on every launch: reading a .lnk costs two PowerShell processes, and
+        # a normal launch should be the half-second it is. Done once, for a folder
+        # set up before shortcuts existed, and then recorded - after which the
+        # explicit repair (--install-shortcuts) is what puts a deleted one back.
+        if not state.get("shortcuts"):
+            place_shortcuts(root, progress)
         progress.say("Starting Leti...")
         return python
 
@@ -853,8 +895,38 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     # than trusting a record of a setup that did not complete.
     write_state(root, requirements=fingerprint, complete=True, partial=None,
                 witnesses=witnesses_for(wanted, found))
+    place_shortcuts(root, progress)
     progress.say("Starting Leti...")
     return python
+
+
+def place_shortcuts(root: Path, progress: Progress,
+                    install: Optional[Callable] = None) -> List[Dict[str, Any]]:
+    """Put Leti on the Desktop and in the Start Menu, if this is Windows.
+
+    Never fatal, and never the reason a launch does not happen: a missing shortcut
+    is an inconvenience and a refusal to start is not. What was done is said only
+    when something actually changed, because "your shortcut is still fine" is not
+    news.
+    """
+    if not is_windows():
+        return []
+    try:
+        from launcher import shortcuts
+
+        placed = (install or shortcuts.install)(root)
+        for line in shortcuts.describe(placed):
+            progress.step(line)
+        if any(row.get("action") in ("created", "repaired", "kept") for row in placed):
+            write_state(root, shortcuts=True)
+        return placed
+    except Exception as e:
+        # Said rather than swallowed - this module has no logger on purpose (it
+        # runs before anything is configured) and Progress is where it speaks. A
+        # shortcut is a convenience, so this is a note and not a failure.
+        progress.step(f"Could not add Leti to your Desktop ({type(e).__name__}) - "
+                      "everything else is set up.")
+        return []
 
 
 def _remember_partial(root: Path, fingerprint: str, still_missing: Sequence[str]) -> None:

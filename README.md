@@ -233,11 +233,33 @@ It also makes sure Ollama is installed and running and has the models
 business: `core/model_setup.py` asks that on first launch, inside Leti, where it
 can see the hardware.
 
-For a desktop and Start Menu shortcut with Leti's icon:
+### Finding Leti afterwards
+
+Both launchers put Leti where you look for things, the first time they set the
+folder up:
+
+    Desktop\Leti.lnk
+    Start Menu\Programs\Leti\Leti.lnk
+
+One name, one icon - `gui/icons/leti.ico`, the same mark the executable is built
+with. Both point at the same thing: `Leti.exe` when the folder has one, the `.bat`
+launcher when it does not. Build the executable later and the existing shortcut is
+repaired to use it rather than leaving you with two.
+
+What is already correct is left alone, so this is not work a launch repeats:
+running setup five times writes two shortcuts, not ten, and never a
+`Leti (1).lnk`. A shortcut that has been deleted or retargeted is put back by
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\install_windows_launcher.ps1
 ```
+
+which decides nothing itself - it finds an interpreter and asks
+`launcher/shortcuts.py`, so that one answer to "where does Leti's shortcut go"
+serves the installer, the `.bat` and `Leti.exe` alike.
+
+Per-user throughout: your own Desktop and your own Start Menu, no administrator
+prompt, no registry, nothing in Program Files.
 
 ### What it puts where, and what it never touches
 

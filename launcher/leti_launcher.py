@@ -69,12 +69,19 @@ def hide_console() -> None:
         pass
 
 
-def wait_for_the_user() -> None:
+def wait_for_the_user(hold: bool = True) -> None:
     """Hold the window open so a message can be read.
 
     Only ever called when something went wrong. A launcher that closes on failure
     leaves somebody looking at a folder with no idea what happened.
+
+    `hold` is False when this process's output is being read by something else -
+    --print-python, which the .bat launcher captures. There the prompt would go
+    into the capture instead of onto the screen, and the wait would be a hang
+    nobody could see the reason for. The .bat does its own pausing.
     """
+    if not hold:
+        return
     try:
         input("Press Enter to close this window. ")
     except Exception:
@@ -102,15 +109,49 @@ def main(argv: list[str] | None = None) -> int:
     setup_only = "--setup-only" in arguments
     if setup_only:
         arguments.remove("--setup-only")
+    # --print-python prepares the machine and then prints the interpreter Leti
+    # should be started with, and nothing else. The .bat launcher reads it rather
+    # than guessing: it cannot tell a venv built from a good system Python from a
+    # runtime fetched because the system one was too old, and guessing wrong means
+    # running Leti on the interpreter that was rejected.
+    print_python = "--print-python" in arguments
+    if print_python:
+        arguments.remove("--print-python")
+        setup_only = True
+    # --install-shortcuts is the repair operation: it puts back a Desktop or Start
+    # Menu shortcut that was deleted or retargeted, without touching anything
+    # else. Separate from setup because setup places them once and then leaves
+    # them alone - reading a .lnk on every launch is two PowerShell processes for
+    # a question whose answer almost never changes.
+    if "--install-shortcuts" in arguments:
+        arguments.remove("--install-shortcuts")
+        from launcher import shortcuts
 
-    progress = bootstrap.Progress()
+        progress = bootstrap.Progress()
+        placed = shortcuts.install(root)
+        if not placed:
+            # Two different nothings, and telling somebody the wrong one sends
+            # them to fix the wrong thing.
+            if shortcuts.best_target(root) is None:
+                progress.say("There is nothing to make a shortcut to yet - build "
+                             "Leti.exe, or keep this next to the launcher.")
+            else:
+                progress.say("Found Leti, but no Desktop or Start Menu to put it "
+                             "in. This only works on Windows.")
+            return 1
+        for line in shortcuts.describe(placed) or ["Your Leti shortcuts are correct."]:
+            progress.step(line)
+        bootstrap.write_state(root, shortcuts=True)
+        return 0 if all(row["action"] != "failed" for row in placed) else 1
+
+    progress = bootstrap.Progress(out=sys.stderr if print_python else sys.stdout)
     if not (root / "main.py").exists():
         progress.problem(
             "Leti's own files are not next to this launcher",
             "find main.py in this folder, or the one above it",
             retry_is_safe=False)
         progress.say("  Keep Leti.exe inside the Leti folder it came with.")
-        wait_for_the_user()
+        wait_for_the_user(hold=not print_python)
         return 2
 
     try:
@@ -118,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     except bootstrap.SetupFailed as failure:
         progress.problem(failure.what, failure.trying, failure.retry_is_safe,
                          logs=root / "logs")
-        wait_for_the_user()
+        wait_for_the_user(hold=not print_python)
         return 1
     except KeyboardInterrupt:
         # Closed halfway through on purpose. Nothing is broken: every step records
@@ -131,9 +172,14 @@ def main(argv: list[str] | None = None) -> int:
         progress.problem(f"something unexpected went wrong ({type(e).__name__})",
                          "prepare Leti's Python environment", retry_is_safe=True,
                          logs=root / "logs")
-        wait_for_the_user()
+        wait_for_the_user(hold=not print_python)
         return 1
 
+    if print_python:
+        # The one line of output this mode produces, on its own, so `for /f` in a
+        # batch file reads a path and not a progress report.
+        print(python)
+        return 0
     if setup_only:
         progress.say("Setup finished. Leti was not started (--setup-only).")
         return 0

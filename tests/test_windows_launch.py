@@ -898,7 +898,8 @@ def test_the_launcher_does_not_reinstall_on_every_run():
     # The package side is bootstrap.py's quick check; the model side is a marker
     # gated on settings.yaml, which is the only thing that changes the answer.
     assert "MODEL_MARKER" in bat
-    assert "--setup-only" in bat, "the setup step is not separated from the launch"
+    assert "leti_launcher.py" in bat, \
+        "the launcher installs packages itself instead of going through the shared setup"
 
 
 def test_the_launcher_sets_the_project_on_the_path():
@@ -1002,25 +1003,49 @@ def test_every_label_that_is_jumped_to_exists():
             assert target.lower() in defined, f"jumps to :{target}, which is not defined"
 
 
+def test_the_interpreter_is_asked_for_rather_than_guessed():
+    """This file cannot tell a venv built from a good system Python from a runtime
+    fetched because the system one was too old. Guessing wrong runs Leti on the
+    interpreter that was rejected, so it asks the shared setup instead."""
+    text = _BAT_TEXT
+    assert "--print-python" in text, "the interpreter is still being guessed"
+    assert 'set "LETI_PYTHON=%SETUP_PYTHON%"' not in text, \
+        "the old guess is still there"
+
+
 def test_the_interpreter_is_settled_before_it_is_used_to_read_the_config():
     """The model list is read out of settings.yaml with LETI_PYTHON, so it has to
     be set before :ensure_ollama is called rather than after."""
     text = _BAT_TEXT
-    settles = text.index('set "LETI_PYTHON=%SETUP_PYTHON%"')
+    settles = text.index("--print-python")
     calls_ollama = text.index("call :ensure_ollama")
     assert settles < calls_ollama, \
         "ensure_ollama would read settings.yaml with an empty interpreter"
 
 
-def test_the_setup_runs_before_leti_does():
+def test_an_interpreter_that_did_not_come_back_never_reaches_a_launch():
     text = _BAT_TEXT
-    assert text.index("leti_launcher.py --setup-only") < text.index('" main.py --mode gui')
+    checked = text.index("if not defined LETI_PYTHON")
+    launched = text.index('" main.py --mode gui')
+    assert checked < launched
+    between = text[checked:launched]
+    assert "exit /b" in between, "an empty interpreter would be run anyway"
+
+
+def test_the_prepared_interpreter_is_checked_to_exist():
+    assert 'if not exist "%LETI_PYTHON%"' in _BAT_TEXT
+
+
+def test_the_setup_runs_before_leti_does():
+    """--print-python prepares the machine as well as answering, so that one call
+    IS the setup step - there is no second one to forget."""
+    text = _BAT_TEXT
+    assert text.index("--print-python") < text.index('" main.py --mode gui')
 
 
 def test_a_failed_setup_does_not_go_on_to_start_leti():
     text = _BAT_TEXT
-    between = text[text.index("leti_launcher.py --setup-only"):
-                   text.index('" main.py --mode gui')]
+    between = text[text.index("--print-python"):text.index('" main.py --mode gui')]
     assert "exit /b" in between, "a failed setup would fall through into the launch"
 
 
@@ -1036,3 +1061,701 @@ def test_the_fetched_python_is_checked_for_before_it_is_used():
     checked = block.index('if not exist "%RUNTIME_PYTHON%"')
     used = block.index('set "SETUP_PYTHON=%RUNTIME_PYTHON%"')
     assert checked < used, "an unpacked-but-absent Python would be run"
+
+
+# ==========================================================================================
+# Shortcuts
+#
+# Where Leti goes on the Desktop and in the Start Menu, whether it is already
+# there, and what to do when it is there and wrong. All of that is decided in
+# plain Python precisely so it can be tested here - writing the .lnk itself needs
+# a COM object and therefore Windows, and is the only part these cannot cover.
+# ==========================================================================================
+
+from launcher import shortcuts as sc  # noqa: E402
+
+
+def _code_text(path):
+    """A module's code with its prose removed, as text.
+
+    Comments and docstrings go; string literals stay, because a forbidden thing
+    can appear in one. Unparsed from the tree rather than filtered by hand, so a
+    docstring explaining why RunAs is not used does not read as using it.
+    """
+    import ast
+
+    tree = ast.parse(Path(path).read_text())
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+            continue
+        body = getattr(node, "body", [])
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(ast.fix_missing_locations(tree))
+
+
+def _windows_profile(tmp_path):
+    """A Desktop and a Start Menu, and the environment that finds them."""
+    profile = tmp_path / "Users" / "sam"
+    (profile / "Desktop").mkdir(parents=True)
+    roaming = profile / "AppData" / "Roaming"
+    (roaming / "Microsoft" / "Windows" / "Start Menu" / "Programs").mkdir(parents=True)
+    return {"USERPROFILE": str(profile), "APPDATA": str(roaming)}
+
+
+def _installed(tmp_path, exe=False, bat=True, icon=True):
+    """A Leti folder, as either launch method leaves it."""
+    root = tmp_path / "Leti"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "main.py").write_text("", encoding="utf-8")
+    if exe:
+        (root / "Leti.exe").write_text("", encoding="utf-8")
+    if bat:
+        (root / "Launch Leti (Windows).bat").write_text("", encoding="utf-8")
+    if icon:
+        (root / "gui" / "icons").mkdir(parents=True, exist_ok=True)
+        (root / "gui" / "icons" / "leti.ico").write_bytes(b"\x00\x00\x01\x00")
+    return root
+
+
+class FakeWindows:
+    """Stands in for the two things only Windows can do.
+
+    Holds .lnk contents in a dict, so reading back what was written is the same
+    check a real run makes - and counts writes, which is how "left alone" is told
+    from "rewritten with the same values".
+    """
+
+    def __init__(self, existing=None):
+        self.links = dict(existing or {})
+        self.writes = []
+
+    def read(self, path):
+        return self.links.get(str(path))
+
+    def write(self, shortcut):
+        self.writes.append(str(shortcut.path))
+        self.links[str(shortcut.path)] = {
+            "target": str(shortcut.target),
+            "working_directory": str(shortcut.working_directory),
+            "icon": f"{shortcut.icon},0" if shortcut.icon else "",
+            "arguments": "",
+        }
+
+
+# --- Where they go --------------------------------------------------------------------------
+
+def test_the_desktop_gets_one_and_the_start_menu_gets_one(tmp_path):
+    root = _installed(tmp_path)
+    paths = [s.path for s in sc.wanted(root, _windows_profile(tmp_path))]
+    assert len(paths) == 2
+    assert any(p.parent.name == "Desktop" and p.name == "Leti.lnk" for p in paths)
+    assert any(p.parent.name == "Leti" and p.parts[-3] == "Programs" for p in paths)
+
+
+def test_the_start_menu_entry_is_a_folder_called_leti(tmp_path):
+    """Start Menu -> Leti -> Leti, which is the shape Windows applications use
+    and gives an uninstall something to remove."""
+    root = _installed(tmp_path)
+    entry = [s for s in sc.wanted(root, _windows_profile(tmp_path))
+             if "Start Menu" in str(s.path)][0]
+    assert entry.path.parent.name == sc.START_MENU_FOLDER == "Leti"
+    assert entry.path.name == "Leti.lnk"
+
+
+def test_the_user_sees_leti_and_not_a_file_name(tmp_path):
+    root = _installed(tmp_path)
+    for shortcut in sc.wanted(root, _windows_profile(tmp_path)):
+        assert shortcut.path.stem == "Leti"
+        assert ".bat" not in shortcut.path.name
+        assert "Launch" not in shortcut.path.name
+
+
+def test_nothing_is_placed_outside_the_users_own_profile(tmp_path):
+    """Per-user throughout: no administrator prompt and nothing another account
+    can see."""
+    profile = _windows_profile(tmp_path)
+    for shortcut in sc.wanted(_installed(tmp_path), profile):
+        assert str(shortcut.path).startswith(profile["USERPROFILE"])
+
+
+def test_the_all_users_start_menu_is_never_used():
+    code = _code_text(ROOT / "launcher" / "shortcuts.py")
+    for forbidden in ("ProgramData", "ALLUSERSPROFILE", "CommonProgramFiles",
+                      "Program Files", "runas", "RunAs", "elevate"):
+        assert forbidden not in code, f"launcher/shortcuts.py reaches for {forbidden}"
+
+
+def test_a_machine_with_no_desktop_folder_is_not_an_error(tmp_path):
+    root = _installed(tmp_path)
+    assert sc.wanted(root, {"USERPROFILE": str(tmp_path / "nowhere")}) == []
+
+
+def test_the_working_directory_is_the_leti_folder(tmp_path):
+    root = _installed(tmp_path)
+    for shortcut in sc.wanted(root, _windows_profile(tmp_path)):
+        assert shortcut.working_directory == root.resolve()
+
+
+def test_no_arguments_are_passed_so_each_launcher_uses_its_own_default(tmp_path):
+    """The .exe and the .bat each already start the GUI. A shortcut that added
+    --mode would be a third opinion about how Leti opens."""
+    source = (ROOT / "launcher" / "shortcuts.py").read_text()
+    assert "--mode" not in source
+
+
+# --- Which target -----------------------------------------------------------------------------
+
+def test_the_bat_is_the_target_when_there_is_no_executable(tmp_path):
+    root = _installed(tmp_path, exe=False, bat=True)
+    assert sc.best_target(root).name == "Launch Leti (Windows).bat"
+
+
+def test_the_executable_is_preferred_once_it_has_been_built(tmp_path):
+    root = _installed(tmp_path, exe=True, bat=True)
+    assert sc.best_target(root).name == "Leti.exe"
+
+
+def test_nothing_to_point_at_is_nothing_to_write(tmp_path):
+    root = _installed(tmp_path, exe=False, bat=False)
+    assert sc.best_target(root) is None
+    assert sc.wanted(root, _windows_profile(tmp_path)) == []
+
+
+def test_building_the_executable_later_repairs_the_shortcut(tmp_path):
+    """One Leti, one icon. A folder that gains a Leti.exe should not end up with
+    two shortcuts, one of them pointing at the old launcher."""
+    root = _installed(tmp_path, exe=False, bat=True)
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    sc.install(root, windows.read, windows.write, profile)
+    assert len(windows.links) == 2
+
+    (root / "Leti.exe").write_text("", encoding="utf-8")
+    results = sc.install(root, windows.read, windows.write, profile)
+
+    assert [r["action"] for r in results] == [sc.REPAIRED, sc.REPAIRED]
+    assert len(windows.links) == 2, "a second shortcut appeared"
+    for link in windows.links.values():
+        assert link["target"].endswith("Leti.exe")
+
+
+# --- The four states (§11 A-E) ------------------------------------------------------------------
+
+def test_scenario_a_no_shortcut_exists_so_one_is_created(tmp_path):
+    root = _installed(tmp_path)
+    windows = FakeWindows()
+    results = sc.install(root, windows.read, windows.write, _windows_profile(tmp_path))
+    assert [r["action"] for r in results] == [sc.CREATED, sc.CREATED]
+    assert len(windows.writes) == 2
+
+
+def test_scenario_b_a_valid_shortcut_is_left_alone(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    sc.install(root, windows.read, windows.write, profile)
+    windows.writes.clear()
+
+    results = sc.install(root, windows.read, windows.write, profile)
+
+    assert [r["action"] for r in results] == [sc.KEPT, sc.KEPT]
+    assert windows.writes == [], "a correct shortcut was rewritten anyway"
+
+
+def test_scenario_c_a_shortcut_pointing_somewhere_else_is_repaired(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+    desktop = Path(profile["USERPROFILE"]) / "Desktop" / "Leti.lnk"
+    windows = FakeWindows({str(desktop): {
+        "target": "C:\\Users\\sam\\OldLeti\\Leti.exe",
+        "working_directory": "C:\\Users\\sam\\OldLeti",
+        "icon": "", "arguments": ""}})
+
+    results = sc.install(root, windows.read, windows.write, profile)
+
+    desktop_result = [r for r in results if r["path"] == str(desktop)][0]
+    assert desktop_result["action"] == sc.REPAIRED
+    assert windows.links[str(desktop)]["target"] == str(sc.best_target(root))
+    assert windows.links[str(desktop)]["working_directory"] == str(root.resolve())
+
+
+def test_scenario_d_a_deleted_start_menu_entry_comes_back(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    sc.install(root, windows.read, windows.write, profile)
+    start_menu = [p for p in windows.links if "Start Menu" in p][0]
+    del windows.links[start_menu]
+    windows.writes.clear()
+
+    results = sc.install(root, windows.read, windows.write, profile)
+
+    actions = {r["path"]: r["action"] for r in results}
+    assert actions[start_menu] == sc.CREATED, "the deleted entry was not recreated"
+    assert windows.writes == [start_menu], "the intact Desktop one was rewritten too"
+
+
+def test_scenario_e_running_setup_five_times_leaves_exactly_two_shortcuts(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    for _ in range(5):
+        sc.install(root, windows.read, windows.write, profile)
+
+    assert len(windows.links) == 2, f"ended up with {len(windows.links)} shortcuts"
+    assert len(windows.writes) == 2, f"wrote {len(windows.writes)} times for 5 runs"
+    assert not any("(1)" in p or "(2)" in p for p in windows.links), \
+        "Windows made a numbered duplicate"
+
+
+def test_an_unreadable_shortcut_is_replaced_rather_than_puzzled_over(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+
+    def read_that_throws(path):
+        raise OSError("this .lnk is not a .lnk")
+
+    windows = FakeWindows()
+    results = sc.install(root, read_that_throws, windows.write, profile)
+    assert [r["action"] for r in results] == [sc.CREATED, sc.CREATED]
+
+
+def test_a_write_that_fails_is_reported_and_does_not_stop_the_other_one(tmp_path):
+    root = _installed(tmp_path)
+    profile = _windows_profile(tmp_path)
+    attempts = []
+
+    def write_that_fails_once(shortcut):
+        attempts.append(shortcut.path)
+        if len(attempts) == 1:
+            raise OSError("access denied")
+
+    results = sc.install(root, lambda p: None, write_that_fails_once, profile)
+    assert [r["action"] for r in results] == [sc.FAILED, sc.CREATED]
+    assert len(attempts) == 2, "the second shortcut was never attempted"
+
+
+# --- Scenario F, and the icon ---------------------------------------------------------------------
+
+def test_scenario_f_the_shortcut_uses_the_committed_leti_icon(tmp_path):
+    root = _installed(tmp_path, icon=True)
+    for shortcut in sc.wanted(root, _windows_profile(tmp_path)):
+        assert shortcut.icon == root / "gui" / "icons" / "leti.ico"
+
+
+def test_the_icon_is_the_one_that_already_existed():
+    """Reused, not redesigned: seven sizes from 16 to 256, built from gui/icon.svg
+    by scripts/build_icons.py and committed."""
+    icon = ROOT / "gui" / "icons" / "leti.ico"
+    assert icon.exists(), "the committed icon is gone"
+    assert sc.ICON == Path("gui") / "icons" / "leti.ico"
+    from PIL import Image
+
+    with Image.open(icon) as image:
+        sizes = sorted(image.info.get("sizes", []))
+    assert (16, 16) in sizes and (256, 256) in sizes, \
+        f"the icon lost the sizes Windows draws shortcuts at: {sizes}"
+
+
+def test_no_second_icon_was_introduced():
+    icons = {p.name for p in (ROOT / "gui" / "icons").iterdir()}
+    assert icons & {"leti.ico"}, "the icon was renamed"
+    assert not any(name.endswith(".ico") and name != "leti.ico" for name in icons), \
+        f"a competing .ico appeared: {sorted(icons)}"
+
+
+def test_a_missing_icon_is_not_a_reason_to_refuse_a_shortcut(tmp_path):
+    """Windows then draws the target's own icon, which is still Leti's for the
+    executable. A shortcut is better than no shortcut."""
+    root = _installed(tmp_path, icon=False)
+    shortcuts_wanted = sc.wanted(root, _windows_profile(tmp_path))
+    assert len(shortcuts_wanted) == 2
+    assert all(s.icon is None for s in shortcuts_wanted)
+
+
+def test_a_shortcut_with_no_icon_is_not_endlessly_repaired(tmp_path):
+    """Comparing against an icon that does not exist would say REPAIRED forever."""
+    root = _installed(tmp_path, icon=False)
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    sc.install(root, windows.read, windows.write, profile)
+    results = sc.install(root, windows.read, windows.write, profile)
+    assert [r["action"] for r in results] == [sc.KEPT, sc.KEPT]
+
+
+def test_the_executable_is_built_with_the_same_icon():
+    """§6: the .exe, the Desktop shortcut and the Start Menu entry all show the
+    same mark. Read out of the spec the way PyInstaller reads it."""
+    import os as _os
+
+    namespace = {"SPECPATH": str(ROOT / "launcher"),
+                 "Analysis": _SpecStub, "PYZ": _SpecStub, "EXE": _SpecStub}
+    exec(compile((ROOT / "launcher" / "Leti.spec").read_text(), "Leti.spec", "exec"),
+         namespace)
+    icon = namespace["exe"].kwargs.get("icon")
+    assert icon, "the executable is built with no icon"
+    assert _os.path.abspath(icon) == str(ROOT / "gui" / "icons" / "leti.ico")
+
+
+class _SpecStub:
+    def __init__(self, *args, **kwargs):
+        self.args, self.kwargs = args, kwargs
+        self.pure = self.scripts = self.binaries = self.datas = []
+
+
+def test_the_shortcut_module_is_bundled_into_the_executable():
+    """It is imported inside a function, so the analyser cannot see it. Without
+    this the .exe builds, runs, and silently never places a shortcut."""
+    spec = (ROOT / "launcher" / "Leti.spec").read_text()
+    assert '"launcher.shortcuts"' in spec
+
+
+# --- Window style ------------------------------------------------------------------------------------
+
+def test_the_executables_shortcut_opens_normally(tmp_path):
+    """Its console shows the first run's progress and hides itself once Leti's
+    window is up (leti_launcher.hide_console), so there is nothing to minimise."""
+    root = _installed(tmp_path, exe=True)
+    for shortcut in sc.wanted(root, _windows_profile(tmp_path)):
+        assert shortcut.window_style == sc.NORMAL_WINDOW
+
+
+def test_the_bats_shortcut_is_minimised(tmp_path):
+    """The .bat runs in a console it cannot hand back - it starts Leti and waits -
+    so its window goes to the taskbar rather than sitting over the interface."""
+    root = _installed(tmp_path, exe=False, bat=True)
+    for shortcut in sc.wanted(root, _windows_profile(tmp_path)):
+        assert shortcut.window_style == sc.MINIMISED_WINDOW
+
+
+def test_the_window_style_is_not_what_decides_a_repair(tmp_path):
+    """A user who changed it in the shortcut's properties meant to."""
+    root = _installed(tmp_path, exe=True)
+    shortcut = sc.wanted(root, _windows_profile(tmp_path))[0]
+    assert sc.decide(shortcut, {"target": str(shortcut.target),
+                                "working_directory": str(shortcut.working_directory),
+                                "icon": f"{shortcut.icon},0"}) == sc.KEPT
+
+
+# --- Quoting, and paths that are awkward ----------------------------------------------------------------
+
+@pytest.mark.parametrize("folder", [
+    "Leti", "My Leti", "O'Brien & Sons", "Leti (2026)", "Leti [beta]",
+    "пример", "Leti;Test", "Leti`x", "Leti$x", "Leti,Test",
+])
+def test_an_awkward_folder_name_survives(tmp_path, folder):
+    """Every one of these breaks something if a path is pasted into a command
+    string. Nothing here builds one - the paths go to PowerShell as arguments."""
+    root = tmp_path / folder
+    root.mkdir()
+    (root / "main.py").write_text("", encoding="utf-8")
+    (root / "Launch Leti (Windows).bat").write_text("", encoding="utf-8")
+    profile = _windows_profile(tmp_path)
+    windows = FakeWindows()
+    results = sc.install(root, windows.read, windows.write, profile)
+    assert [r["action"] for r in results] == [sc.CREATED, sc.CREATED]
+    for link in windows.links.values():
+        assert link["working_directory"] == str(root.resolve())
+
+
+def test_paths_are_never_interpolated_into_a_script_body():
+    """The whole quoting argument, checked on the syntax tree.
+
+    Each PowerShell program has to be a plain string CONSTANT - not an f-string,
+    not a concatenation, not a .format - so there is no way for a path to become
+    part of it. The paths go to PowerShell as arguments after `--`, where its
+    param() block binds them without parsing them as code.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "launcher" / "shortcuts.py").read_text())
+    found = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            name = getattr(node.targets[0], "id", "")
+            if name in ("_READ_SCRIPT", "_WRITE_SCRIPT"):
+                found[name] = node.value
+    assert set(found) == {"_READ_SCRIPT", "_WRITE_SCRIPT"}
+    for name, value in found.items():
+        assert isinstance(value, ast.Constant) and isinstance(value.value, str), \
+            f"{name} is built rather than written - a path could get into it"
+        assert "param(" in value.value, f"{name} does not take its values as parameters"
+    source = (ROOT / "launcher" / "shortcuts.py").read_text()
+    assert '"--", *arguments' in source, "the arguments are not separated from the script"
+
+
+def test_powershell_is_invoked_without_a_profile_and_without_elevation():
+    code = _code_text(ROOT / "launcher" / "shortcuts.py")
+    assert "-NoProfile" in code and "-NonInteractive" in code
+    for forbidden in ("-Verb", "RunAs", "Start-Process", "EncodedCommand"):
+        assert forbidden not in code, f"shortcuts.py uses {forbidden}"
+
+
+def test_an_icon_location_with_a_comma_in_its_path_is_still_read():
+    """IconLocation is "path,index", and a path can contain a comma."""
+    assert sc._icon_file("C:\\a,b\\leti.ico,0") == "C:\\a,b\\leti.ico"
+    assert sc._icon_file("C:\\a\\leti.ico") == "C:\\a\\leti.ico"
+    assert sc._icon_file("") is None
+
+
+def test_paths_are_compared_the_way_windows_compares_them(tmp_path):
+    """Case-insensitively, and ignoring a trailing slash - otherwise a shortcut
+    Windows itself wrote would read as wrong and be repaired on every run."""
+    root = _installed(tmp_path)
+    shortcut = sc.wanted(root, _windows_profile(tmp_path))[0]
+    assert sc.decide(shortcut, {
+        "target": str(shortcut.target).upper(),
+        "working_directory": str(shortcut.working_directory) + "\\",
+        "icon": f"{str(shortcut.icon).upper()},0"}) == sc.KEPT
+
+
+# --- When it happens ------------------------------------------------------------------------------------
+
+def test_shortcuts_are_placed_when_setup_does_work():
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    prepared = source[source.index("def prepare("):source.index("def place_shortcuts(")]
+    assert prepared.count("place_shortcuts(root, progress)") == 2, \
+        "shortcuts are not placed after setup, or not caught up on an old folder"
+
+
+def test_a_normal_launch_does_not_touch_the_shortcuts():
+    """Reading a .lnk is two PowerShell processes. A launch should be the half
+    second it is, so the quick path only checks once - and then records it."""
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    quick = source[source.index("witnesses = state.get"):source.index("progress.step(\"Checking the packages")]
+    assert 'if not state.get("shortcuts")' in quick, \
+        "shortcuts would be re-read on every single launch"
+
+
+def test_placing_shortcuts_is_a_no_op_off_windows(tmp_path):
+    from launcher import bootstrap
+
+    assert bootstrap.place_shortcuts(tmp_path,
+                                     bootstrap.Progress(out=open(os.devnull, "w"))) == []
+
+
+def test_a_shortcut_failure_never_stops_leti_starting(tmp_path, monkeypatch):
+    from launcher import bootstrap
+
+    monkeypatch.setattr(bootstrap, "is_windows", lambda: True)
+
+    def explode(root):
+        raise OSError("the Desktop is read-only")
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    assert bootstrap.place_shortcuts(tmp_path, progress, install=explode) == []
+    assert any("Could not add Leti" in line for line in progress.lines), \
+        "the failure was swallowed without a word"
+
+
+def test_the_repair_operation_exists_and_is_separate():
+    source = (ROOT / "launcher" / "leti_launcher.py").read_text()
+    assert "--install-shortcuts" in source
+    assert "shortcuts.install(root)" in source
+
+
+def test_the_installer_script_delegates_rather_than_deciding_again():
+    """One answer to "where does Leti's shortcut go". The .ps1 finds an
+    interpreter; launcher/shortcuts.py decides."""
+    ps1 = (ROOT / "scripts" / "install_windows_launcher.ps1").read_text()
+    assert "--install-shortcuts" in ps1
+    for forbidden in ("CreateShortcut", "WScript.Shell", "IconLocation", "TargetPath"):
+        assert forbidden not in ps1, \
+            f"the installer still writes shortcuts itself ({forbidden})"
+
+
+def test_the_installer_script_quotes_nothing_into_a_command():
+    ps1 = (ROOT / "scripts" / "install_windows_launcher.ps1").read_text()
+    assert "-LiteralPath" in ps1, "a folder with a bracket in its name would be a pattern"
+    assert "& $Python (Join-Path" in ps1, "the interpreter is called through a string"
+
+
+def test_the_installer_script_needs_no_administrator():
+    ps1 = (ROOT / "scripts" / "install_windows_launcher.ps1").read_text()
+    for forbidden in ("RunAs", "-Verb", "setx", "New-ItemProperty", "HKLM", "HKCU"):
+        assert forbidden not in ps1, f"the installer uses {forbidden}"
+
+
+def test_the_shortcut_module_starts_nothing_and_stores_nothing():
+    import ast
+
+    tree = ast.parse((ROOT / "launcher" / "shortcuts.py").read_text())
+    names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for forbidden in ("Thread", "Timer", "Popen", "sleep", "urlopen", "Request"):
+        assert forbidden not in names, f"launcher/shortcuts.py uses {forbidden}"
+
+
+def test_the_shortcut_module_uses_only_the_standard_library():
+    import ast
+
+    tree = ast.parse((ROOT / "launcher" / "shortcuts.py").read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported - set(sys.stdlib_module_names) - {"__future__"} == set()
+
+
+# ==========================================================================================
+# The audit's findings, each pinned so it cannot come back
+# ==========================================================================================
+
+def test_the_interpreter_is_found_where_the_embeddable_package_puts_it(tmp_path, monkeypatch):
+    """The bug this replaces made the no-Python path fail every single time.
+
+    python_in is asked BEFORE extraction, when there is nothing to find, and it
+    falls back to Scripts\\python.exe - where a venv keeps its interpreter, not
+    where the embeddable zip keeps one. Checking that stale answer afterwards was
+    always False, and the machine with no Python is the one this was written for.
+    """
+    monkeypatch.setattr(bootstrap, "is_windows", lambda: True)
+    project = _project(tmp_path)
+
+    def fetch(url, destination):
+        if str(destination).endswith(".zip"):
+            with zipfile.ZipFile(destination, "w") as bundle:
+                # Where python.org actually puts it: the top level.
+                bundle.writestr("python.exe", "binary")
+                bundle.writestr("python311._pth", "python311.zip\n.\n\n#import site\n")
+        else:
+            Path(destination).write_text("# get-pip", encoding="utf-8")
+
+    interpreter = bootstrap.fetch_runtime(
+        project, bootstrap.Progress(out=open(os.devnull, "w")),
+        fetch=fetch, run=FakeRun())
+
+    assert interpreter.name == "python.exe"
+    assert interpreter.parent.name == "leti_runtime", \
+        f"looked for the interpreter in {interpreter.parent.name}"
+    assert interpreter.exists()
+
+
+def test_pip_is_bootstrapped_when_the_interpreter_has_no_ensurepip(tmp_path):
+    """The other half of the same path, and the other way it failed.
+
+    The embeddable zip ships no Lib\\ tree, so there is no ensurepip in it. The
+    .bat launcher unpacks one of those itself when the machine has no Python, so
+    fetch_runtime never runs and its get-pip step never happens - and every
+    install after that failed. ensure_pip has to be able to do it too.
+    """
+    fetched = []
+
+    def fetch(url, destination):
+        fetched.append(url)
+        Path(destination).write_text("# get-pip", encoding="utf-8")
+
+    runner = FakeRun({"-m pip --version": (1, "", "No module named pip"),
+                      "-m ensurepip": (1, "", "No module named ensurepip")})
+    interpreter = tmp_path / "python.exe"
+    interpreter.write_text("", encoding="utf-8")
+
+    bootstrap.ensure_pip(interpreter, bootstrap.Progress(out=open(os.devnull, "w")),
+                         run=runner, fetch=fetch)
+
+    assert any("get-pip" in url for url in fetched), \
+        "an interpreter with neither pip nor ensurepip was left with no pip"
+    assert runner.ran("get-pip.py"), "get-pip was downloaded and never run"
+
+
+def test_an_interpreter_that_already_has_pip_is_left_alone(tmp_path):
+    fetched = []
+    runner = FakeRun({"-m pip --version": (0, "pip 24.0", "")})
+    bootstrap.ensure_pip(tmp_path / "python", bootstrap.Progress(out=open(os.devnull, "w")),
+                         run=runner, fetch=lambda u, d: fetched.append(u))
+    assert fetched == [], "pip was fetched for an interpreter that had it"
+    assert not runner.ran("ensurepip")
+
+
+def test_ensurepip_is_tried_before_anything_is_downloaded(tmp_path):
+    fetched = []
+    runner = FakeRun({"-m pip --version": (1, "", ""), "-m ensurepip": (0, "", "")})
+    bootstrap.ensure_pip(tmp_path / "python", bootstrap.Progress(out=open(os.devnull, "w")),
+                         run=runner, fetch=lambda u, d: fetched.append(u))
+    assert fetched == [], "the network was used when ensurepip would have done"
+
+
+def test_pip_that_cannot_be_installed_at_all_says_so(tmp_path):
+    runner = FakeRun({"-m pip --version": (1, "", ""), "-m ensurepip": (1, "", ""),
+                      "get-pip.py": (1, "", "it went wrong")})
+    with pytest.raises(bootstrap.SetupFailed) as raised:
+        bootstrap.ensure_pip(tmp_path / "python",
+                             bootstrap.Progress(out=open(os.devnull, "w")),
+                             run=runner, fetch=lambda u, d: Path(d).write_text(""))
+    assert "pip" in raised.value.what
+
+
+def test_a_captured_run_never_waits_for_a_keypress():
+    """--print-python has its output read by the .bat. A prompt there goes into
+    the capture rather than onto the screen, and the wait is a hang with no
+    visible reason - so the wait is skipped and the .bat pauses instead.
+    """
+    from launcher import leti_launcher
+
+    source = inspect_source(leti_launcher.main)
+    assert "wait_for_the_user(hold=not print_python)" in source, \
+        "a failure in --print-python mode could block on input forever"
+    assert source.count("wait_for_the_user(") == 3, \
+        "a wait was added that does not know whether it is being captured"
+
+
+def inspect_source(function):
+    import inspect
+
+    return inspect.getsource(function)
+
+
+def test_the_batch_launcher_pauses_on_a_failed_setup_itself():
+    """Because the Python side deliberately does not, when captured."""
+    text = _BAT_TEXT
+    block = text[text.index("if not defined LETI_PYTHON"):text.index('" main.py --mode gui')]
+    assert "pause" in block
+
+
+def test_progress_goes_to_stderr_when_the_answer_goes_to_stdout():
+    """Otherwise the batch file reads the first line of the progress report as an
+    interpreter path."""
+    from launcher import leti_launcher
+
+    source = inspect_source(leti_launcher.main)
+    assert "out=sys.stderr if print_python else sys.stdout" in source
+
+
+def test_the_answer_is_the_only_thing_on_stdout_in_that_mode():
+    from launcher import leti_launcher
+
+    source = inspect_source(leti_launcher.main)
+    block = source[source.index("if print_python:"):]
+    block = block[:block.index("if setup_only:")]
+    assert block.count("print(") == 1, "something else is printed alongside the path"
+
+
+def test_pythonpath_gets_no_empty_entry(tmp_path):
+    """An empty entry on PYTHONPATH is the current directory - harmless here and
+    confusing everywhere else."""
+    assert 'if defined PYTHONPATH' in _BAT_TEXT
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["pythonpath"] = (kwargs.get("env") or {}).get("PYTHONPATH", "")
+        return _Done(0)
+
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "environ", environment)
+        bootstrap.start_leti(Path("p"), tmp_path, None, run)
+    assert not seen["pythonpath"].endswith(os.pathsep)
+    assert seen["pythonpath"] == str(tmp_path)
+
+
+def test_the_launcher_looks_for_every_spelling_of_python():
+    """`where py.exe` misses a py launcher registered without the extension."""
+    for spelling in ("py.exe", "py ", "python.exe", "python3"):
+        assert spelling.strip() in _BAT_TEXT

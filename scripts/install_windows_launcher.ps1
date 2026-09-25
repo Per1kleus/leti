@@ -1,52 +1,73 @@
-# Run this ONCE after extracting/cloning Leti on Windows, from this folder:
+# Put Leti on your Desktop and in your Start Menu.
+#
 #   powershell -ExecutionPolicy Bypass -File scripts\install_windows_launcher.ps1
 #
-# A .bat file can't carry an icon - Windows always draws the generic script
-# icon for one, no matter what you do to the file. The icon has to live on a
-# shortcut (.lnk) pointing at it. This creates those shortcuts, on the Desktop
-# and in the Start Menu, with Leti's icon and the project folder baked in as
-# the working directory.
+# You do not normally need this. Both launchers place the shortcuts themselves the
+# first time they set the folder up. Run it when one has been deleted or has
+# stopped working, or after building Leti.exe for a folder that only had the .bat
+# - which repairs the existing shortcut to point at the executable rather than
+# leaving you with two.
+#
+# It decides nothing itself. launcher/shortcuts.py knows which paths, which
+# target, which icon and whether anything needs doing, because that is also what
+# the launchers use, and one answer to "where does Leti's shortcut go" is the
+# point. This file finds an interpreter to ask.
+#
+# Per-user throughout: your own Desktop, your own Start Menu. No administrator
+# prompt, no registry, nothing in Program Files.
 #
 # The Linux equivalent is scripts/install_linux_launcher.sh; macOS is
 # scripts/install_macos_icon.sh.
 
 $ErrorActionPreference = 'Stop'
 
-# This script's own folder's parent is the project root, regardless of where it
-# was invoked from.
+# This script's own folder's parent is the project root, wherever it was invoked
+# from. -LiteralPath throughout, so a folder with a bracket in its name is a
+# folder and not a pattern.
 $ProjectDir = Split-Path -Parent $PSScriptRoot
-$Target     = Join-Path $ProjectDir 'Launch Leti (Windows).bat'
-$IconPath   = Join-Path $ProjectDir 'gui\icons\leti.ico'
 
-if (-not (Test-Path $Target))   { throw "Can't find '$Target' - run this from inside the Leti project folder." }
-if (-not (Test-Path $IconPath)) { throw "Can't find '$IconPath'. Regenerate it with: python scripts\build_icons.py" }
-
-function New-LetiShortcut {
-    param([string]$LinkPath)
-
-    $shell    = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($LinkPath)
-    $shortcut.TargetPath       = $Target
-    $shortcut.WorkingDirectory = $ProjectDir
-    $shortcut.IconLocation     = "$IconPath,0"
-    $shortcut.Description      = "Launch Leti's interface"
-    # 7 = start minimised. The .bat has to run in a console (it sets up the venv
-    # and drives ollama pull), but a normal application does not show one, so the
-    # console is sent straight to the taskbar and Leti's own window is the only
-    # thing on screen. Only the shortcut's window style changes; what it launches
-    # and how is untouched, so this cannot affect whether Leti starts.
-    $shortcut.WindowStyle      = 7
-    $shortcut.Save()
-    Write-Host "Created: $LinkPath"
+if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'main.py'))) {
+    throw "Can't find main.py in '$ProjectDir' - run this from inside the Leti project folder."
 }
 
-$desktop = [Environment]::GetFolderPath('Desktop')
-if ($desktop) { New-LetiShortcut (Join-Path $desktop 'Leti.lnk') }
+# The interpreter one of the launchers already prepared, or any system one. Only
+# needed to run launcher/shortcuts.py, which is standard library only - so an
+# old Python that Leti itself could not use is still fine for this.
+$Candidates = @(
+    (Join-Path $ProjectDir 'leti_env\Scripts\python.exe'),
+    (Join-Path $ProjectDir 'leti_runtime\python.exe')
+)
+$Python = $Candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
-$startMenu = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs'
-if (Test-Path $startMenu) { New-LetiShortcut (Join-Path $startMenu 'Leti.lnk') }
+if (-not $Python) {
+    foreach ($name in @('py.exe', 'python.exe', 'python3.exe')) {
+        $found = Get-Command $name -ErrorAction SilentlyContinue
+        if ($found) { $Python = $found.Source; break }
+    }
+}
 
-Write-Host ''
+if (-not $Python) {
+    Write-Host "No Python here yet, so there is nothing to ask."
+    Write-Host ""
+    Write-Host "Double-click 'Launch Leti (Windows).bat' once - it prepares everything"
+    Write-Host "and places these shortcuts itself. Then you will not need this script."
+    exit 1
+}
+
+# & with an argument list, not an interpolated command string: the project path
+# can contain spaces, an apostrophe or an ampersand, and none of those should
+# become syntax.
+& $Python (Join-Path $ProjectDir 'launcher\leti_launcher.py') '--install-shortcuts'
+$status = $LASTEXITCODE
+
+if ($status -ne 0) {
+    Write-Host ""
+    Write-Host "Some shortcuts could not be written. Everything else about Leti is"
+    Write-Host "unaffected - the launchers in this folder still work."
+    exit $status
+}
+
+Write-Host ""
 Write-Host "Done. Double-click 'Leti' on your Desktop, or search for it in the Start Menu."
-Write-Host 'The first launch sets up leti_env\ and downloads models, so it takes a while;'
-Write-Host 'after that it opens straight into the interface.'
+Write-Host "The first launch prepares Python and the packages, so it takes a while;"
+Write-Host "after that it opens straight into the interface."

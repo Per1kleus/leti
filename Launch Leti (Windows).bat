@@ -54,7 +54,7 @@ if exist "%VENV_PYTHON%"    set "SETUP_PYTHON=%VENV_PYTHON%"
 if not defined SETUP_PYTHON if exist "%RUNTIME_PYTHON%" set "SETUP_PYTHON=%RUNTIME_PYTHON%"
 
 if not defined SETUP_PYTHON (
-    for %%P in (py.exe python.exe python3.exe) do (
+    for %%P in (py.exe py python.exe python python3.exe python3) do (
         if not defined SETUP_PYTHON (
             where %%P >nul 2>nul
             if !errorlevel!==0 set "SETUP_PYTHON=%%P"
@@ -108,22 +108,33 @@ REM --- Everything else is launcher\bootstrap.py ------------------------------
 REM It opens up the fetched runtime's path file, gives it pip, installs whatever
 REM is missing from requirements.txt, and starts main.py. Leti.exe runs the same
 REM module, so there is one description of what a prepared machine looks like.
-"%SETUP_PYTHON%" launcher\leti_launcher.py --setup-only
-set "SETUP_STATUS=!errorlevel!"
-if not "!SETUP_STATUS!"=="0" (
+REM --print-python prepares the machine and prints the interpreter Leti should
+REM run on. Asked for rather than worked out here: this file cannot tell a venv
+REM built from a good system Python from a runtime fetched because the system one
+REM was too old, and guessing wrong runs Leti on the interpreter that was
+REM rejected. Progress goes to stderr in this mode, so it is still on screen.
+set "LETI_PYTHON="
+for /f "usebackq delims=" %%P in (`"%SETUP_PYTHON%" launcher\leti_launcher.py --print-python`) do set "LETI_PYTHON=%%P"
+
+if not defined LETI_PYTHON (
     echo.
     echo Setup did not finish. Nothing is broken - running this launcher again
-    echo carries on from the last step that completed.
+    echo carries on from the last step that completed. If it keeps stopping here,
+    echo look in logs\ in this folder.
     echo.
     pause
-    exit /b !SETUP_STATUS!
+    exit /b 1
 )
-
-REM The interpreter bootstrap.py settled on, which may be a venv it just built
-REM rather than the one that ran the setup. Settled before Ollama is checked,
-REM because the model list is read out of settings.yaml with it.
-set "LETI_PYTHON=%SETUP_PYTHON%"
-if exist "%VENV_PYTHON%" set "LETI_PYTHON=%VENV_PYTHON%"
+if not exist "%LETI_PYTHON%" (
+    echo.
+    echo Leti could not finish setting itself up.
+    echo   What failed: the prepared Python is not where setup said it was.
+    echo   It was trying to: start Leti with the environment it just prepared.
+    echo   Trying again is safe - delete leti_env and leti_runtime first.
+    echo.
+    pause
+    exit /b 1
+)
 
 call :ensure_ollama
 if not !errorlevel!==0 (
@@ -131,7 +142,14 @@ if not !errorlevel!==0 (
     exit /b 1
 )
 
-set "PYTHONPATH=%cd%;%PYTHONPATH%"
+REM Appended rather than replaced, and without a stray separator when it was
+REM empty - an empty entry on PYTHONPATH is the current directory, which is
+REM harmless here and confusing everywhere else.
+if defined PYTHONPATH (
+    set "PYTHONPATH=%cd%;%PYTHONPATH%"
+) else (
+    set "PYTHONPATH=%cd%"
+)
 "%LETI_PYTHON%" main.py --mode gui
 set "STATUS=%errorlevel%"
 

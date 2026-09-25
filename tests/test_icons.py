@@ -112,10 +112,18 @@ def test_linux_desktop_entry_icon_exists():
     assert (PROJECT_ROOT / icon.group(1)).is_file()
 
 
-def test_windows_shortcut_script_icon_exists():
-    script = (PROJECT_ROOT / "scripts" / "install_windows_launcher.ps1").read_text()
-    assert "leti.ico" in script
+def test_windows_shortcut_icon_exists():
+    """Which icon a Windows shortcut carries is decided in launcher/shortcuts.py -
+    the .ps1 finds an interpreter and asks it, so that one answer serves the
+    installer, the .bat launcher and Leti.exe alike. Checked where it is decided,
+    and that the file it names is really there."""
+    from launcher import shortcuts
+
+    assert shortcuts.ICON == Path("gui") / "icons" / "leti.ico"
     assert (ICON_DIR / "leti.ico").is_file()
+    # And the .ps1 still routes to that decision rather than making its own.
+    script = (PROJECT_ROOT / "scripts" / "install_windows_launcher.ps1").read_text()
+    assert "--install-shortcuts" in script
 
 
 def test_macos_icon_script_icon_exists():
