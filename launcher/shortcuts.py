@@ -291,15 +291,28 @@ def describe(results: List[Dict[str, Any]]) -> List[str]:
 # --------------------------------------------------------------------------- #
 # The parts that need Windows
 #
-# Two small PowerShell programs, driven through argument lists rather than
-# assembled into a command string - so a folder called "C:\\Users\\O'Brien & Sons"
-# is a path and not a syntax error. Nothing here interpolates a path into a
-# script body.
+# Two small PowerShell programs, given their values through the ENVIRONMENT - so a
+# folder called "C:\\Users\\O'Brien & Sons" is a path and not a syntax error.
+# Nothing here interpolates a path into a script body.
+#
+# It used to pass them as arguments after `--`, with a param() block to receive
+# them, and that never worked: binding trailing arguments to param() is what
+# -File does. With -Command, PowerShell joins everything after it onto the
+# command text instead, so $LinkPath was never set, Mandatory tried to prompt for
+# it, -NonInteractive refused, and PowerShell exited non-zero. Every shortcut
+# failed, on both the Desktop and the Start Menu, with "Could not add Leti to
+# your Desktop" - reported from a real Windows machine. The tests here inject a
+# fake runner, so they checked the arguments were assembled correctly and never
+# found out that PowerShell would not read them.
+#
+# An environment variable is not parsed as code by anything, which makes this
+# both the working version and the safer one.
 # --------------------------------------------------------------------------- #
 
 _READ_SCRIPT = r"""
-param([Parameter(Mandatory=$true)][string]$LinkPath)
 $ErrorActionPreference = 'Stop'
+$LinkPath = $env:LETI_LINK_PATH
+if (-not $LinkPath) { exit 4 }
 if (-not (Test-Path -LiteralPath $LinkPath)) { exit 3 }
 $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut($LinkPath)
@@ -310,15 +323,14 @@ $sc = $shell.CreateShortcut($LinkPath)
 """
 
 _WRITE_SCRIPT = r"""
-param(
-  [Parameter(Mandatory=$true)][string]$LinkPath,
-  [Parameter(Mandatory=$true)][string]$TargetPath,
-  [Parameter(Mandatory=$true)][string]$WorkingDirectory,
-  [string]$IconLocation = '',
-  [string]$Description = '',
-  [int]$WindowStyle = 1
-)
 $ErrorActionPreference = 'Stop'
+$LinkPath         = $env:LETI_LINK_PATH
+$TargetPath       = $env:LETI_TARGET_PATH
+$WorkingDirectory = $env:LETI_WORKING_DIRECTORY
+$IconLocation     = $env:LETI_ICON_LOCATION
+$Description      = $env:LETI_DESCRIPTION
+$WindowStyle      = $env:LETI_WINDOW_STYLE
+if (-not $LinkPath -or -not $TargetPath -or -not $WorkingDirectory) { exit 4 }
 $parent = Split-Path -Parent $LinkPath
 if ($parent -and -not (Test-Path -LiteralPath $parent)) {
   New-Item -ItemType Directory -Force -Path $parent | Out-Null
@@ -327,34 +339,38 @@ $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut($LinkPath)
 $sc.TargetPath       = $TargetPath
 $sc.WorkingDirectory = $WorkingDirectory
-$sc.Description      = $Description
-$sc.WindowStyle      = $WindowStyle
+if ($Description) { $sc.Description = $Description }
+if ($WindowStyle)  { $sc.WindowStyle = [int]$WindowStyle }
 if ($IconLocation) { $sc.IconLocation = $IconLocation }
 $sc.Save()
+if (-not (Test-Path -LiteralPath $LinkPath)) { exit 5 }
 """
 
 
-def _powershell(script: str, arguments: List[str],
+def _powershell(script: str, values: Dict[str, str],
                 run: Optional[Callable] = None) -> Any:
-    """Run one of the scripts above with its arguments kept separate.
+    """Run one of the scripts above, with its values in the environment.
 
     -Command with the script on the command line, not -File: writing a temporary
     .ps1 would be a file to clean up, and -EncodedCommand would hide what is being
-    run from anything looking at the process list. The arguments go after `--`,
-    where PowerShell binds them to the param() block without ever parsing them as
-    code.
+    run from anything looking at the process list. The values go in the
+    environment, which -Command does not touch and PowerShell never parses as
+    code - see the note above for what passing them as arguments did instead.
     """
     runner = run or subprocess.run
     command = ["powershell", "-NoProfile", "-NonInteractive",
-               "-ExecutionPolicy", "Bypass", "-Command", script, "--", *arguments]
-    return runner(command, capture_output=True, text=True, timeout=120)
+               "-ExecutionPolicy", "Bypass", "-Command", script]
+    environment = dict(os.environ)
+    environment.update({name: str(value) for name, value in values.items()})
+    return runner(command, capture_output=True, text=True, timeout=120,
+                  env=environment)
 
 
 def read_shortcut(path: Path, run: Optional[Callable] = None) -> Optional[Dict[str, Any]]:
     """What the .lnk at `path` points at, or None if there is none to read."""
     if not _is_windows():
         return None
-    done = _powershell(_READ_SCRIPT, [str(path)], run)
+    done = _powershell(_READ_SCRIPT, {"LETI_LINK_PATH": str(path)}, run)
     if getattr(done, "returncode", 1) != 0:
         return None
     lines = (getattr(done, "stdout", "") or "").splitlines()
@@ -368,11 +384,15 @@ def write_shortcut(shortcut: Shortcut, run: Optional[Callable] = None) -> None:
     """Write the .lnk. Raises if PowerShell could not."""
     if not _is_windows():
         raise OSError("shortcuts can only be written on Windows")
-    arguments = [str(shortcut.path), str(shortcut.target),
-                 str(shortcut.working_directory),
-                 f"{shortcut.icon},0" if shortcut.icon else "",
-                 shortcut.description, str(int(shortcut.window_style))]
-    done = _powershell(_WRITE_SCRIPT, arguments, run)
+    values = {
+        "LETI_LINK_PATH": str(shortcut.path),
+        "LETI_TARGET_PATH": str(shortcut.target),
+        "LETI_WORKING_DIRECTORY": str(shortcut.working_directory),
+        "LETI_ICON_LOCATION": f"{shortcut.icon},0" if shortcut.icon else "",
+        "LETI_DESCRIPTION": shortcut.description or "",
+        "LETI_WINDOW_STYLE": str(int(shortcut.window_style)),
+    }
+    done = _powershell(_WRITE_SCRIPT, values, run)
     if getattr(done, "returncode", 1) != 0:
         raise OSError((getattr(done, "stderr", "") or "PowerShell failed")[:300])
 

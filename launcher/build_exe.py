@@ -21,6 +21,7 @@ several megabytes and one more thing to go wrong on first launch.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -150,8 +151,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
         print("(--keep-going was passed, so carrying on anyway.)")
 
+    # Put it where everything else expects to find it. launcher/shortcuts.py looks
+    # for Leti.exe beside main.py, not in dist\, so leaving it there meant the
+    # Desktop shortcut kept pointing at the .bat and the executable was a file the
+    # user had to know to move. Copied rather than built there directly, because
+    # dist\ is what --clean empties.
+    placed = ROOT / BUILT.name
+    try:
+        if placed.resolve() != BUILT.resolve():
+            shutil.copy2(BUILT, placed)
+    except OSError as e:
+        print()
+        print(f"Built, but could not copy it next to main.py ({e}).")
+        print(f"Copy {BUILT} there yourself and it will work the same.")
+        return 0
+
     print()
-    print("Put it in the Leti folder - the one with main.py - and double-click it.")
+    print(f"Ready: {placed}")
+    print("Double-click it, or run scripts\\install_windows_launcher.ps1 to point")
+    print("your Desktop and Start Menu shortcuts at it instead of the .bat.")
     print("On first run it prepares Python and the packages, then starts Leti.")
     return 0
 

@@ -33,6 +33,10 @@ leti_env/
 leti_runtime/
 build/
 dist/
+# The executable build_exe.py copies next to main.py, so the shortcuts find it.
+# Root-anchored, so /Leti cannot match anything inside the project.
+Leti.exe
+/Leti
 *.spec.bak
 
 # --- Editors / OS ------------------------------------------------------------

@@ -388,3 +388,46 @@ def test_leti_itself_is_not_run_with_a_fixed_hash_seed():
     source = (pathlib.Path(__file__).resolve().parent.parent
               / "launcher" / "bootstrap.py").read_text(encoding="utf-8")
     assert "PYTHONHASHSEED" not in source
+
+
+# --- The built executable ends up where everything looks for it ------------------------
+
+def test_the_build_puts_the_executable_beside_main_py():
+    """PyInstaller writes to dist\\, and nothing looks for it there.
+
+    launcher/shortcuts.py's TARGETS names "Leti.exe" relative to the project root,
+    so a build left in dist\\ meant the Desktop shortcut kept pointing at the .bat
+    and the executable was a file the user had to know to move. dist\\ is also what
+    --clean empties, so it is copied out rather than built there.
+    """
+    import ast
+
+    from launcher import shortcuts
+
+    source = (pathlib.Path(__file__).resolve().parent.parent
+              / "launcher" / "build_exe.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    calls = {ast.unparse(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    assert "shutil.copy2" in calls, "the build never copies the executable out of dist/"
+    assert "ROOT / BUILT.name" in source, "it is not copied to the project root"
+
+    # And that is the name the shortcut looks for.
+    assert "Leti.exe" in shortcuts.TARGETS
+    assert shortcuts.TARGETS[0] == "Leti.exe", \
+        "the executable is no longer preferred over the .bat"
+
+
+def test_there_is_a_double_click_way_to_build_it():
+    """The project's whole premise is not needing a terminal; building was the one
+    thing that did."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    batch = root / "Build Leti.exe (Windows).bat"
+    assert batch.is_file(), "there is no double-click build"
+    text = batch.read_text(encoding="utf-8")
+    assert "launcher\\build_exe.py" in text
+    # It must use the environment a launcher prepared, not a system Python.
+    assert "leti_env\\Scripts\\python.exe" in text
+    assert "leti_runtime\\python.exe" in text
+    # And say what to do when there is none, rather than failing obscurely.
+    assert "Launch Leti (Windows).bat" in text
+    assert "pause" in text

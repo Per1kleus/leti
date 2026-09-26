@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Set
+from typing import Any, Optional, Set
 
 from core import speech, transcript
 from core.orchestrator import Orchestrator
@@ -719,6 +720,24 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
             await handle_utterance(text)
 
 
+def _window_icon() -> Optional[Path]:
+    """The icon file this platform's webview backend can actually open.
+
+    Windows wants a real .ico - System.Drawing.Icon rejects everything else, and
+    rejects it on a thread whose exception ends the process. GTK and Qt read PNG.
+    A file that is not there is not passed at all, because "no icon" is a cosmetic
+    loss and a bad icon is a crash.
+    """
+    icons = Path(__file__).parent / "icons"
+    candidates = ([icons / "leti.ico"] if sys.platform.startswith("win")
+                  else [icons / "leti-512.png", icons / "leti.ico"])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    logger.info("No window icon found in %s; starting without one.", icons)
+    return None
+
+
 def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: asyncio.AbstractEventLoop, continuous_voice: bool = True) -> None:
     """Entry point called from main.py's run_gui() for `--mode gui`. `loop` is an
     already-created event loop that `orchestrator` (and everything it depends on)
@@ -906,16 +925,26 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
             # always-on-top puck that minimising switches to. See gui/desktop.py.
             api.desktop = DesktopWindows(webview, local_url)
             api.desktop.create_main()
-            # Window/taskbar icon. pywebview takes this on its GTK and Qt backends;
-            # older versions don't accept the argument at all, and on Windows/macOS
-            # the window icon comes from the launcher shortcut or app bundle instead
-            # (see scripts/install_windows_launcher.ps1 and install_macos_icon.sh).
-            # Falling back to a plain start() keeps a missing icon from being the
-            # reason the app won't open.
-            icon_path = Path(__file__).parent / "icons" / "leti-512.png"
+            # Window/taskbar icon, in a format THIS platform's backend can load.
+            #
+            # This used to hand pywebview leti-512.png on every platform, on the
+            # belief that Windows would ignore the argument. It does not ignore it:
+            # the Windows backend passes it to System.Drawing.Icon, which reads
+            # .ico and nothing else, and throws
+            #
+            #     ArgumentException: Argument 'picture' must be a picture that can
+            #     be used as a Icon.
+            #
+            # That throw happens on a .NET thread, so the `except Exception` around
+            # all of this cannot see it and the fallback below never ran - the
+            # process died on startup with a CLR error code and Leti never opened.
+            # Reported from a real Windows machine, which is the only place it
+            # happens.
+            icon_path = _window_icon()
             try:
-                webview.start(icon=str(icon_path))
+                webview.start(icon=str(icon_path)) if icon_path else webview.start()
             except TypeError:
+                # An older pywebview that does not take the argument at all.
                 webview.start()  # blocks until the window is closed
         except Exception as e:
             # Creating the window counts as part of the attempt, so it is inside

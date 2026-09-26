@@ -95,21 +95,80 @@ async def _render(
 
 
 def _build_ico(pngs: dict[int, Path], out: Path) -> None:
-    """Multi-resolution .ico, each size from the source drawn for it."""
+    """Multi-resolution .ico, each size from the source drawn for it.
+
+    Written by hand rather than with Pillow's ICO writer, for the same reason the
+    .icns below is: control over what actually lands in the container.
+
+    Pillow writes every entry as a PNG. That is legal .ico and Explorer reads it
+    happily - and .NET's System.Drawing.Icon does not. It only understands
+    BMP/DIB entries, so the icon Leti shipped made pywebview's Windows backend
+    throw
+
+        System.ArgumentException: Argument 'picture' must be a picture that can
+        be used as a Icon.
+
+    on a .NET thread, which Python cannot catch, which killed the application on
+    startup. So every entry here is a BMP/DIB.
+
+    Each one is a BITMAPINFOHEADER whose height is doubled (the format expects
+    the colour data followed by an AND mask), then bottom-up BGRA rows, then the
+    mask itself. The mask is all zeros because the alpha channel already says what
+    is transparent, but it has to be there and it has to be the right size:
+    1 bit per pixel, each row padded to a 4-byte boundary.
+    """
     from PIL import Image
 
-    # Largest first: Pillow's ICO writer silently skips any requested size bigger
-    # than the base image, so passing the 16px one as base yields a single-entry
-    # .ico. append_images then supplies each size's own artwork - `sizes` alone
-    # would rescale the base and discard the simplified small variant.
-    ordered = sorted(ICO_SIZES, reverse=True)
-    images = [Image.open(pngs[s]).convert("RGBA") for s in ordered]
-    images[0].save(
-        out,
-        format="ICO",
-        sizes=[(s, s) for s in ordered],
-        append_images=images[1:],
-    )
+    ordered = sorted(ICO_SIZES)
+    entries: list[bytes] = []
+    for size in ordered:
+        image = Image.open(pngs[size]).convert("RGBA")
+        if image.size != (size, size):
+            image = image.resize((size, size), Image.LANCZOS)
+
+        rows = []
+        pixels = image.load()
+        for y in range(size - 1, -1, -1):          # bottom-up
+            row = bytearray()
+            for x in range(size):
+                r, g, b, a = pixels[x, y]
+                row += bytes((b, g, r, a))          # BGRA
+            rows.append(bytes(row))
+        colour = b"".join(rows)
+
+        mask_row = ((size + 31) // 32) * 4          # padded to 4 bytes
+        mask = b"\x00" * (mask_row * size)
+
+        header = struct.pack(
+            "<IiiHHIIiiII",
+            40,                 # biSize
+            size,               # biWidth
+            size * 2,           # biHeight: colour data plus the mask
+            1,                  # biPlanes
+            32,                 # biBitCount
+            0,                  # biCompression: BI_RGB, which is the whole point
+            len(colour) + len(mask),
+            0, 0, 0, 0,
+        )
+        entries.append(header + colour + mask)
+
+    directory = struct.pack("<HHH", 0, 1, len(ordered))
+    offset = 6 + 16 * len(ordered)
+    table = bytearray()
+    for size, payload in zip(ordered, entries):
+        table += struct.pack(
+            "<BBBBHHII",
+            0 if size >= 256 else size,    # 0 means 256 in this field
+            0 if size >= 256 else size,
+            0,                             # no colour palette
+            0,                             # reserved
+            1,                             # planes
+            32,                            # bits per pixel
+            len(payload),
+            offset,
+        )
+        offset += len(payload)
+    out.write_bytes(directory + bytes(table) + b"".join(entries))
 
 
 def _build_icns(pngs: dict[int, Path], out: Path) -> None:

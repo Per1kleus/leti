@@ -148,10 +148,82 @@ def test_manifest_icons_resolve():
 
 
 def test_pywebview_window_icon_exists():
+    """Every icon the window might be started with is a file that is there."""
     api = (PROJECT_ROOT / "gui" / "api.py").read_text()
-    match = re.search(r'"icons"\s*/\s*"([^"]+)"', api)
-    assert match, "gui/api.py no longer points the window at an icon"
-    assert (ICON_DIR / match.group(1)).is_file()
+    names = re.findall(r'icons / "([^"]+)"', api)
+    assert names, "gui/api.py no longer points the window at an icon"
+    for name in names:
+        assert (ICON_DIR / name).is_file(), name
+
+
+def test_windows_is_given_an_ico_and_never_a_png():
+    """A PNG here is not a missing icon, it is a crash.
+
+    pywebview's Windows backend hands this to System.Drawing.Icon, which reads
+    .ico and nothing else. Given leti-512.png it threw
+
+        ArgumentException: Argument 'picture' must be a picture that can be used
+        as a Icon.
+
+    on a .NET thread - which Python cannot catch, so the fallback to the browser
+    never ran and the process died on startup. Reported from a real Windows
+    machine.
+    """
+    import sys
+
+    from gui.api import _window_icon
+
+    api = (PROJECT_ROOT / "gui" / "api.py").read_text()
+    windows_branch = api[api.index("def _window_icon"):api.index("def run_gui_mode")]
+    assert 'icons / "leti.ico"' in windows_branch
+    assert "sys.platform.startswith(\"win\")" in windows_branch
+
+    chosen = _window_icon()
+    assert chosen is not None and chosen.is_file()
+    if sys.platform.startswith("win"):
+        assert chosen.suffix == ".ico", f"Windows would be given {chosen.name}"
+
+
+def test_the_ico_is_readable_by_system_drawing():
+    """Every entry has to be a BMP/DIB, not a PNG.
+
+    Pillow's ICO writer produces PNG entries for every size. That is legal .ico
+    and Explorer reads it happily; System.Drawing.Icon does not understand it at
+    all, which is what crashed the Windows build. scripts/build_icons.py writes
+    the container by hand for this reason.
+    """
+    import struct
+
+    data = (ICON_DIR / "leti.ico").read_bytes()
+    reserved, kind, count = struct.unpack_from("<HHH", data, 0)
+    assert (reserved, kind) == (0, 1), "not an icon container"
+    assert count >= 4, f"only {count} sizes in the icon"
+
+    for index in range(count):
+        width, height, _c, _r, _p, bpp, size, offset = struct.unpack_from(
+            "<BBBBHHII", data, 6 + index * 16)
+        pixels = width or 256
+        assert data[offset:offset + 8] != b"\x89PNG\r\n\x1a\x0a"[:8], \
+            f"the {pixels}px entry is a PNG, which System.Drawing cannot read"
+        bi_size, bi_width, bi_height, _planes, bi_bpp, compression = struct.unpack_from(
+            "<IiiHHI", data, offset)
+        assert bi_size == 40, f"the {pixels}px entry is not a BITMAPINFOHEADER"
+        assert bi_width == pixels and bi_height == pixels * 2, \
+            f"the {pixels}px entry has the wrong dimensions ({bi_width}x{bi_height})"
+        assert bi_bpp == 32, f"the {pixels}px entry is {bi_bpp}-bit"
+        assert compression == 0, f"the {pixels}px entry is compressed"
+        expected = 40 + pixels * pixels * 4 + (((pixels + 31) // 32) * 4) * pixels
+        assert size == expected, \
+            f"the {pixels}px entry is {size} bytes, not the {expected} a BMP entry needs"
+
+
+def test_the_icon_builder_does_not_use_pillows_ico_writer():
+    """It writes PNG entries, which is the bug above. Pinned so a tidy-up that
+    replaces the hand-written container reintroduces it loudly."""
+    source = (PROJECT_ROOT / "scripts" / "build_icons.py").read_text()
+    builder = source[source.index("def _build_ico"):source.index("def _build_icns")]
+    assert 'format="ICO"' not in builder, "Pillow's ICO writer is back"
+    assert "BITMAPINFOHEADER" in builder or "biBitCount" in builder
 
 # --- The mark is one mark ----------------------------------------------------------
 # The letterform appears in four files: the interface's core and three icon

@@ -1531,8 +1531,15 @@ def test_paths_are_never_interpolated_into_a_script_body():
 
     Each PowerShell program has to be a plain string CONSTANT - not an f-string,
     not a concatenation, not a .format - so there is no way for a path to become
-    part of it. The paths go to PowerShell as arguments after `--`, where its
-    param() block binds them without parsing them as code.
+    part of it. The paths reach PowerShell through the ENVIRONMENT, which
+    -Command does not touch and which PowerShell never parses as code.
+
+    This used to require a param() block and `--` before the arguments. That was
+    the wrong mechanism entirely: binding trailing arguments to param() is what
+    -File does, and with -Command PowerShell joins them onto the command text, so
+    nothing was ever bound and every shortcut failed on a real Windows machine.
+    The safety property is unchanged and still checked; only the way the values
+    arrive is different.
     """
     import ast
 
@@ -1547,9 +1554,37 @@ def test_paths_are_never_interpolated_into_a_script_body():
     for name, value in found.items():
         assert isinstance(value, ast.Constant) and isinstance(value.value, str), \
             f"{name} is built rather than written - a path could get into it"
-        assert "param(" in value.value, f"{name} does not take its values as parameters"
+        assert "$env:LETI_" in value.value, \
+            f"{name} does not take its values from the environment"
+        # And nothing that would make a value part of the program.
+        assert "param(" not in value.value, \
+            f"{name} still uses param(), which -Command does not bind"
+
     source = (ROOT / "launcher" / "shortcuts.py").read_text()
-    assert '"--", *arguments' in source, "the arguments are not separated from the script"
+    assert '"--", *arguments' not in source, \
+        "arguments after -- are not bound by PowerShell; that was the bug"
+    assert "env=environment" in source, "the values do not reach PowerShell at all"
+
+
+def test_every_value_the_scripts_read_is_one_the_code_sets():
+    """A script reading $env:LETI_SOMETHING nobody sets is a silent empty value."""
+    import re
+
+    source = (ROOT / "launcher" / "shortcuts.py").read_text()
+    read = set(re.findall(r"\$env:(LETI_[A-Z_]+)", source))
+    set_by_code = set(re.findall(r'"(LETI_[A-Z_]+)":', source))
+    assert read, "the scripts read no values at all"
+    assert read <= set_by_code, f"read but never set: {sorted(read - set_by_code)}"
+    assert set_by_code <= read, f"set but never read: {sorted(set_by_code - read)}"
+
+
+def test_the_write_script_checks_the_shortcut_actually_appeared():
+    """Save() succeeding is not the same as a .lnk existing, and "it worked" was
+    the wrong answer to give for two launches in a row on a real machine."""
+    source = (ROOT / "launcher" / "shortcuts.py").read_text()
+    body = source[source.index("_WRITE_SCRIPT"):source.index("def _powershell")]
+    assert "Test-Path -LiteralPath $LinkPath" in body
+    assert "exit 5" in body, "nothing fails the write when the file is not there"
 
 
 def test_powershell_is_invoked_without_a_profile_and_without_elevation():
