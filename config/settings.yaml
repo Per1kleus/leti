@@ -105,8 +105,14 @@ vision:
 
 # Which tools each request is shown. Every tool stays registered, executable and
 # authorised exactly as before - this only decides which schemas are sent to the
-# model, because sending all 103 of them costs roughly 16,000 tokens of a 24,576
-# token window on every single call. See core/tool_router.py.
+# model, because sending Default Mode's whole list costs roughly 22,300 tokens of
+# the 28,672-token window on every single call. See core/tool_router.py.
+#
+# The measured figures are stated once, in the num_ctx note above, and checked
+# against the real registry by tests/test_docs_match_code.py. This comment used to
+# repeat them as "103 tools" and "16,000 tokens of a 24,576 token window", which
+# had been true two tool-list growths earlier - which is the drift that test
+# exists for.
 #
 # Set this to false to go back to sending the complete tool list on every request.
 # Nothing else changes with it: routing already falls back to the full set on its

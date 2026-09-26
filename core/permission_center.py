@@ -255,7 +255,7 @@ def set_tool_class(tool_name: str, action_class: str, registry: Any = None) -> D
 
     path = Path(CONFIG_DIR) / "permissions.yaml"
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception as e:
         return {"ok": False, "error": f"Couldn't read permissions.yaml: {e}"}
 

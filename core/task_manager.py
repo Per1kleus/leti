@@ -1252,9 +1252,38 @@ class TaskRunner:
         try:
             result = self.notify(message)
             if asyncio.iscoroutine(result):
-                asyncio.get_event_loop().create_task(result)
+                run_detached(result, "a task notification")
         except Exception:
             logger.exception("Couldn't deliver a task notification")
+
+
+# Something has to hold a reference to a task that nobody awaits. asyncio keeps
+# only a weak one, so a bare create_task() can be collected while it is still
+# pending - the coroutine stops where it was, "Task was destroyed but it is
+# pending!" goes to stderr, and the caller has already reported success. Both
+# places that need this are places where awaiting would deadlock (a scheduled task
+# triggered from inside an orchestrator turn waits on the turn lock), so the answer
+# is to keep the reference rather than to await.
+_DETACHED: Set["asyncio.Task"] = set()
+
+
+def run_detached(coroutine, description: str = "background work") -> Optional["asyncio.Task"]:
+    """Start `coroutine` without awaiting it, and keep it alive until it finishes.
+
+    Returns None when there is no running loop, having closed the coroutine so it
+    does not also warn about never being awaited. The caller gets a straight answer
+    about whether the work started.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        coroutine.close()
+        logger.debug("No running event loop, so %s did not start.", description)
+        return None
+    task = loop.create_task(coroutine)
+    _DETACHED.add(task)
+    task.add_done_callback(_DETACHED.discard)
+    return task
 
 
 def is_recoverable(error: Exception) -> bool:

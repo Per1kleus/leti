@@ -241,7 +241,7 @@ def _load_overrides() -> Dict[str, Any]:
     path = CONFIG_DIR / "settings.local.yaml"
     if not path.exists():
         return {}
-    return yaml.safe_load(path.read_text()) or {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def _save_overrides(data: Dict[str, Any]) -> None:

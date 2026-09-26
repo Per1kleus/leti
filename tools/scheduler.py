@@ -39,6 +39,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.atomic_write import atomic_write_json
 from core.config_loader import get_settings, resolve_path
+from core.task_manager import run_detached
 from tools.base import BaseTool, ToolParameter, ToolResult
 
 logger = logging.getLogger("leti.scheduler")
@@ -610,8 +611,15 @@ class RunScheduledTaskNowTool(BaseTool):
             ))
         # Deliberately not awaited: the task runs through the orchestrator, and
         # this call is itself inside an orchestrator turn - awaiting it would
-        # deadlock on the turn lock.
-        asyncio.create_task(_RUNNER.execute(task_id, manual=True))
+        # deadlock on the turn lock. run_detached rather than a bare create_task
+        # because asyncio holds only a weak reference to a running task: collected
+        # mid-flight, the task stops where it was while this call has already said
+        # it started.
+        if run_detached(_RUNNER.execute(task_id, manual=True), f"scheduled task {task_id}") is None:
+            return ToolResult(success=False, error=(
+                f"Task {task_id} could not be started because nothing is running it. "
+                f"Scheduled tasks run in GUI and voice modes."
+            ))
         return ToolResult(success=True, output=(
             f"Started task {task_id} now. Its result will appear when it finishes; "
             f"list_scheduled_tasks shows the outcome."

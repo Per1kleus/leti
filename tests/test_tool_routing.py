@@ -1,13 +1,15 @@
 """Which tools a request is shown, and everything that must stay true regardless.
 
-Sending all 103 tool schemas on every call costs roughly 16,000 tokens of a
-24,576-token window before the conversation gets any. This picks a subset - and
+Sending every tool schema on every call is the expensive path: the 129 tools
+Default Mode exposes are about 89,000 characters, roughly 22,300 tokens of the
+28,672-token window, before the conversation gets any. This picks a subset - and
 the tests that matter most are the ones pinning what it must never do: lose a
 tool, guess a destructive one, or leave Leti unable to act because the router was
 unsure.
 """
 from __future__ import annotations
 
+import gc
 import json
 import sys
 import types
@@ -413,3 +415,45 @@ def test_a_desktop_errand_reaches_the_computer_use_tools(registry, request_text)
                                          "verify_screen"}
     assert exposed, f"{request_text!r} exposed none of the computer-use tools"
 
+
+# --- The index cache belongs to one registry ------------------------------------
+
+def test_a_second_registry_is_never_answered_with_the_first_ones_tools():
+    """Two registries, two indexes - however CPython reuses addresses.
+
+    The cache used to be keyed on id(registry), which is unique only while the
+    object is alive. A registry allocated at a dead one's address with the same
+    number of tools inherited its index, and routing then named tools that are
+    not in this registry at all. Hard to hit by accident and wrong every time it
+    happened, so it is pinned rather than trusted.
+    """
+    def registry_of(module, pairs):
+        tools = {}
+        for name, description in pairs:
+            cls = type("Tool_" + name, (object,), {"__module__": module})
+            tool = cls()
+            tool.name, tool.description = name, description
+            tools[name] = tool
+
+        class Registry:
+            def names(self): return list(tools)
+            def get(self, name): return tools[name]
+
+        return Registry()
+
+    first = registry_of("tools.email", [("send_email", "send an email"),
+                                        ("read_file", "read a file")])
+    route("send an email", first)
+    address = id(first)
+    del first
+    gc.collect()
+
+    # Allocate same-shaped registries until one lands on the freed address. If it
+    # never does, the test simply passes without having exercised the reuse.
+    for _ in range(50_000):
+        second = registry_of("tools.music", [("play_music", "play a song"),
+                                             ("stop_music", "stop a song")])
+        if id(second) == address:
+            assert set(route("play a song", second).tool_names) <= set(second.names())
+            return
+        del second

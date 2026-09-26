@@ -161,7 +161,7 @@ def _launchd_install(interval_minutes: int) -> Dict[str, Any]:
 """
     path = _plist_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(plist)
+    path.write_text(plist, encoding="utf-8")
 
     # Unload first: launchctl refuses to load a label that's already loaded, and
     # reinstalling with a new interval is the common case.

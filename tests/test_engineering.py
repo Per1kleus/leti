@@ -57,9 +57,37 @@ async def test_a_users_symbol_is_not_reported_as_a_constant():
 
 
 @pytest.mark.asyncio
-async def test_expressions_cannot_reach_the_interpreter():
-    result = await EngineeringCalculateTool().run(expression="__import__('os').system('id')")
-    assert result.success is False
+@pytest.mark.parametrize("expression", [
+    "__import__('os').system('id')",
+    # Names nothing forbidden and reaches the interpreter anyway, by walking the
+    # object graph. This is what an empty __builtins__ does not stop, and the
+    # reason the formula is parsed rather than evaluated.
+    "[c for c in ().__class__.__base__.__subclasses__()"
+    " if c.__name__ == 'BuiltinImporter'][0].load_module('os').getcwd()",
+    "().__class__.__base__.__subclasses__()",
+    "abs.__globals__",
+    "(lambda: 1)()",
+    "open('/etc/passwd').read()",
+    # Arithmetic, but a hang rather than an answer.
+    "2**10**9",
+])
+async def test_expressions_cannot_reach_the_interpreter(expression):
+    result = await EngineeringCalculateTool().run(expression=expression)
+    assert result.success is False, expression
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expression,variables", [
+    ("sqrt(a**2 + b**2)", {"a": "3 m", "b": "4 m"}),
+    ("atan2(1, 1)", None),
+    ("-x + 2*(x/2)", {"x": "5 m"}),
+    ("v**2/(2*a)", {"v": "10 m/s", "a": "2 m/s**2"}),
+    ("F/A", {"F": "100 N", "A": "0.01 m**2"}),
+])
+async def test_the_arithmetic_a_formula_is_made_of_still_works(expression, variables):
+    """The whitelist has to be wide enough to be a calculator."""
+    result = await EngineeringCalculateTool().run(expression=expression, variables=variables)
+    assert result.success is True, result.error
 
 
 @pytest.mark.asyncio
@@ -169,3 +197,46 @@ async def test_ambiguous_solve_asks_which_symbol():
 async def test_unparseable_expression_is_reported():
     result = await SolveSymbolicTool().run(operation="simplify", expression="((((")
     assert result.success is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expression", [
+    # sympy's parse_expr and sympify are eval() underneath. Before these were
+    # sanitised, the first two of these returned the working directory and the
+    # contents of a file respectively.
+    "__import__('os').getcwd()",
+    "open('/etc/hostname').read()",
+    "().__class__.__base__.__subclasses__()",
+    "exec('x=1')",
+    "x.__class__.__mro__",
+])
+async def test_symbolic_expressions_cannot_reach_the_interpreter(expression):
+    result = await SolveSymbolicTool().run(operation="simplify", expression=expression)
+    assert result.success is False, expression
+
+
+@pytest.mark.asyncio
+async def test_a_substitution_cannot_reach_the_interpreter_either():
+    result = await SolveSymbolicTool().run(
+        operation="solve", expression="a*x + b", symbol="x",
+        substitutions={"a": "__import__('os').getcwd()", "b": "1"})
+    # The solve itself is fine; it is the substitution that is refused, and it is
+    # reported rather than dropped.
+    assert result.success is True
+    assert "substituted" not in result.output
+    assert result.output["substitution_error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation,expression,symbol", [
+    ("solve", "v**2 = u**2 + 2*a*s", "v"),
+    ("diff", "sqrt(x) + exp(x) + log(x)", "x"),
+    ("integrate", "sin(x)", "x"),
+    ("simplify", "(x**2 - 1)/(x - 1)", ""),
+    ("factor", "x**2 + 2*x + 1", ""),
+])
+async def test_real_symbolic_work_still_parses(operation, expression, symbol):
+    """The namespace has to be wide enough to do algebra with."""
+    result = await SolveSymbolicTool().run(operation=operation, expression=expression,
+                                          symbol=symbol)
+    assert result.success is True, result.error

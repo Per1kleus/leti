@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -208,15 +209,29 @@ def _terms(text: str) -> Set[str]:
     return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
 
 
-_CACHE: Dict[int, _Index] = {}
+# Keyed weakly on the registry object itself, not on id(registry): an id is only
+# unique while the object is alive, CPython reuses addresses freely, and the index
+# is a map of one registry's tool names. A registry that inherited a dead one's
+# address inherited its index with it, and routing then answered with tools that
+# are not in this registry at all - which select_tools_for would hand to the model
+# as available. A weak key cannot be reused while the entry exists, and the entry
+# goes when the registry does, so this also stops being a dict that only grows.
+_CACHE: "weakref.WeakKeyDictionary[Any, _Index]" = weakref.WeakKeyDictionary()
 
 
 def _index_for(registry: Any) -> _Index:
-    key = id(registry)
-    index = _CACHE.get(key)
+    try:
+        index = _CACHE.get(registry)
+    except TypeError:
+        # An unhashable or non-weak-referenceable registry (a mock, say). Correct
+        # answer, no caching, rather than no answer.
+        return _Index(registry)
     if index is None or len(index.terms_of) != len(registry.names()):
         index = _Index(registry)
-        _CACHE[key] = index
+        try:
+            _CACHE[registry] = index
+        except TypeError:
+            pass
     return index
 
 

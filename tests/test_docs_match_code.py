@@ -66,10 +66,11 @@ def test_documents_quote_the_real_tool_count_and_schema_size(registry):
     real_tools = len(visible)
     real_chars = len(json.dumps(registry.schemas_for(visible)))
 
-    checked = 0
+    claims_per_document = {}
     for path in DOCUMENTS:
-        for claimed_tools, claimed_chars in CLAIM.findall(_flatten(path.read_text())):
-            checked += 1
+        found = CLAIM.findall(_flatten(path.read_text(encoding="utf-8")))
+        claims_per_document[path.name] = len(found)
+        for claimed_tools, claimed_chars in found:
             assert int(claimed_tools.replace(",", "")) == real_tools, (
                 f"{path.name} says {claimed_tools} tools; the registry builds {real_tools}. "
                 "Update the document rather than this test."
@@ -78,10 +79,14 @@ def test_documents_quote_the_real_tool_count_and_schema_size(registry):
                 f"{path.name} says {claimed_chars} characters; the schemas are {real_chars:,}. "
                 "Update the document rather than this test."
             )
-    assert checked == len(DOCUMENTS), (
-        "Every document in DOCUMENTS should state the measured size; found "
-        f"{checked} claims across {len(DOCUMENTS)} documents. If a document dropped "
-        "the claim, drop it from DOCUMENTS too."
+    # Per document rather than as a total: a total of one-per-document is also
+    # satisfied by one document claiming it twice and another not at all, which is
+    # the case this is here to catch.
+    silent = [name for name, count in claims_per_document.items() if count == 0]
+    assert not silent, (
+        f"{silent} are listed as documents that state the measured tool-schema size "
+        "and no longer do. Either restore the claim or drop the document from "
+        "DOCUMENTS."
     )
 
 

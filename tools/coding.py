@@ -200,7 +200,7 @@ class RunCodeTool(BaseTool):
         try:
             if canonical == "sql":
                 # sqlite3 takes SQL on stdin; the "file" case pipes its contents.
-                sql_text = code or script.read_text()
+                sql_text = code or script.read_text(encoding="utf-8", errors="replace")
                 argv = [interpreter] + [str(a) for a in (arguments or [])]
                 result = await _run_with_stdin(argv, sql_text, cwd, timeout_seconds)
             else:

@@ -19,8 +19,10 @@ guarantee is that the numbers in it were computed rather than recalled.
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import math
+import operator
 import re
 from typing import Any, Dict, Optional
 
@@ -65,6 +67,115 @@ def parse_quantity(text: str):
     return registry.Quantity(cleaned)
 
 
+# --- Evaluating a formula ------------------------------------------------------------
+#
+# This used to be eval() with {"__builtins__": {}}, on the belief that an empty
+# builtins dict is a sandbox. It is not: an expression that never names anything
+# forbidden can still walk to the interpreter through the object graph, e.g.
+#
+#     [c for c in ().__class__.__base__.__subclasses__()
+#      if c.__name__ == "BuiltinImporter"][0].load_module("os")
+#
+# and this tool's action class is `execute`, so it does not stop to ask. The
+# expression comes from the model, and the model reads web pages, so "the model
+# would not write that" is not a control.
+#
+# So the formula is parsed and walked instead of evaluated. Only the node types a
+# formula is made of are allowed - numbers, names, arithmetic, and calls to the
+# functions the namespace actually provides. Attribute access, subscripting,
+# comprehensions, lambdas and everything else is refused by default, which means a
+# new Python syntax cannot quietly become a new way through.
+
+_BINARY = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod, ast.Pow: operator.pow,
+}
+_UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+# An expression is arithmetic, so a very large exponent is a hang rather than an
+# answer: 2**10**9 is not a calculation anyone asked for.
+MAX_EXPONENT = 1_000_000
+
+
+class FormulaError(Exception):
+    """The expression is not arithmetic. The message says which part of it."""
+
+
+def evaluate_formula(expression: str, namespace: Dict[str, Any]) -> Any:
+    """Work out `expression` using only `namespace` and arithmetic.
+
+    Raises FormulaError for anything that is not a formula, and whatever the
+    arithmetic itself raises (pint's dimensionality errors, ZeroDivisionError)
+    for one that is.
+    """
+    text = str(expression).replace("^", "**")
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError as e:
+        raise FormulaError(f"that is not a complete expression ({e.msg})") from e
+    return _eval_node(tree.body, namespace)
+
+
+def _eval_node(node: ast.AST, namespace: Dict[str, Any]) -> Any:
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float, complex)) and not isinstance(node.value, bool):
+            return node.value
+        raise FormulaError(f"{node.value!r} is not a number")
+
+    if isinstance(node, ast.Name):
+        if node.id in namespace:
+            return namespace[node.id]
+        raise FormulaError(f"{node.id!r} has no value - pass it in variables")
+
+    if isinstance(node, ast.BinOp):
+        handler = _BINARY.get(type(node.op))
+        if handler is None:
+            raise FormulaError(f"{type(node.op).__name__} is not an arithmetic operator")
+        left = _eval_node(node.left, namespace)
+        right = _eval_node(node.right, namespace)
+        if handler is operator.pow and isinstance(right, (int, float)) and abs(right) > MAX_EXPONENT:
+            raise FormulaError(f"an exponent of {right} is too large to work out")
+        return handler(left, right)
+
+    if isinstance(node, ast.UnaryOp):
+        handler = _UNARY.get(type(node.op))
+        if handler is None:
+            raise FormulaError(f"{type(node.op).__name__} is not an arithmetic operator")
+        return handler(_eval_node(node.operand, namespace))
+
+    if isinstance(node, ast.Call):
+        # Only a bare name, and only one the namespace supplies: no attribute
+        # lookups, no calling the result of another call.
+        if not isinstance(node.func, ast.Name):
+            raise FormulaError("only the named functions can be called")
+        function = namespace.get(node.func.id)
+        if function is None or not callable(function):
+            raise FormulaError(f"there is no function called {ast.unparse(node.func)!r}")
+        if node.keywords:
+            raise FormulaError(f"{node.func.id}() takes its arguments in order, not by name")
+        return function(*[_eval_node(a, namespace) for a in node.args])
+
+    raise FormulaError(f"{_describe(node)} is not part of a formula")
+
+
+# The refusal goes back to the model, which is the thing that wrote the
+# expression, so it names the construct rather than the AST class.
+_CONSTRUCTS = {
+    ast.Attribute: "reading an attribute with .", ast.Subscript: "indexing with []",
+    ast.ListComp: "a list comprehension", ast.GeneratorExp: "a generator expression",
+    ast.DictComp: "a dict comprehension", ast.SetComp: "a set comprehension",
+    ast.Lambda: "a lambda", ast.IfExp: "an if/else expression",
+    ast.List: "a list", ast.Dict: "a dict", ast.Set: "a set", ast.Tuple: "a tuple",
+    ast.Compare: "a comparison", ast.BoolOp: "and/or", ast.Starred: "unpacking with *",
+    ast.NamedExpr: "an assignment with :=", ast.Await: "await", ast.JoinedStr: "an f-string",
+}
+
+
+def _describe(node: ast.AST) -> str:
+    return _CONSTRUCTS.get(type(node), type(node).__name__)
+
+
 def _format_quantity(quantity) -> Dict[str, Any]:
     magnitude = quantity.magnitude
     return {
@@ -73,6 +184,77 @@ def _format_quantity(quantity) -> Dict[str, Any]:
         "dimensionality": str(quantity.dimensionality) or "dimensionless",
         "formatted": f"{quantity:~P}",
     }
+
+
+# --- Reading a symbolic expression ---------------------------------------------------
+#
+# sympy's parse_expr and sympify are eval() underneath, and sympy's own
+# documentation says so: "sympify uses eval, and should not be used on
+# unsanitised input". Both were being handed the model's string directly, and
+# solve_symbolic is `execute`, so it does not stop to ask. Measured before the
+# fix: parse_expr("__import__('os').getcwd()") returned the working directory and
+# parse_expr("open('/etc/hostname').read()") returned the file.
+#
+# Two things close it, and both are needed. The expression is walked first, so
+# there is no attribute access and no subscripting to traverse the object graph
+# with. Then it is parsed against a namespace that holds the sympy names a
+# symbolic expression legitimately uses and an empty __builtins__, so `open` and
+# `__import__` are not resolvable - without that, eval() supplies real builtins
+# whatever the namespace says. An unknown name becomes a Symbol, as it always
+# did, which is what lets "m*a" mean what it looks like.
+
+# Nodes a symbolic expression is made of. Attribute, Subscript, Lambda, the
+# comprehensions and everything else not named here is refused.
+_SYMBOLIC_NODES = (
+    ast.Expression, ast.Constant, ast.Name, ast.Load, ast.Call, ast.keyword,
+    ast.BinOp, ast.UnaryOp, ast.Tuple, ast.List, ast.Compare,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.UAdd, ast.USub, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+)
+
+# Built once and shared: importing sympy is slow and this does not change.
+_SYMBOLIC_NAMESPACE: Optional[Dict[str, Any]] = None
+
+
+def _symbolic_namespace() -> Dict[str, Any]:
+    global _SYMBOLIC_NAMESPACE
+    if _SYMBOLIC_NAMESPACE is None:
+        import sympy
+
+        allowed = (
+            "Symbol symbols Eq Ne Lt Le Gt Ge Rational Integer Float Matrix "
+            "sqrt cbrt exp log ln sin cos tan asin acos atan atan2 sinh cosh tanh "
+            "asinh acosh atanh Abs sign floor ceiling factorial binomial gamma "
+            "pi E I oo nan Sum Product Integral Derivative Limit Function "
+            "simplify expand factor together apart cancel diff integrate limit "
+            "solve nsolve re im conjugate arg Min Max root Pow Mul Add"
+        ).split()
+        namespace = {name: getattr(sympy, name) for name in allowed if hasattr(sympy, name)}
+        # eval() fills __builtins__ in itself when the globals it is given have no
+        # entry for it, so this is the line that keeps open() and __import__ out.
+        namespace["__builtins__"] = {}
+        _SYMBOLIC_NAMESPACE = namespace
+    return _SYMBOLIC_NAMESPACE
+
+
+def parse_symbolic(text: str):
+    """Read `text` as a symbolic expression. Raises FormulaError if it is not one."""
+    from sympy.parsing.sympy_parser import parse_expr
+
+    source = str(text).replace("^", "**")
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError as e:
+        raise FormulaError(f"that is not a complete expression ({e.msg})") from e
+    for node in ast.walk(tree):
+        if not isinstance(node, _SYMBOLIC_NODES):
+            raise FormulaError(f"{_describe(node)} is not part of an expression")
+    try:
+        return parse_expr(source, global_dict=_symbolic_namespace())
+    except FormulaError:
+        raise
+    except Exception as e:
+        raise FormulaError(str(e)) from e
 
 
 class EngineeringCalculateTool(BaseTool):
@@ -130,10 +312,7 @@ class EngineeringCalculateTool(BaseTool):
         }
 
         try:
-            # eval with no builtins: the namespace is the units, constants and maths
-            # functions above and nothing else, so an expression can't reach the
-            # filesystem or the interpreter.
-            result = eval(str(expression).replace("^", "**"), {"__builtins__": {}}, namespace)
+            result = evaluate_formula(expression, namespace)
         except Exception as e:
             return ToolResult(success=False, error=(
                 f"Couldn't evaluate {expression!r}: {e}. Check that every symbol has a value "
@@ -287,14 +466,13 @@ class SolveSymbolicTool(BaseTool):
 
     def _solve(self, operation, expression, symbol, at, substitutions) -> ToolResult:
         import sympy
-        from sympy.parsing.sympy_parser import parse_expr
 
         try:
             if "=" in expression and operation == "solve":
                 left, _, right = expression.partition("=")
-                parsed = sympy.Eq(parse_expr(left.strip()), parse_expr(right.strip()))
+                parsed = sympy.Eq(parse_symbolic(left.strip()), parse_symbolic(right.strip()))
             else:
-                parsed = parse_expr(expression.replace("^", "**"))
+                parsed = parse_symbolic(expression)
         except Exception as e:
             return ToolResult(success=False, error=f"Couldn't parse {expression!r}: {e}")
 
@@ -322,7 +500,7 @@ class SolveSymbolicTool(BaseTool):
             elif operation == "limit":
                 if target is None:
                     return ToolResult(success=False, error="limit needs a symbol.")
-                result = sympy.limit(parsed, target, sympy.sympify(at or 0))
+                result = sympy.limit(parsed, target, parse_symbolic(at or 0))
             else:
                 return ToolResult(success=False, error=f"Unknown operation '{operation}'.")
         except Exception as e:
@@ -337,7 +515,8 @@ class SolveSymbolicTool(BaseTool):
 
         if substitutions:
             try:
-                mapping = {sympy.Symbol(k): sympy.sympify(str(v)) for k, v in substitutions.items()}
+                mapping = {sympy.Symbol(k): parse_symbolic(str(v))
+                           for k, v in substitutions.items()}
                 items = result if isinstance(result, (list, tuple)) else [result]
                 output["substituted"] = [
                     str(sympy.N(item.subs(mapping))) if hasattr(item, "subs") else str(item)
