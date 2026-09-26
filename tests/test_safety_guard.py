@@ -240,3 +240,24 @@ def test_unclassified_tool_is_treated_as_critical(guard_factory):
 
     guard, _ = guard_factory()
     assert guard.get_tier("some_tool_that_does_not_exist") is RiskTier.CRITICAL
+
+
+def test_the_suite_does_not_write_to_the_real_audit_log(guard_factory):
+    """A test run must not leave records in somebody's permanent audit trail.
+
+    It used to: one full run appended 83 entries to the project's own
+    logs/audit.log, against paths like /tmp/x.csv, and 23,549 had accumulated.
+    tests/conftest.py redirects the path at construction - not through the setting,
+    because reload_settings() re-reads settings.yaml partway through a run and would
+    throw the override away.
+    """
+    import pathlib
+
+    from core.config_loader import resolve_path
+
+    guard, _ = guard_factory()
+    real = resolve_path("./logs/audit.log")
+    assert pathlib.Path(guard._audit_path) != real, \
+        "a guard built in a test writes to the real audit log"
+    assert "leti-test-audit-" in str(guard._audit_path), \
+        f"the audit path is neither the real one nor a temporary one: {guard._audit_path}"
