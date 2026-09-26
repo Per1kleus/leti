@@ -1,0 +1,742 @@
+===============================================================================
+                          L E T i   -   U S E R   G U I D E
+===============================================================================
+
+Leti is an assistant that runs on your own computer. It listens, it answers out
+loud, and it can do things for you - read and write files, look at your screen,
+send mail, keep watch on something and tell you when it changes.
+
+Nothing you say to Leti is sent to a company. The model that does the thinking
+runs on this machine, through a program called Ollama. When Leti needs the
+internet - to search the web, fetch a page, send your mail - it goes to that one
+place and nowhere else.
+
+This guide is for using Leti, not for changing its code. Every file name,
+setting name and command in here is real; if something is described as being in
+a particular place, it is in that place.
+
+  1.  Getting started
+  2.  Where Leti is installed
+  3.  The Desktop and Start Menu shortcuts
+  4.  The first launch
+  5.  Voice settings
+  6.  The AI model (Qwen) and its settings
+  7.  Making Leti faster, or lighter
+  8.  Personality
+  9.  Tasks that run on their own
+  10. Permissions - what Leti may do without asking
+  11. Connections - mail, calendar, and the rest
+  12. When something does not work
+  13. Resetting and repairing
+  14. Changing settings by hand
+  15. Safe changes and dangerous ones
+  16. Updating Leti
+
+
+===============================================================================
+1. GETTING STARTED
+===============================================================================
+
+WHAT YOU NEED FIRST
+
+  Ollama, from https://ollama.com. This is the program that runs the AI model
+  itself. Leti does not install it and cannot work without it. Install it, and
+  leave it running.
+
+  That is the only thing you have to install yourself. Leti's own Python and
+  packages are prepared for you by the launcher, the first time you use it.
+
+ON WINDOWS
+
+  Double-click:
+
+      Launch Leti (Windows).bat
+
+  That is it. It prepares everything it needs the first time - which takes a
+  while, because it downloads a few hundred megabytes - and then opens Leti.
+  Afterwards it takes under a second.
+
+  If somebody has built Leti.exe for you, double-click that instead. The two do
+  the same thing and end up in the same place; you do not need both.
+
+  A window with text in it appears during setup. That is deliberate: the first
+  run has something to say and a window that vanishes would hide it. It puts
+  itself away once Leti's own window is up. If setup fails it stays, with the
+  reason written on it.
+
+ON macOS
+
+  Double-click:
+
+      Launch Leti (macOS).command
+
+ON LINUX
+
+  Run, once, from a terminal in the Leti folder:
+
+      bash scripts/install_linux_launcher.sh
+
+TALKING TO LETI
+
+  Leti speaks its answers and does not print them. The words are kept, and you
+  can see them whenever you want - say or type "show me the text", and "hide the
+  text" to put them away again. Charts, tables and pictures appear on their own
+  and stay on screen whether the text is showing or not.
+
+  Say "stop" and Leti stops talking immediately, mid-sentence. The answer is not
+  thrown away: "stop" then "show me the text" shows the whole thing, including
+  the part that was never said out loud.
+
+  If you want a typed conversation instead of a spoken one, see section 14.
+
+
+===============================================================================
+2. WHERE LETI IS INSTALLED
+===============================================================================
+
+Wherever you put the Leti folder. Nothing is installed system-wide, nothing goes
+into Program Files, no administrator password is ever asked for, and your own
+Python - if you have one - is never touched or changed.
+
+Inside the Leti folder:
+
+  config\          your settings
+  data\            everything Leti remembers: your to-do list, contacts,
+                   scheduled tasks, conversation history, screenshots
+  logs\            what happened, for when something needs explaining
+  leti_env\        the Python environment the launcher built.  One of these
+  leti_runtime\    two exists, not both. leti_runtime\ is a complete Python
+                   that was fetched because this machine had none.
+
+Everything Leti knows about you is in data\ and config\, in that one folder.
+Nothing about you is stored anywhere else on the machine.
+
+To uninstall Leti, delete the folder. There is nothing else to remove except the
+two shortcuts, if you made them, and Ollama, if you no longer want it.
+
+
+===============================================================================
+3. THE DESKTOP AND START MENU SHORTCUTS
+===============================================================================
+
+The first time a launcher prepares the folder it also puts Leti where you would
+look for it:
+
+  Your Desktop                     ->  Leti
+  Start Menu > All apps > Leti     ->  Leti
+
+Both are yours alone - your Desktop, your Start Menu. Nothing is written for
+other users of the machine, nothing goes in the registry, and no administrator
+prompt appears.
+
+IF A SHORTCUT IS MISSING, OR STOPS WORKING
+
+Run this once, in PowerShell, from inside the Leti folder:
+
+    powershell -ExecutionPolicy Bypass -File scripts\install_windows_launcher.ps1
+
+It checks both shortcuts and puts back whatever is wrong. A shortcut that is
+already correct is left exactly as it is, so running it twice is harmless. It
+tells you which of the two it created, repaired or left alone.
+
+Run it also after somebody builds Leti.exe in a folder that previously only had
+the .bat: it repoints the existing shortcut at the executable instead of leaving
+you with two shortcuts to the same assistant.
+
+You can also move or rename these shortcuts yourself, or pin Leti to the
+taskbar, the way you would with anything else. Leti does not put them back
+unless you ask it to.
+
+
+===============================================================================
+4. THE FIRST LAUNCH
+===============================================================================
+
+Three things happen, in this order, and each of them asks before it acts.
+
+  1. PYTHON AND PACKAGES
+
+     The launcher looks for a Python it can use. If this machine has a good one
+     it builds an environment from it, in leti_env\. If it has none, it fetches
+     one into leti_runtime\. Then it installs the packages Leti needs.
+
+     This is the part that takes a while and downloads a few hundred megabytes.
+
+     It is safe to interrupt. Every step records only that it *finished*, so
+     closing the window halfway leaves the same state as never having started,
+     and the next launch carries on from the last step that completed.
+
+  2. THE MODEL
+
+     Leti asks what this machine can actually run, shows you its arithmetic, and
+     waits. It looks at your graphics card, works out how much of it the model
+     and its context window would need, and recommends the largest model that
+     fits comfortably - which is not the largest model that fits.
+
+     Saying no is a real answer. Declining leaves your configuration exactly as
+     it was; nothing is downloaded and nothing is written.
+
+     Section 6 explains what it is weighing up, if you want to know.
+
+  3. THE MICROPHONE AND SPEAKERS
+
+     Leti asks whether it may use them, then tests them - you hear a tone, you
+     say something and it repeats it back. If a piece is missing it tells you
+     which one instead of failing silently.
+
+     Saying no is also a real answer. Leti works without a microphone; you type
+     instead of speaking. You can change your mind later - see section 5.
+
+After all three, Leti's own window opens. Later launches skip straight to it:
+a few quick checks that nothing has been removed, then the interface.
+
+
+===============================================================================
+5. VOICE SETTINGS
+===============================================================================
+
+In Leti's window, the control marked VOICE opens these. The microphone-and-
+speakers check is the separate button beside it, with the speaker icon.
+
+WHAT YOU CAN CHANGE
+
+  Voice ID            which of your system's voices Leti speaks with. Blank
+                      means the system default. Leti uses the voices your
+                      operating system already has.
+  Speaking rate       words per minute. 180 is the default. 140 is unhurried,
+                      220 is brisk.
+  Volume              0.0 to 1.0.
+  Interrupt mid-      whether saying "stop" cuts Leti off in the middle of a
+  sentence            sentence, or lets the sentence finish first. On by
+                      default.
+
+  Wake word           what to say to get Leti's attention when it is listening
+                      continuously. "hey_leti" by default.
+  Wake word           how sure it has to be before it wakes, from 0 to 1. 0.5
+  sensitivity         by default. Lower it if it does not hear you; raise it if
+                      it wakes up at the television.
+
+  Whisper model       which speech-recognition model listens. "base.en" by
+                      default - English only, fast, accurate enough. The
+                      larger ones are slower and better; the ".en" ones are
+                      English-only and faster than the same size without it.
+  Device              auto, cpu or cuda. Leave it on auto unless you have a
+                      reason.
+  Stop listening      how much silence ends your sentence, in seconds. 1.2 by
+  after               default. Raise it if Leti cuts you off while you think;
+                      lower it if it waits too long before answering.
+
+TURNING THE MICROPHONE OFF AGAIN
+
+  Open the microphone-and-speakers check and say no. Leti keeps working; you
+  type instead of speaking.
+
+
+===============================================================================
+6. THE AI MODEL (QWEN) AND ITS SETTINGS
+===============================================================================
+
+The control marked AI opens these.
+
+  Reasoning model      the model that does the thinking and decides which of
+                       Leti's tools to use. "qwen2.5:7b" by default.
+  Fallback model       used only when the main one cannot be reached or was
+                       never downloaded. Not a fallback for running out of
+                       memory. "mistral-nemo" by default.
+  Vision model         the one that looks at pictures and at your screen.
+                       "llama3.2-vision".
+  Embedding model      the one that files things away so they can be recalled
+                       later. "nomic-embed-text".
+  Temperature          how much the model improvises. 0.3 by default, which is
+                       deliberately low: Leti's job involves choosing the right
+                       tool and getting numbers right, and both get worse as
+                       this goes up.
+  Context window       how much Leti can hold in mind at once, in tokens.
+                       28672. Please read the warning below before changing it.
+
+WHICH MODEL YOUR GRAPHICS CARD CAN RUN
+
+The thing that decides this is not the size of the model. It is the context
+window, because Leti sends its whole tool list with every request and that needs
+room. The window costs graphics memory whether or not a given question uses it.
+
+These are Leti's own figures, at the window it is set to:
+
+  qwen2.5:3b     1.9 GB of weights +  1.0 GB of window  =   3.6 GB
+  qwen2.5:7b     4.4 GB of weights +  1.5 GB of window  =   6.6 GB
+  qwen2.5:14b    8.4 GB of weights +  5.3 GB of window  =  14.4 GB
+  qwen2.5:32b   19.9 GB of weights +  7.0 GB of window  =  27.6 GB
+
+Your card cannot use all of its memory for this: your desktop needs some, and
+some has to be spare. What is left is roughly your card's size less 2.3 GB.
+So:
+
+  8 GB card    ->  qwen2.5:3b
+  12 GB card   ->  qwen2.5:7b     (the default)
+  16 GB card   ->  qwen2.5:7b     - the 14b needs 14.4 and there is 13.7
+  24 GB card   ->  qwen2.5:14b    - a better chooser of tools, and it fits
+
+Going one model too big does not produce an error. Ollama quietly moves part of
+the work onto your processor instead, and a question that needed several steps
+then takes minutes rather than seconds. That is the failure to avoid, and it is
+why the first launch is careful about this.
+
+THE CONTEXT WINDOW - WHY 28672, AND WHY NOT LOWER
+
+Leti has 137 tools. Describing the 129 of them that a normal conversation can
+reach takes about 22,300 tokens of the 28,672, before your question, Leti's
+instructions, anything it remembers about you, or any result a tool returns.
+
+If the total goes past the window, Ollama does not complain. It truncates - and
+what falls off the end is tools. Leti then behaves as though it never had them,
+which looks exactly like a model that is simply bad at its job. Leti warns you
+at startup if the window has stopped being big enough.
+
+So: do not lower this. If you need to free graphics memory, use a smaller model
+(above) or the two Ollama settings in the README's "Fitting your GPU" section,
+which roughly halve what the window costs.
+
+
+===============================================================================
+7. MAKING LETI FASTER, OR LIGHTER
+===============================================================================
+
+Most of this happens without you.
+
+WHAT LETI DOES BY ITSELF
+
+  It reads each request before sending it and shows the model only the tools
+  that request could plausibly need - usually 15 to 30 of the 129 rather than
+  all of them. When it cannot tell, it sends everything, because a missing tool
+  is worse than a slow answer.
+
+  It notices when your machine is busy - above about 90% processor or 92%
+  memory - and spends less on that turn: a smaller tool list, and it skips
+  looking through its long-term memory. It never refuses to do something
+  because of this; it only trims.
+
+  When nothing is happening, nothing runs. No background scanning, no timers,
+  no indexing. The one exception is the check for scheduled tasks, every 30
+  seconds, which reads one small file.
+
+WHAT YOU CAN CHANGE
+
+  Dynamic tool routing (under AI) can be turned off, which sends the whole tool
+  list every time. It is on by default. Turning it off makes every question
+  slower and leaves less room for the conversation; the only reason to do it is
+  to check whether routing is the cause of something.
+
+IF LETI FEELS SLOW
+
+  - A question that needs several steps is genuinely several requests to the
+    model. Watch the window; it says what it is doing.
+  - If every answer is slow, the model is probably too big for your graphics
+    card. See section 6.
+  - Diagnostics (section 12) reports how long recent turns actually took.
+
+
+===============================================================================
+8. PERSONALITY
+===============================================================================
+
+The control marked MANNER opens this. It changes how Leti talks to you - how
+brief, how formal, what it calls you, what it should avoid - not what it is
+allowed to do. Permissions are section 10 and are entirely separate.
+
+What you set is kept in data\personality.json, alongside what Leti has learned
+about you in data\user_profile.json. Both are ordinary files in your Leti
+folder; deleting either resets that part and nothing else.
+
+You can also just tell Leti. "Be more brief", "stop explaining things I already
+know", "call me Sam" - said in conversation, these are remembered.
+
+
+===============================================================================
+9. TASKS THAT RUN ON THEIR OWN
+===============================================================================
+
+Leti can do things on a schedule, and it can watch for something and tell you
+when it happens. The control marked TASKS shows what is running, what is
+scheduled and what has already happened.
+
+ASK FOR THEM IN WORDS
+
+  "Every Monday at 9, summarise last week's mail"
+  "Tell me if that file changes"
+  "Check that page every hour and let me know if the price drops"
+
+WHEN THEY RUN
+
+  By default, only while Leti is open. If you want a Monday-morning task to run
+  on Monday morning whether or not you have opened Leti, ask Leti to set that
+  up - it arranges it with Windows Task Scheduler (or cron, or launchd) for you.
+
+WHAT A TASK IS ALLOWED TO DO WITHOUT YOU THERE
+
+  A task that runs when Leti is closed - started by the system scheduler, with
+  no window and nobody at the keyboard - is held to a shorter leash than one you
+  asked for and are sitting in front of. There is nobody to answer a prompt, so
+  instead of asking, it goes ahead with the harmless classes and refuses the
+  rest:
+
+    reads things, runs things, changes things on this machine   goes ahead
+    sends something outside this machine                        needs your
+                                                               approval, given
+                                                               when the task was
+                                                               set up
+    anything that cannot be undone                             always waits for
+                                                               you
+
+  So "email me a summary every Monday" does send the mail - because you approved
+  that when you asked for it - and a step the task decided on by itself that
+  would send mail does not. Deleting something is never covered either way.
+  Whatever is refused is written into the task's history with the reason, so you
+  find out that it did not happen rather than assuming it did.
+
+WHEN A TASK KEEPS FAILING
+
+  After five failures in a row a task turns itself off and says so, rather than
+  failing silently forever. You can look at why in the Tasks panel and switch it
+  back on once whatever it needed is there.
+
+
+===============================================================================
+10. PERMISSIONS - WHAT LETI MAY DO WITHOUT ASKING
+===============================================================================
+
+The control marked PERMITS opens this. It groups everything Leti can do the way
+you would describe it - Files, Browser, Email, Calendar, Computer, System - and
+says plainly what each one currently does: runs without asking, stops and asks
+you first, or is refused.
+
+HOW IT DECIDES
+
+  Every tool Leti has is classified by what it does to the world:
+
+    read       looks at something and changes nothing
+    execute    does something that undoes itself, or reaches nothing private
+    modify     changes something on this machine
+    external   sends something outside it - mail, a post, an order
+    critical   cannot be undone
+
+  Out of the box, Leti asks before anything classed modify, external or
+  critical, and does read and execute without asking. Critical always asks,
+  whatever you set - that one is not yours to turn off, and deleting a file
+  is in it.
+
+  A confirmation waits 15 seconds for your answer. No answer is a no.
+
+WHAT IS REFUSED OUTRIGHT
+
+  Some things are refused regardless of what you allow, because no confirmation
+  makes them a good idea: deleting everything, writing into your Windows folder
+  or your SSH keys, formatting a drive, a handful of shell commands whose only
+  purpose is destruction. This list is not something Leti can be talked into
+  changing, and it is not in the settings panel.
+
+DRY RUN
+
+  There is a setting that makes Leti describe every action it would take without
+  taking any of it. It is off by default. It is a useful way to watch what a new
+  scheduled task would actually do before letting it do it.
+
+ONE THING WORTH KNOWING
+
+  Leti's window is served over your local network, so you can open it on your
+  phone on the same Wi-Fi. That is on by default, and a device that is not this
+  computer has to present a token before it can do anything - the token is in
+  data\gui_remote_token.txt and is printed when Leti starts.
+
+  This is home-network-level security, like your router's admin page. Never
+  forward it through your router to the internet. If you do not want it, set
+  enable_remote_access to false under gui in your settings (section 14) and Leti
+  will listen only to this machine.
+
+
+===============================================================================
+11. CONNECTIONS - MAIL, CALENDAR, AND THE REST
+===============================================================================
+
+The control marked CONNECTIONS opens this. Each entry is something outside this
+machine that Leti can use once you have given it the details:
+
+  Email                 IMAP and SMTP - reading and sending your mail
+  Calendar              CalDAV - reading and creating events
+  Zoom                  creating meeting links
+  Microsoft Teams       creating meeting links
+  GitHub                reading repositories and opening pull requests
+  Market data           Alpaca, paper trading only - no real money
+  YouTube               reading channels
+  Reddit                reading Reddit
+  Weather               where you are, so a forecast means your forecast
+
+Nothing here is required. Leti works with none of it configured; the parts that
+need an account simply say so.
+
+WHERE YOUR PASSWORDS GO
+
+  Into config\settings.local.yaml, in your Leti folder, readable only by you.
+  Never into config\settings.yaml, which is the commented file this guide keeps
+  pointing at. Once a password is saved, the panel shows "(currently set)" and
+  never shows the value again - not to you, not to the model, and not in any
+  log.
+
+  For mail, use an app-specific password from your provider rather than your
+  real one. Every provider worth using offers these, and one can be revoked
+  without changing anything else.
+
+BEFORE IT TRIES
+
+  If you ask Leti to send mail and no mail account is set up, it tells you that,
+  and where to set it up. It does not attempt it and report a failure that reads
+  like a bug.
+
+
+===============================================================================
+12. WHEN SOMETHING DOES NOT WORK
+===============================================================================
+
+FIRST: ASK LETI
+
+    "run full Leti diagnostics"
+
+  It checks its models, its memory, its tasks, its watches, its connections and
+  this machine's resources, and reports on each one. "Not tested" and "not
+  configured" are results it will give you rather than calling something fine
+  because it did not look. It changes nothing and sends nothing while doing it.
+
+  The diagnostics button in Leti's window shows the shorter, continuous version:
+  how the last few turns went, what is running, what is holding what.
+
+PARTICULAR THINGS
+
+  Leti will not start at all
+      Look at the window the launcher left open; the reason is on it. Starting
+      it again is safe and carries on from where it stopped.
+
+  "Leti cannot reach the model"
+      Ollama is not running. Start it. If it is running on another machine or
+      another port, set ollama.host (section 14).
+
+  The answers are very slow
+      The model is probably too big for your graphics card. Section 6.
+
+  Leti seems to have forgotten a tool it used to have
+      Also section 6 - this is what a context window that has become too small
+      looks like. Leti warns about it at startup.
+
+  Leti cannot hear me
+      Open the microphone-and-speakers check and test it. If the test tone plays
+      but the microphone does not register, it is usually the wrong input device
+      or the operating system's own microphone permission.
+
+  Leti talks over me, or cuts me off
+      "Stop listening after" in Voice settings, section 5.
+
+  A scheduled task did not run
+      It only runs while Leti is open unless you asked for it to be set up with
+      the system scheduler. And a task that failed five times in a row has
+      turned itself off - the Tasks panel says so, and why.
+
+  The shortcut on my Desktop is gone
+      Section 3.
+
+WHAT TO LOOK AT YOURSELF
+
+  logs\ in your Leti folder. logs\audit.log is the record of every action Leti
+  took that changed anything, with what it was and when.
+
+
+===============================================================================
+13. RESETTING AND REPAIRING
+===============================================================================
+
+These go from gentlest to most thorough. None of them needs a reinstall.
+
+  A SHORTCUT IS WRONG
+      Run scripts\install_windows_launcher.ps1 (section 3).
+
+  A PACKAGE HAS GONE MISSING
+      Nothing to do. The launcher checks on every start that every package is
+      still on disk, and puts back anything that has been removed.
+
+  THE PYTHON ENVIRONMENT IS BROKEN
+      Delete leti_env\ (or leti_runtime\, whichever you have) and launch again.
+      It is rebuilt from scratch. Nothing in data\ or config\ is touched, so
+      Leti remembers everything it remembered before.
+
+  SETUP SHOULD START OVER FROM THE BEGINNING
+      Delete data\launch_setup.json. That file is only a record of which setup
+      steps have finished; without it the next launch checks all of them again.
+
+  ONE PART OF WHAT LETI REMEMBERS IS WRONG
+      Each is its own file in data\, and deleting one resets that and nothing
+      else: todo_list.json, contacts.json, scheduled_tasks.json,
+      task_history.json, personality.json, user_profile.json. Close Leti first.
+
+  A SETTING HAS BEEN SET TO SOMETHING UNFORTUNATE
+      Delete config\settings.local.yaml. Every setting goes back to the default
+      in config\settings.yaml. Your saved passwords are in that same file, so
+      you will have to enter them again.
+
+  START COMPLETELY FRESH, KEEPING NOTHING
+      Delete data\ and config\settings.local.yaml. Leti starts as it did on the
+      first day.
+
+  BEFORE YOU DO SOMETHING RISKY
+      Ask Leti to take a snapshot first, and to restore from it if you need to.
+      Snapshots live in data\security_snapshots\.
+
+
+===============================================================================
+14. CHANGING SETTINGS BY HAND
+===============================================================================
+
+Almost everything worth changing is in Leti's own panels, and those are the
+better route: they check what you type, they write the file safely, and they
+never damage the commented original.
+
+If you want to go further, there are two files, and the difference matters.
+
+  config\settings.yaml        The one with all the explanations in it. This is
+                             the reference: every setting, what it does, why it
+                             is what it is. Sections that are commented out
+                             with # are optional features that are off.
+
+  config\settings.local.yaml  Your changes. Leti's panels only ever write here,
+                             and anything in here wins over the file above.
+                             This is also where your passwords are, so it is
+                             readable only by you and must never be shared.
+
+The safe way to change something by hand is to put it in settings.local.yaml,
+keeping the same shape as in settings.yaml. To change the port Leti's window is
+served on:
+
+    gui:
+      port: 8500
+
+Only what you write is overridden; everything else keeps its default. Restart
+Leti afterwards.
+
+Some things need a restart rather than taking effect at once - an open database,
+a model already loaded, a server already listening. If a change seems not to
+have happened, restart before concluding it did not work.
+
+THE FULL LIST
+
+  config\settings.yaml is the full list, and it is written to be read. There are
+  39 settings in use and every one of them is explained where it sits. The
+  "All settings" button in Leti's window shows the same list as it currently
+  stands, which is the quickest way to see what a value actually is now rather
+  than what the comment says it defaults to.
+
+STARTING LETI A DIFFERENT WAY
+
+  The launchers open Leti's window. From a terminal in the Leti folder, with the
+  environment the launcher prepared, main.py takes one option:
+
+      --mode text          typed conversation in the terminal
+      --mode voice         push to talk
+      --mode continuous    wake word
+      --mode gui           the window (what the launchers use)
+      --mode run-scheduled run anything that is due, then exit
+
+  In text mode, /settings opens the settings editor and /audio re-runs the
+  microphone and speaker check. "exit" quits.
+
+
+===============================================================================
+15. SAFE CHANGES AND DANGEROUS ONES
+===============================================================================
+
+SAFE - change these freely
+
+  Speaking rate, volume, which voice.
+  Wake word and its sensitivity.
+  How much silence ends your sentence.
+  Personality, in every part.
+  How much Leti volunteers on its own (off, suggestions, notifications,
+    active - notifications by default).
+  The port Leti's window is served on.
+  Your location for the weather.
+  Which connections you set up, and taking one away again.
+  Dry run, for watching what would happen without it happening.
+
+CONSIDER FIRST - sensible reasons to change these, and consequences if you get
+it wrong
+
+  The reasoning model. Bigger is better at choosing tools and worse at
+    everything if it does not fit your card. Section 6 has the arithmetic.
+  Temperature. Above about 0.7 the model starts improvising, which for an
+    assistant that picks tools and reports numbers is not a feature.
+  The Whisper model. Larger hears better and answers later.
+  Which action classes ask before running. Allowing "modify" without asking
+    means files change without a prompt. That may be what you want; know that
+    it is what you chose.
+  Turning dynamic tool routing off. Every question gets slower and the
+    conversation gets less room.
+  Turning the request timeout down. A long answer on a slow machine gets cut
+    off rather than finishing.
+
+DO NOT - each of these breaks something in a way that is hard to recognise
+
+  Do not lower the context window (num_ctx) below 28672. Ollama will not
+    complain; it will silently drop tools off the end of the request, and Leti
+    will look broken rather than constrained. This is the single change most
+    likely to make Leti seem stupid.
+  Do not allow "critical" to run without asking. It cannot be done from the
+    panel and should not be done by hand. Deleting files is in that class.
+  Do not edit config\permissions.yaml. It is what stops Leti deleting your home
+    directory, and it is not a settings file.
+  Do not expose Leti's window to the internet. On your own network, behind your
+    own router, it is fine. Forwarded through the router it is a way into this
+    machine.
+  Do not put a password into config\settings.yaml. That file is not private in
+    the way settings.local.yaml is. Use Leti's own panels and they will put it
+    in the right place.
+  Do not edit anything in data\ while Leti is running. Close it first.
+  Do not change what is in leti_env\ or leti_runtime\ by hand. If something is
+    wrong there, delete the folder and let it be rebuilt (section 13).
+
+
+===============================================================================
+16. UPDATING LETI
+===============================================================================
+
+  1. Close Leti.
+  2. Replace the code with the new version - if your folder came from git,
+     `git pull` in it; otherwise copy the new files over the old ones.
+  3. Double-click the launcher again.
+
+The launcher notices that the list of required packages has changed and installs
+what is new before starting. You do not have to do anything about packages
+yourself.
+
+WHAT AN UPDATE DOES NOT TOUCH
+
+  data\, so everything Leti remembers about you survives.
+  config\settings.local.yaml, so your settings and passwords survive.
+  Your Desktop and Start Menu shortcuts.
+
+WHAT TO DO IF AN UPDATE GOES WRONG
+
+  Delete leti_env\ (or leti_runtime\) and launch again, which rebuilds the
+  environment from the new requirements. Your data and settings are in different
+  folders and are not affected.
+
+UPDATING OLLAMA AND THE MODELS
+
+  Those are separate and not Leti's to do. Ollama updates itself the way you
+  installed it. To get a newer version of a model, run `ollama pull` with its
+  name. Leti uses whatever Ollama has.
+
+
+===============================================================================
+
+Anything not answered here: ask Leti. "What can you do", "what am I letting you
+do", "which of my accounts are set up", "run full Leti diagnostics" and "why did
+that fail" are all questions it answers about itself.
+
+README.md in this folder is the same story told for somebody who wants to read
+the code.
+===============================================================================

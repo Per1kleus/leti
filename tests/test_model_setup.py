@@ -370,3 +370,47 @@ def test_the_screen_text_names_the_hardware_and_the_reason():
     assert "Ryzen 5" in text
     assert "qwen2.5:7b" in text
     assert "KV cache" in text, "the reason the bigger model was ruled out is not shown"
+
+
+# --- The numbers in settings.yaml are this module's numbers -------------------------
+
+def test_settings_yaml_quotes_the_arithmetic_this_module_computes():
+    """config/settings.yaml tells the user which model their card can run.
+
+    It is the first thing anyone reads when choosing a model, and it had been
+    computed at a num_ctx of 24,576 - two windows ago - so it advised a 16GB card
+    to use the 14b. At the configured window the 14b needs 14.35 GiB against a
+    13.7 GiB budget, and Ollama answers that by moving layers onto the CPU rather
+    than by refusing. Wrong advice that looks authoritative, so it is checked.
+    """
+    import pathlib
+    import re
+
+    import yaml
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = (root / "config" / "settings.yaml").read_text(encoding="utf-8")
+    num_ctx = int(yaml.safe_load(text)["ollama"]["num_ctx"])
+
+    # "  #   qwen2.5:7b    4.4 GiB weights +  1.53 GiB KV =  6.63 GiB"
+    claims = dict()
+    for model, weights, kv, total in re.findall(
+            r"(qwen2\.5:\d+b)\s+([\d.]+) GiB weights \+\s+([\d.]+) GiB KV =\s+([\d.]+) GiB", text):
+        claims[model] = (float(weights), float(kv), float(total))
+    assert claims, "settings.yaml no longer states the per-model VRAM arithmetic"
+
+    for candidate in model_setup.CANDIDATES:
+        name = candidate["model"]
+        if name not in claims:
+            continue
+        weights, kv, total = claims[name]
+        assert weights == candidate["weights_gib"], f"{name} weights"
+        assert kv == model_setup._kv_gib(candidate, num_ctx), f"{name} KV cache at {num_ctx}"
+        assert total == model_setup._needs_gib(candidate, num_ctx), f"{name} total"
+
+    # And the budgets the same comment quotes, from the same reserves.
+    for vram, budget in ((8, 5.7), (12, 9.7), (16, 13.7), (24, 21.7)):
+        computed = round(vram - model_setup._VRAM_RESERVED_GIB
+                         - model_setup._VRAM_HEADROOM_GIB, 2)
+        assert computed == budget, f"{vram}GB budget is {computed}, not the {budget} claimed"
+        assert f"{vram}GB -> {budget}" in text, f"settings.yaml no longer states the {vram}GB budget"

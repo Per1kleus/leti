@@ -305,7 +305,7 @@ module in `core/`, `tools/`, `gui/`, `audio/` or `memory/` imports `launcher/`.
    ```
 2. **Pull the models referenced in `config/settings.yaml`:**
    ```bash
-   ollama pull qwen2.5:14b
+   ollama pull qwen2.5:7b
    ollama pull mistral-nemo
    ollama pull llama3.2-vision
    ollama pull nomic-embed-text
