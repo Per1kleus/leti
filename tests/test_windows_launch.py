@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import ast
 import sys
 import zipfile
 from pathlib import Path
@@ -714,10 +715,44 @@ def test_nothing_in_leti_imports_the_launcher():
 
 
 def test_main_py_was_not_changed_to_suit_the_launchers():
-    """The developer path is `python main.py`, exactly as before."""
-    source = (ROOT / "main.py").read_text()
-    assert "launcher" not in source
-    assert "leti_env" not in source and "leti_runtime" not in source
+    """The developer path is `python main.py`, exactly as before.
+
+    What must stay true is that main.py does not DEPEND on the launchers: no
+    import of launcher/, and no code that reads or reasons about the environments
+    they build. It was a search for the word, which also caught a comment
+    explaining why a warning on stderr goes unseen when a launcher hides the
+    console - a fact about the launchers rather than a dependency on them. So it
+    looks at the code now, with the prose taken out.
+    """
+    import ast
+
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("launcher"), "main.py imports the launcher"
+        elif isinstance(node, ast.ImportFrom):
+            assert not (node.module or "").startswith("launcher"), \
+                "main.py imports from the launcher"
+
+    # Every string and name in main.py with the docstrings and comments removed.
+    code_only = ast.unparse(tree)
+    for docstring in _docstrings(tree):
+        code_only = code_only.replace(docstring, "")
+    for forbidden in ("leti_env", "leti_runtime", "launch_setup"):
+        assert forbidden not in code_only, \
+            f"main.py refers to {forbidden}, which belongs to the launchers"
+
+
+def _docstrings(tree):
+    """Every docstring in the tree, so prose can be excluded from a code check."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            text = ast.get_docstring(node, clean=False)
+            if text:
+                yield text
 
 
 def test_the_setup_uses_only_the_standard_library():

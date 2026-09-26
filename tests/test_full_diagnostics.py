@@ -30,9 +30,9 @@ def report(registry):
 # --- What it covers -------------------------------------------------------------------
 
 EXPECTED_SUBSYSTEMS = {
-    "Core", "Model", "Ollama", "Tool registry", "Permissions", "Memory",
-    "Project Memory", "Coding Mode", "Business Mode", "Calendar", "GitHub",
-    "Voice", "Computer Use", "Scheduler", "Workflows", "Connections",
+    "Core", "Model", "Ollama", "Tool registry", "Permissions", "Context window",
+    "Memory", "Project Memory", "Coding Mode", "Business Mode", "Calendar",
+    "GitHub", "Voice", "Computer Use", "Scheduler", "Workflows", "Connections",
 }
 
 

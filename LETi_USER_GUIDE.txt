@@ -523,7 +523,8 @@ PARTICULAR THINGS
 
   Leti seems to have forgotten a tool it used to have
       Also section 6 - this is what a context window that has become too small
-      looks like. Leti warns about it at startup.
+      looks like. Ask for diagnostics: the "Context window" check measures the
+      tool list against the window and says whether it still fits.
 
   Leti cannot hear me
       Open the microphone-and-speakers check and test it. If the test tone plays
@@ -543,8 +544,14 @@ PARTICULAR THINGS
 
 WHAT TO LOOK AT YOURSELF
 
-  logs\ in your Leti folder. logs\audit.log is the record of every action Leti
-  took that changed anything, with what it was and when.
+  logs\ in your Leti folder holds two things worth reading:
+
+    logs\leti.log     what Leti was doing, including every warning. This is
+                      where to look when something went wrong and you have
+                      closed the window it happened in. It is capped and rolls
+                      over, so it will not fill your disk.
+    logs\audit.log    every action Leti took that changed anything: what it
+                      was, when, and whether you were asked first.
 
 
 ===============================================================================

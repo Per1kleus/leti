@@ -207,6 +207,7 @@ def test_every_file_the_guide_tells_you_to_use_exists(guide, named):
     "data\\task_history.json",
     "data\\security_snapshots\\",
     "logs\\audit.log",
+    "logs\\leti.log",
 ])
 def test_every_runtime_file_the_guide_names_is_one_the_code_writes(guide, named):
     """These do not exist in a fresh checkout, so the check is that the code

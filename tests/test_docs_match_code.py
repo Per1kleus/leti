@@ -153,3 +153,65 @@ def test_the_fourteen_b_option_is_qwen25_14b():
         text = path.read_text()
         for match in re.findall(r"\bqwen[\d.:]*14b\b", text, flags=re.IGNORECASE):
             assert match == "qwen2.5:14b", f"{path.name} references {match!r}"
+
+
+# --- The warning about this reaches somebody -----------------------------------------
+
+def test_the_context_window_is_a_diagnostic_and_not_only_a_log_line(registry):
+    """main.py logs this at startup; logging alone was not enough.
+
+    The Windows launchers start Leti in a console and hide that console as soon as
+    Leti's own window appears, so a warning on stderr goes somewhere nobody is
+    looking - and this particular warning exists because nothing said anything the
+    first time the tool list outgrew num_ctx. It is a check as well now, so it
+    reaches the panel and "run full Leti diagnostics".
+    """
+    from core import diagnostics
+
+    result = diagnostics._check_context_window(registry)
+    assert result["subsystem"] == "Context window"
+    assert result["state"] in diagnostics.CHECK_STATES
+    # It measures, rather than reporting a state it cannot justify.
+    assert result["tool_tokens"] > 0
+    assert result["context_size"] == get_settings()["ollama"]["num_ctx"]
+
+    report = diagnostics.full_check(registry)
+    named = [check["subsystem"] for check in report["checks"]]
+    assert "Context window" in named, "the full check no longer includes it"
+
+
+def test_the_context_window_check_fails_when_the_tools_no_longer_fit(registry, monkeypatch):
+    """The state that matters, forced, so it is known to be reachable."""
+    from core import config_loader, diagnostics
+
+    real = config_loader.get_settings()
+    tiny = {**real, "ollama": {**real["ollama"], "num_ctx": 4096}}
+    monkeypatch.setattr(diagnostics, "_check", diagnostics._check)
+    monkeypatch.setattr(config_loader, "get_settings", lambda: tiny)
+
+    result = diagnostics._check_context_window(registry)
+    assert result["state"] == diagnostics.FAIL
+    assert "4,096" in result["detail"]
+    assert "config/settings.yaml" in result["detail"], "it does not say where to change it"
+
+
+def test_the_log_goes_to_a_file_as_well_as_the_screen():
+    """logs/ is what both documents tell people to look at when something broke."""
+    import logging
+
+    import main
+
+    assert main.LOG_FILE_NAME == "leti.log"
+    assert main.LOG_FILE_BYTES > 0 and main.LOG_FILE_KEEP > 0, "an uncapped log file"
+
+    main._log_to_a_file()
+    handlers = [h for h in logging.getLogger().handlers
+                if getattr(h, "_leti_log_file", False)]
+    assert len(handlers) == 1, f"{len(handlers)} log-file handlers attached"
+
+    # Idempotent: build_app calls _apply_log_level once, but a second call must not
+    # stack a second handler and write every line twice.
+    main._log_to_a_file()
+    main._log_to_a_file()
+    assert len([h for h in logging.getLogger().handlers
+                if getattr(h, "_leti_log_file", False)]) == 1

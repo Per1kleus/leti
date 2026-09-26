@@ -670,6 +670,78 @@ def _check_tools(registry: Any) -> Dict[str, Any]:
                   registered=len(names))
 
 
+def _check_context_window(registry: Any) -> Dict[str, Any]:
+    """Does the tool list still fit num_ctx?
+
+    main.py works this out at startup and logs a warning, which was the whole of
+    the answer and is not enough: logging goes to a console, and the Windows
+    launchers hide that console the moment Leti's own window appears. The one
+    warning the code went out of its way to add - because "nothing anywhere said
+    so" the first time this happened - was therefore invisible in the normal way
+    of starting Leti. It is a check as well now, so it reaches the panel and
+    "run full Leti diagnostics" rather than only a log nobody is looking at.
+
+    The arithmetic is main.py's, kept in step by tests/test_docs_match_code.py.
+    """
+    try:
+        from core.config_loader import get_settings
+
+        num_ctx = int(get_settings().get("ollama", {}).get("num_ctx", 0))
+    except Exception as e:
+        return _check("Context window", NOT_AVAILABLE,
+                      f"ollama.num_ctx could not be read: {e}")
+    if not num_ctx:
+        return _check("Context window", NOT_CONFIGURED,
+                      "ollama.num_ctx is not set, so how much Leti can hold in mind is "
+                      "whatever Ollama defaults to.")
+    if registry is None:
+        return _check("Context window", NOT_TESTED,
+                      f"num_ctx is {num_ctx:,}; without the registry the tool list could "
+                      "not be measured against it.", context_size=num_ctx)
+
+    try:
+        import json
+
+        from core import modes
+
+        widest, tool_tokens = "", 0
+        for name in modes.MODES:
+            tokens = len(json.dumps(registry.schemas_for(modes.visible_tools(registry, name)))) // 4
+            if tokens > tool_tokens:
+                widest, tool_tokens = name, tokens
+    except Exception as e:
+        return _check("Context window", NOT_TESTED,
+                      f"The tool list could not be measured ({e}).", context_size=num_ctx)
+
+    # The rest of a turn: system prompt, personality, profile, recalled memories,
+    # the rolling buffer, and every tool result appended during the loop. The same
+    # figure main.py reserves.
+    headroom = 6000
+    needed = tool_tokens + headroom
+    if needed > num_ctx:
+        return _check("Context window", FAIL,
+                      f"{widest} mode's tools are about {tool_tokens:,} tokens and "
+                      f"ollama.num_ctx is {num_ctx:,}. Ollama truncates instead of "
+                      f"erroring, so tools are going missing and Leti will seem to have "
+                      f"forgotten them. Raise num_ctx to at least {needed:,} in "
+                      f"config/settings.yaml.",
+                      context_size=num_ctx, tool_tokens=tool_tokens, needs=needed)
+    spare = num_ctx - needed
+    if spare < headroom // 2:
+        return _check("Context window", WARNING,
+                      f"{widest} mode's whole tool list is about {tool_tokens:,} tokens of "
+                      f"{num_ctx:,}, leaving {spare:,} beyond what one turn can need. "
+                      f"An ordinary turn is nowhere near this - routing sends a fraction of "
+                      f"the list - but the turn routing cannot narrow sends all of it, and "
+                      f"that turn is close to the edge. Adding tools without raising "
+                      f"num_ctx is what tips it over; nothing needs doing today.",
+                      context_size=num_ctx, tool_tokens=tool_tokens, needs=needed)
+    return _check("Context window", PASS,
+                  f"{widest} mode's tools are about {tool_tokens:,} tokens of {num_ctx:,}, "
+                  f"with {spare:,} spare beyond a normal turn.",
+                  context_size=num_ctx, tool_tokens=tool_tokens, needs=needed)
+
+
 def _check_permissions(registry: Any) -> Dict[str, Any]:
     try:
         from core.config_loader import get_permissions
@@ -940,6 +1012,7 @@ def full_check(registry: Any = None, reach_out: bool = False) -> Dict[str, Any]:
         ("Ollama", lambda: _check_ollama(reach_out)),
         ("Tool registry", lambda: _check_tools(registry)),
         ("Permissions", lambda: _check_permissions(registry)),
+        ("Context window", lambda: _check_context_window(registry)),
         ("Memory", lambda: _check_memory()),
         ("Project Memory", lambda: _check_project_memory()),
         ("Coding Mode", lambda: _check_mode("coding", "Coding Mode", registry)),

@@ -834,3 +834,57 @@ def test_nothing_is_emitted_for_nothing():
     assert buffer.feed("") == []
     assert buffer.flush() == []
     assert buffer.text == ""
+
+
+@pytest.mark.asyncio
+async def test_a_chart_that_was_asked_for_appears_even_when_the_machine_is_busy(
+        guard_factory, monkeypatch):
+    """A visual somebody asked for is not one of the optional savings.
+
+    core/performance.py turns derive_visuals off above 90% CPU or 92% memory, and
+    the orchestrator read that flag before asking whether anyone had asked for a
+    visual. So "plot these measurements" produced no chart and said nothing about
+    why - and whether it happened at all depended on how busy the machine was at
+    that moment, which is how this was found: as an intermittent failure of the
+    test above on a loaded machine.
+    """
+    from core import performance
+
+    monkeypatch.setattr(performance, "for_turn",
+                        lambda intent=None, measure=True: performance.Mode(
+                            name=performance.PRESSURE, tool_budget=10,
+                            recall_memory=False, derive_visuals=False,
+                            reason="forced, so the saving is the one under test"))
+
+    orch, _ = _orchestrator(guard_factory, [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "visualize_dataset", "arguments": {"path": "/tmp/x.csv"}}}]},
+        ["Here is the graph."]])
+    voice = Voice().attach(orch)
+    await orch.handle_user_input("plot these measurements")
+
+    charts = [v for v in voice.shown if v.get("type") == "images"]
+    assert charts, "a chart that was asked for was dropped because the machine was busy"
+    assert charts[0]["offer"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_shape_nobody_asked_about_is_still_skipped_when_the_machine_is_busy(
+        guard_factory, monkeypatch):
+    """The other half: the saving still happens where it was meant to."""
+    from core import performance
+
+    monkeypatch.setattr(performance, "for_turn",
+                        lambda intent=None, measure=True: performance.Mode(
+                            name=performance.PRESSURE, tool_budget=10,
+                            recall_memory=False, derive_visuals=False, reason="forced"))
+
+    orch, _ = _orchestrator(guard_factory, [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "list_business_data", "arguments": {}}}]},
+        ["Four leads, all this week."]])
+    voice = Voice().attach(orch)
+    await orch.handle_user_input("how many leads are there")
+
+    derived = [v for v in voice.shown if v.get("type") not in ("transcript", "math")]
+    assert not derived, f"a shape nobody asked about was still derived: {derived}"

@@ -19,7 +19,7 @@ import sys
 from typing import Dict
 
 from core import speech, transcript
-from core.config_loader import ensure_data_dirs, get_settings
+from core.config_loader import ensure_data_dirs, get_settings, resolve_path
 from core.llm_client import OllamaClient
 from core.orchestrator import Orchestrator
 from core.safety_guard import SafetyGuard
@@ -208,6 +208,11 @@ logging.basicConfig(
 logger = logging.getLogger("leti.main")
 
 
+LOG_FILE_NAME = "leti.log"
+LOG_FILE_BYTES = 2 * 1024 * 1024
+LOG_FILE_KEEP = 3
+
+
 def _apply_log_level() -> None:
     """Honor app.log_level from settings.yaml, which was documented but unread.
 
@@ -220,6 +225,41 @@ def _apply_log_level() -> None:
         logging.getLogger().setLevel(level)
     else:
         logger.warning(f"Unknown app.log_level '{level_name}' - keeping INFO.")
+    _log_to_a_file()
+
+
+def _log_to_a_file() -> None:
+    """Also write the log to logs/leti.log.
+
+    basicConfig above sends everything to stderr and nothing else, and in the way
+    Leti is normally started there is nobody reading stderr: the Windows launchers
+    open Leti in a console and then hide that console the moment Leti's own window
+    appears. So every warning went somewhere invisible - including the one about
+    the tool list outgrowing num_ctx, which exists precisely because nothing said
+    so the first time it happened. README and the user guide both point people at
+    logs/ when something needs explaining; this is what makes that true.
+
+    Rotating, because a log that grows forever is its own problem on a machine
+    somebody actually uses. Never fatal: a logs/ directory that cannot be written
+    to is a reason to carry on with stderr, not a reason not to start.
+    """
+    root = logging.getLogger()
+    if any(getattr(h, "_leti_log_file", False) for h in root.handlers):
+        return                                    # already attached
+    try:
+        from logging.handlers import RotatingFileHandler
+
+        path = resolve_path(get_settings()["paths"]["logs_dir"]) / LOG_FILE_NAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=LOG_FILE_BYTES,
+                                      backupCount=LOG_FILE_KEEP, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        handler._leti_log_file = True             # so a second call does not stack
+        root.addHandler(handler)
+        logger.debug("Logging to %s", path)
+    except Exception as e:
+        logger.warning("Couldn't open a log file, so the log is only on screen: %s", e)
 
 
 def build_tool_registry(llm_client: OllamaClient, browser_session: BrowserSession, social_login_manager: SocialLoginManager) -> ToolRegistry:

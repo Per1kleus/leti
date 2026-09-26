@@ -161,8 +161,10 @@ def test_the_hook_is_still_only_reached_for_successful_results():
     surface or output that is not a mapping must each still stop it. Asserted as
     three conditions rather than one line of source so that adding a fourth guard
     is allowed and dropping any of these three is not."""
-    loop = (PROJECT_ROOT / "core" / "orchestrator.py").read_text()
-    hook = re.search(r"if \(?result\.success[^\n]*(\n[^\n]*)?\):", loop)
+    loop = (PROJECT_ROOT / "core" / "orchestrator.py").read_text(encoding="utf-8")
+    # However many lines the condition wraps onto: it was two, then a fourth guard
+    # made it three, and the number of lines is not what this test is about.
+    hook = re.search(r"if \(?result\.success.*?\):\n", loop, re.DOTALL)
     assert hook, "the visual hook's condition has gone"
     condition = hook.group(0)
     for guard in ("result.success", "self.visual_callback", "isinstance(result.output, dict)"):

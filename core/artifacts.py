@@ -304,10 +304,22 @@ def asked_to_see_something(user_text: str) -> bool:
     return any(f" {phrase} " in joined for phrase in _VISUAL_REQUEST)
 
 
+def was_asked_for(tool_name: str = "", user_text: str = "") -> bool:
+    """Whether a visual from this call is something somebody asked to see.
+
+    The same two conditions should_open uses, asked BEFORE a visual exists - which
+    is what lets the orchestrator tell "deriving a shape from a result, which is a
+    nice-to-have" from "the user said plot this". core/performance.py switches the
+    first off when the machine is busy; the second is not optional, and a chart
+    that silently never appears is not a saving.
+    """
+    return (tool_name in DELIBERATE_VISUAL_TOOLS) or asked_to_see_something(user_text)
+
+
 def should_open(visual: Any, tool_name: str = "", user_text: str = "") -> bool:
     """Whether this visual opens a window by itself, rather than being offered."""
     if not isinstance(visual, dict):
         return False
     if visual.get("type") not in AUTO_OPEN_KINDS:
         return False
-    return (tool_name in DELIBERATE_VISUAL_TOOLS) or asked_to_see_something(user_text)
+    return was_asked_for(tool_name, user_text)

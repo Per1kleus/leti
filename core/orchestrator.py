@@ -791,7 +791,16 @@ class Orchestrator:
                 # deliberately made. Everything else is marked as an offer and appears
                 # as one line in the activity log, openable if it turns out to be
                 # wanted. Answering in words is the normal case.
-                if (result.success and self.visual_callback and self._mode.derive_visuals
+                # derive_visuals is off when the machine is under load, which is
+                # the right saving for a shape nobody asked about and the wrong one
+                # for a chart somebody asked for: "plot these measurements" then
+                # produced no chart and said nothing about why, and it depended on
+                # how busy the machine happened to be. Deliberate visuals are shown
+                # whatever the load; the optional derivation is what pressure drops.
+                asked_for = artifacts.was_asked_for(_called_tool_name(call),
+                                                    last_user_message(messages))
+                if (result.success and self.visual_callback
+                        and (self._mode.derive_visuals or asked_for)
                         and isinstance(result.output, dict)):
                     visual = result.output.get("visual") or artifacts.derive(result.output)
                     if visual:
