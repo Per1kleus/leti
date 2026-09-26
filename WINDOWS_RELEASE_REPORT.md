@@ -55,8 +55,10 @@ Three constraints held deliberately:
   thing that decides what a machine should run. A test asserts the module contains
   no `ollama pull`, no `/api/pull`, and no `reasoning_model`.
 - It **never blocks the launch.** No path raises `SetupFailed` — a test asserts the
-  name does not appear in its code. Leti opens and reports an unreachable model
-  server itself, on screen, which a console that is about to be hidden cannot.
+  name does not appear in its code. Whether Leti runs is not this step's decision,
+  and the machine may be fine in a way it cannot see (a server on another host, a
+  model already loaded). *The reason originally given for this was wrong and is
+  corrected in §8.*
 - `launcher.ollama_setup` is in the spec's `hiddenimports`, because it is imported
   inside a function. Without that the executable would build, run, and silently
   skip the step — this exact bug reintroduced in the one build that cannot be
@@ -193,7 +195,7 @@ Run here, it reports exactly that:
 |---|---|---|
 | 1 | A real Windows `Leti.exe` was built | **NOT MET** — no Windows machine |
 | 2 | Confirmed to be a Windows PE executable | **NOT MET** — no artefact to confirm. The *checker* exists and is validated against four real PEs |
-| 3 | Launches on a clean Windows machine | **NOT TESTED** |
+| 3 | Launches on a clean Windows machine | **NOT TESTED** — and note that without a reachable Ollama it does *not* launch: `main.py` exits. The launcher now shows the reason instead of vanishing (§8) |
 | 4 | Works without pre-installed Python | **NOT TESTED** — the detection defect on that path is fixed and unit-tested |
 | 5 | Installs required packages automatically | **NOT TESTED** — logic unit-tested with injected runners |
 | 6 | Handles a missing/invalid dependency | **NOT TESTED** — nine-case matrix written and ready |
@@ -219,7 +221,70 @@ Run here, it reports exactly that:
 
 ---
 
-## 8. Security
+## 8. Three defects found by running it, after the code was written
+
+Added after a final validation pass. Two of these were mine, from the fix in §2.
+
+### The warm launch could re-run winget forever
+
+`ensure_model_server` was wired into `prepare()`, which runs on **every** launch
+including the warm one. So on a machine with no Ollama and no way to install it,
+every launch re-attempted the installation. **Measured: five launches, five winget
+invocations** — tens of seconds each in reality, with a timeout allowing half an
+hour — on a path documented as half a second of stat calls. A server that would not
+start cost the full 30-second wait every launch too.
+
+Fixed by remembering the failure in the state file bootstrap already owns: an
+install is retried after a day rather than every launch, and the wait after a recent
+failure is 5 s rather than 30. A success clears the record. **Measured after: six
+launches, one invocation; the warm-path cost of the whole step is 1 ms.** The
+thresholds live in `bootstrap`, not in `ollama_setup`, which reads no state because
+it runs before there is any.
+
+### "Leti will still open and say so" was not true
+
+That was my stated reason for the step never blocking a launch, and I wrote it into
+`ollama_setup`'s own user-facing messages **and into this report**. Running Leti
+showed it is false: `main.py` calls `sys.exit(1)` when it cannot reach a model
+server.
+
+Combined with `leti_launcher` hiding the console and *then* starting Leti, the real
+sequence on a machine without Ollama was: prepare everything, hide the console,
+start Leti, Leti exits 1, process ends. **The user double-clicks `Leti.exe` and
+nothing happens at all** — the exact failure that file's docstring says it exists to
+avoid, which it covered for *setup* failing and not for *Leti* failing.
+
+`show_console()` brings it back, and a Leti that stops with a non-zero code now gets
+what a failed setup gets: what failed, what it was doing, where the logs are, what
+to do about the likely cause, and the window held open. A normal close and a
+deliberate Ctrl+C stay silent. The messages that claimed Leti would open and explain
+now say what actually happens. The `.bat` never hid its console and already reported
+this; that is now pinned so the two front doors keep agreeing.
+
+An existing test caught that my new wait did not declare whether its output was
+being captured. It is unreachable in `--print-python` mode, but only by an ordering
+property elsewhere in the same function — correct by accident. It now passes `hold=`
+like the other three.
+
+### The test suite was writing into the real audit log
+
+One full run appended **83 entries** to the project's own `logs/audit.log`, against
+paths like `/tmp/x.csv`, and **23,549 had accumulated**. That file is the permanent
+record of every action Leti took that changed something, and the user guide tells
+people to read it.
+
+Redirecting the *setting* does not work — `model_setup`, `permission_center` and
+`settings_editor` all call `reload_settings()`, which re-reads `settings.yaml` and
+throws the override away partway through a run (tried; it still grew by the same
+18 KB). Redirected at construction instead, session-wide. Now zero bytes per run.
+
+The log is deliberately left **unrotated**: `tests/test_safety_guard.py` says so in
+as many words, and an audit trail that can roll its own evidence away is a weaker
+one. Its size is a documented choice, not a defect.
+
+---
+
+## 9. Security
 
 No regression, and two hardening items carried from the audit still hold: HTTPS is
 enforced on every launcher download, before the request and on the landed URL after
@@ -239,7 +304,7 @@ interpolation reaches a shell.
 
 ---
 
-## 9. Tests
+## 10. Tests
 
 **2795 passing** (was 2723 at the start of this task), pyflakes **0**.
 
@@ -260,7 +325,7 @@ choosing a model remains `core/model_setup.py`'s alone. No test was weakened.
 
 ---
 
-## 10. What a person has to do next
+## 11. What a person has to do next
 
 1. On a clean Windows machine with no Python, no Ollama and no Leti state, put this
    folder there.
