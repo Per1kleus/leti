@@ -330,6 +330,10 @@ class UpdateLeadTool(BaseTool):
                     lead["notes"] = notes
                 save_records(records)
                 return ToolResult(success=True, output={
+                    # The id, so core/verification.py can read the record back and
+                    # say the change is really in the store rather than only that
+                    # the tool returned without erroring.
+                    "id": lead["id"],
                     "lead": lead["name"],
                     "stage": lead.get("stage"),
                     "moved_from": previous if stage and previous != stage else None,

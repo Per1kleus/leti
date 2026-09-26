@@ -378,3 +378,43 @@ def test_mode_activation_is_matched_before_any_model_call():
     turn = re.search(r"async def _handle_one_turn.*?(?=\n    (?:async )?def )",
                      source, re.S).group(0)
     assert turn.index("mode_command") < turn.index("_tool_calling_loop")
+
+
+# --- Tables that name tools -------------------------------------------------------
+
+def test_every_table_that_names_tools_names_real_ones():
+    """A renamed tool must not be able to orphan the tables that reason about it.
+
+    Four modules keep tool names as data: what a tool's effect is verified by,
+    which resource it holds, which account it needs, and which tools only read.
+    A name that no longer exists does not fail - it silently stops covering the
+    tool that replaced it, so a business record came back unverifiable, two tasks
+    writing the same store were not serialised, and "your calendar isn't set up
+    yet" stopped being said. Six dead names were found across three of these
+    tables at once, which is why this is one test over all of them.
+    """
+    from unittest.mock import MagicMock
+
+    import main
+    from core import connections, resources, verification
+
+    real = set(main.build_tool_registry(MagicMock(), MagicMock(), MagicMock()).names())
+    tables = {
+        "verification.VERIFIERS": set(verification.VERIFIERS),
+        "verification.READ_ONLY": set(verification.READ_ONLY),
+        "resources._TOOL_RESOURCES": set(resources._TOOL_RESOURCES),
+        "resources._CONNECTION_OF": set(resources._CONNECTION_OF),
+        "connections.CAPABILITIES": {tool for spec in connections.CAPABILITIES.values()
+                                     for tool in spec["tools"]},
+    }
+    dead = {name: sorted(entries - real) for name, entries in tables.items()
+            if entries - real}
+    assert not dead, f"tables naming tools that no longer exist: {dead}"
+
+
+def test_a_tool_is_not_both_verifiable_and_read_only():
+    """The two lists answer the same question and must not disagree about a tool."""
+    from core import verification
+
+    both = set(verification.VERIFIERS) & set(verification.READ_ONLY)
+    assert not both, f"{sorted(both)} are listed as both having an effect and having none"

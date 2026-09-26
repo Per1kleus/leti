@@ -288,12 +288,17 @@ def describe_conflict(outcome: Dict[str, Any],
 
 # tool -> (argument names to look at, kind, mode). The first argument present
 # wins, so a tool that names its path differently still resolves.
+#
+# A name here that is not a real tool is worse than an omission: the tool that
+# replaced it holds no resource, so two tasks writing the same store are not
+# serialised and nothing says why. create_document, add_business_data and
+# update_business_data were all gone. Checked against the registry by
+# tests/test_architecture_and_performance.py.
 _TOOL_RESOURCES: Dict[str, Tuple[Tuple[str, ...], str, str]] = {
     "read_file":        (("path", "file_path"), FILE, READ),
     "read_document":    (("path", "file_path"), FILE, READ),
     "inspect_document": (("path", "file_path"), FILE, READ),
     "write_file":       (("path", "file_path"), FILE, WRITE),
-    "create_document":  (("path", "file_path"), FILE, WRITE),
     "delete_file":      (("path", "file_path"), FILE, WRITE),
     "list_files":       (("path", "directory", "folder"), DIRECTORY, READ),
     "run_code":         (("path", "file_path"), FILE, READ),
@@ -310,8 +315,8 @@ _TOOL_RESOURCES: Dict[str, Tuple[Tuple[str, ...], str, str]] = {
     "send_email":       ((), CONNECTION, CONTROL),
     "list_new_emails":  ((), CONNECTION, READ),
     "schedule_meeting": ((), CONNECTION, CONTROL),
-    "add_business_data":    ((), STORE, WRITE),
-    "update_business_data": ((), STORE, WRITE),
+    "record_business_data": ((), STORE, WRITE),
+    "update_lead":          ((), STORE, WRITE),
     "list_business_data":   ((), STORE, READ),
 }
 

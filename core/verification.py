@@ -374,9 +374,14 @@ def _verify_command_ran(arguments: Dict[str, Any], result: Any) -> Dict[str, Any
 # is not here has no verifier, which is reported as NOT APPLICABLE and never as
 # success. Read-only tools deliberately stay out: there is nothing in the world
 # for reading a file to have changed.
+#
+# Every name has to be a real tool. Four of them - create_document,
+# add_business_data, update_business_data and save_workflow - had been renamed out
+# of existence, so writing a business record or saving a workflow quietly came back
+# unverifiable while the table looked like it covered them. Checked against the
+# registry by tests/test_verification.py.
 VERIFIERS: Dict[str, Callable[[Dict[str, Any], Any], Dict[str, Any]]] = {
     "write_file": _verify_file_written,
-    "create_document": _verify_file_written,
     "delete_file": _verify_file_deleted,
     "move_file": _verify_file_moved,
     "send_email": _verify_email_sent,
@@ -387,9 +392,10 @@ VERIFIERS: Dict[str, Callable[[Dict[str, Any], Any], Dict[str, Any]]] = {
     "mouse_click": _verify_screen_action,
     "keyboard_type": _verify_screen_action,
     "keyboard_hotkey": _verify_screen_action,
-    "add_business_data": _verify_record_written,
-    "update_business_data": _verify_record_written,
-    "save_workflow": _verify_workflow_saved,
+    "record_business_data": _verify_record_written,
+    "update_lead": _verify_record_written,
+    "create_workflow": _verify_workflow_saved,
+    "manage_workflow": _verify_workflow_saved,
     "activate_workflow": _verify_workflow_saved,
     "create_scheduled_task": _verify_scheduled_task,
     "update_scheduled_task": _verify_scheduled_task,
@@ -402,7 +408,8 @@ READ_ONLY = frozenset({
     "read_file", "list_files", "read_screen", "web_search", "browser_read_page",
     "list_new_emails", "list_business_data", "business_dashboard", "system_report",
     "list_scheduled_tasks", "list_workflows", "view_user_profile", "code_map",
-    "search_images", "get_weather", "inspect_project", "check_calendar_availability",
+    "search_images", "get_weather", "inspect_project", "find_documents",
+    "read_document", "compare_documents",
 })
 
 

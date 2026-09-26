@@ -48,8 +48,7 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "email": {"section": "email", "does": "reading and sending mail",
               "tools": ("send_email", "list_new_emails", "send_meeting_invite_email")},
     "calendar": {"section": "calendar", "does": "reading and creating calendar events",
-                 "tools": ("schedule_meeting", "check_calendar_availability",
-                           "business_calendar")},
+                 "tools": ("schedule_meeting", "business_calendar")},
     "zoom": {"section": "zoom", "does": "creating Zoom meeting links",
              "tools": ("create_video_meeting_link",)},
     "teams": {"section": "teams", "does": "creating Teams meeting links",
@@ -57,13 +56,20 @@ CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "github": {"section": "github", "does": "reading repositories and opening pull requests",
                "tools": ("github",)},
     "trading": {"section": "trading", "does": "market data and paper trading",
-                "tools": ("get_market_data", "place_paper_order", "check_watches")},
+                "tools": ("get_market_quote", "get_paper_positions", "place_paper_order",
+                          "check_watches")},
     "youtube": {"section": "youtube", "does": "reading YouTube channels",
                 "tools": ("get_social_content", "check_social_watches")},
     "reddit": {"section": "reddit", "does": "reading Reddit",
                "tools": ("get_social_content",)},
 }
 
+# Every name above has to be a real tool, or the cheap "is this set up?" check
+# silently stops covering it: check_calendar_availability and get_market_data were
+# renamed out of existence and the table kept naming them, so the tools that
+# replaced them lost the pre-flight answer. tests/test_autonomy_and_connections.py
+# checks the table against the registry.
+#
 # tool name -> capability, built once from the table above.
 _TOOL_NEEDS: Dict[str, str] = {
     tool: name for name, spec in CAPABILITIES.items() for tool in spec["tools"]

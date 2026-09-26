@@ -258,6 +258,26 @@ def test_every_capability_maps_to_a_real_settings_section():
         assert spec["section"] in SECTION_SCHEMAS, f"{name} points at a section that is gone"
 
 
+def test_every_capability_names_real_tools():
+    """The mirror of the test above, on the side that actually went wrong.
+
+    A capability names the tools that need it, and that is how "the calendar is
+    not set up yet" gets said before the tool is tried rather than after it fails.
+    A tool renamed without updating the table takes its capability's cover with
+    it silently: check_calendar_availability and get_market_data were both gone
+    for long enough that nothing noticed.
+    """
+    from unittest.mock import MagicMock
+
+    import main
+
+    registry = main.build_tool_registry(MagicMock(), MagicMock(), MagicMock())
+    real = set(registry.names())
+    gone = [(name, tool) for name, spec in connections.CAPABILITIES.items()
+            for tool in spec["tools"] if tool not in real]
+    assert not gone, f"CAPABILITIES names tools that no longer exist: {gone}"
+
+
 def test_asking_is_cheap_enough_to_do_on_every_tool_call():
     import time
 
