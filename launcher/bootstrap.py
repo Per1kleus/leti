@@ -43,7 +43,7 @@ not patched.
 
 WHAT IT DOES NOT DO
 
-It does not install Ollama or pull models - core/model_setup.py already owns the
+It does not choose or pull models - core/model_setup.py already owns the
 model question and asks it on first launch, inside Leti, where it can see the
 hardware. It does not configure anything. It does not run in the background, hold
 a thread, or stay resident: it returns, and then Leti starts.
@@ -378,11 +378,7 @@ def system_pythons() -> List[Path]:
         if found:
             out.append(Path(found))
     if is_windows():
-        for base in (os.environ.get("LOCALAPPDATA", ""), os.environ.get("PROGRAMFILES", "")):
-            if not base:
-                continue
-            for minor in range(13, 10, -1):
-                out.append(Path(base) / "Programs" / "Python" / f"Python3{minor}" / "python.exe")
+        out.extend(_windows_python_installs())
     seen, unique = set(), []
     for candidate in out:
         key = str(candidate).lower()
@@ -390,6 +386,58 @@ def system_pythons() -> List[Path]:
             seen.add(key)
             unique.append(candidate)
     return unique
+
+
+def _windows_python_installs() -> List[Path]:
+    """Where python.org's installer actually puts Python, newest first.
+
+    Two different layouts, and only one of them was here:
+
+        per-user    %LOCALAPPDATA%\\Programs\\Python\\Python3NN\\python.exe
+        all users   %PROGRAMFILES%\\Python3NN\\python.exe
+
+    The all-users case was being looked for under Programs\\Python too, which is a
+    path that never exists - so a Python installed for all users was never found
+    here. Nor was any version outside 3.11 to 3.13, because the range was written
+    out by hand and 3.14 has since happened.
+
+    Neither was fatal: without PATH and without py.exe, Leti simply fetched its own
+    copy and worked. It just downloaded 11 MB it did not need and built a runtime
+    where a venv on the machine's own Python would have done. Globbed rather than
+    enumerated now, so the next version needs no edit, and sorted so a newer
+    interpreter is preferred over an older one.
+    """
+    found: List[Path] = []
+    for base, pattern in (
+        (os.environ.get("LOCALAPPDATA", ""), "Programs/Python/Python3*"),
+        (os.environ.get("PROGRAMFILES", ""), "Python3*"),
+        (os.environ.get("PROGRAMFILES(X86)", ""), "Python3*"),
+        (os.environ.get("PROGRAMW6432", ""), "Python3*"),
+    ):
+        if not base:
+            continue
+        try:
+            directories = sorted(Path(base).glob(pattern), key=_python_dir_order, reverse=True)
+        except OSError:
+            continue
+        for directory in directories:
+            candidate = directory / "python.exe"
+            if candidate.exists():
+                found.append(candidate)
+    return found
+
+
+def _python_dir_order(directory: Path) -> Tuple[int, ...]:
+    """Sort key for a Python3NN folder, so Python313 comes after Python39.
+
+    Lexically "Python39" sorts above "Python313", which would prefer the older
+    interpreter. The digits are what matters.
+    """
+    digits = "".join(c for c in directory.name if c.isdigit())
+    if not digits:
+        return (0,)
+    # "313" is 3.13, "39" is 3.9 - the first digit is the major version.
+    return (int(digits[0]), int(digits[1:] or 0))
 
 
 def usable_system_python(run: Optional[Callable] = None,
@@ -883,6 +931,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
         # explicit repair (--install-shortcuts) is what puts a deleted one back.
         if not state.get("shortcuts"):
             place_shortcuts(root, progress)
+        ensure_model_server(progress, runner)
         progress.say("Starting Leti...")
         return python
 
@@ -914,6 +963,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     write_state(root, requirements=fingerprint, complete=True, partial=None,
                 witnesses=witnesses_for(wanted, found))
     place_shortcuts(root, progress)
+    ensure_model_server(progress, runner)
     progress.say("Starting Leti...")
     return python
 
@@ -945,6 +995,34 @@ def place_shortcuts(root: Path, progress: Progress,
         progress.step(f"Could not add Leti to your Desktop ({type(e).__name__}) - "
                       "everything else is set up.")
         return []
+
+
+def ensure_model_server(progress: Progress, run: Optional[Callable] = None,
+                        ensure: Optional[Callable] = None) -> str:
+    """Make sure Ollama is installed and answering, and say so if it is not.
+
+    Here because this is the one function both front doors go through, and the
+    executable did not do this at all: Ollama setup lived inside
+    "Launch Leti (Windows).bat", so Leti.exe on a clean machine opened a Leti that
+    could not reach a model. launcher/ollama_setup.py is the single description of
+    that step now, and the .bat no longer carries its own.
+
+    Never fatal, for the same reason place_shortcuts is not: Leti opens and reports
+    an unreachable model server itself, on screen, where this console cannot -
+    leti_launcher hides it as soon as Leti's window appears. Refusing to launch
+    would leave the user with nothing to act on.
+    """
+    try:
+        from launcher import ollama_setup
+
+        verdict = (ensure or ollama_setup.ensure)(progress, run)
+        for line in ollama_setup.describe(verdict):
+            progress.step(line)
+        return verdict
+    except Exception as e:
+        progress.step(f"Could not check on Ollama ({type(e).__name__}) - Leti will "
+                      "open and say whether it can reach a model.")
+        return "unknown"
 
 
 def _remember_partial(root: Path, fingerprint: str, still_missing: Sequence[str]) -> None:

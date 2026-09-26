@@ -136,11 +136,11 @@ if not exist "%LETI_PYTHON%" (
     exit /b 1
 )
 
+REM Pre-pulls the configured models when Ollama is there. Not a gate: whether
+REM Leti opens is not this step's decision, and it is not the executable's either
+REM - both now report an unreachable model server and let Leti say so on screen,
+REM where a console that is about to be hidden cannot.
 call :ensure_ollama
-if not !errorlevel!==0 (
-    pause
-    exit /b 1
-)
 
 REM Appended rather than replaced, and without a stray separator when it was
 REM empty - an empty entry on PYTHONPATH is the current directory, which is
@@ -163,61 +163,22 @@ if not "%STATUS%"=="0" (
 exit /b 0
 
 REM ---------------------------------------------------------------------------
-REM Ollama: installed if missing, started if not running, and asked for whatever
-REM models config/settings.yaml names. Left in this file rather than moved into
-REM bootstrap.py because it is Windows package management rather than Python
-REM environment management, and because core/model_setup.py already owns the
-REM question of WHICH model this machine should run - this only makes sure the
-REM server is there for it to ask.
+REM Models. Installing Ollama and starting it is NOT here any more: it used to be,
+REM and Leti.exe did not do it at all, so the executable opened a Leti that could
+REM not reach a model. It is launcher\ollama_setup.py now, which bootstrap.py's
+REM prepare() runs - and prepare() is what --print-python above already called, so
+REM by this point the server has been dealt with for both front doors by one piece
+REM of code. Two copies of it was the bug.
+REM
+REM What is still here is pre-pulling the models config/settings.yaml names, so a
+REM first conversation is not a multi-gigabyte wait halfway through a sentence.
+REM core/model_setup.py remains the authority on WHICH model this machine should
+REM run; this only fetches the ones already configured.
 REM ---------------------------------------------------------------------------
 :ensure_ollama
+REM No server, nothing to pull from - and prepare() has already said so on screen.
 where ollama >nul 2>nul
-if not !errorlevel!==0 (
-    echo Ollama not found - installing it now ^(one-time^)...
-    where winget >nul 2>nul
-    if !errorlevel!==0 (
-        winget install --id Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements
-        if not !errorlevel!==0 (
-            echo ERROR: winget install failed. Install manually from https://ollama.com/download,
-            echo then re-run this launcher.
-            exit /b 1
-        )
-        echo Ollama installed.
-        where ollama >nul 2>nul
-        if not !errorlevel!==0 (
-            echo Ollama was installed but this window's PATH hasn't picked it up yet.
-            echo Close this window and run the launcher again - it'll be found next time.
-            exit /b 1
-        )
-    ) else (
-        echo ERROR: winget not found, so Ollama can't be auto-installed here. Install manually
-        echo from https://ollama.com/download, then re-run this launcher.
-        exit /b 1
-    )
-    echo.
-)
-
-curl -s -m 2 http://localhost:11434 >nul 2>nul
-if not !errorlevel!==0 (
-    echo Starting Ollama in the background ^(it'll keep running after this window closes^)...
-    powershell -NoProfile -Command "Start-Process ollama -ArgumentList 'serve' -WindowStyle Hidden" >nul 2>nul
-    set "OLLAMA_READY=0"
-    for /l %%i in (1,1,30) do (
-        curl -s -m 2 http://localhost:11434 >nul 2>nul
-        if !errorlevel!==0 (
-            set "OLLAMA_READY=1"
-        )
-        if "!OLLAMA_READY!"=="1" goto :ollama_ready_check
-        timeout /t 1 >nul
-    )
-    :ollama_ready_check
-    if not "!OLLAMA_READY!"=="1" (
-        echo ERROR: Ollama still isn't responding at http://localhost:11434 after 30s.
-        exit /b 1
-    )
-    echo Ollama is up.
-    echo.
-)
+if not !errorlevel!==0 exit /b 0
 
 REM Skipped once the models have been confirmed present, so a normal launch does
 REM not shell out to ollama four times. The marker is removed by changing
@@ -233,7 +194,7 @@ if exist "%MODEL_MARKER%" (
 echo Checking Leti's configured models ^(skips anything already downloaded^)...
 echo First run can take a while and needs several GB of disk space - ollama shows its own progress below.
 set "PULL_OK=1"
-for /f "usebackq delims=" %%M in (`"%LETI_PYTHON%" -c "import yaml; cfg=yaml.safe_load(open('config/settings.yaml')); o=cfg.get('ollama',{}); [print(m) for m in [o.get('reasoning_model'), o.get('fallback_reasoning_model'), o.get('vision_model'), o.get('embedding_model')] if m]" 2^>nul`) do (
+for /f "usebackq delims=" %%M in (`"%LETI_PYTHON%" -c "import yaml; cfg=yaml.safe_load(open('config/settings.yaml', encoding='utf-8')); o=cfg.get('ollama',{}); [print(m) for m in [o.get('reasoning_model'), o.get('fallback_reasoning_model'), o.get('vision_model'), o.get('embedding_model')] if m]" 2^>nul`) do (
     echo   - %%M
     ollama pull "%%M"
     if not !errorlevel!==0 (

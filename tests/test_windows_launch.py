@@ -683,16 +683,45 @@ def test_the_launcher_does_not_own_the_model_question():
     code |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     strings = {n.value.lower() for n in ast.walk(tree)
                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    for forbidden in ("model_setup", "reasoning_model", "ollama"):
+    # "ollama" itself is no longer forbidden: making sure the SERVER is there is
+    # the launcher's business, and is delegated to launcher/ollama_setup.py.
+    # Deciding WHICH model runs is not, and that is what these names are about.
+    for forbidden in ("model_setup", "reasoning_model"):
         assert forbidden not in code, f"the setup calls {forbidden}"
     for text in strings:
         for forbidden in ("ollama pull", "reasoning_model", "qwen"):
             assert forbidden not in text, f"the setup names {forbidden}"
 
 
-def test_ollama_is_still_handled_by_the_launcher_that_always_did():
+def test_the_model_server_step_is_shared_by_both_front_doors():
+    """It used to be the .bat's alone, and that was the bug.
+
+    Nothing under launcher/ mentioned Ollama, so Leti.exe on a clean machine
+    opened a Leti that could not reach a model and said so in a log file behind a
+    console it had just hidden. prepare() is what both front doors go through, so
+    that is where the step lives; tests/test_ollama_setup.py covers its behaviour.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "launcher" / "bootstrap.py").read_text(encoding="utf-8"))
+    functions = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert "ensure_model_server" in functions
+
+    called_in_prepare = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "prepare":
+            called_in_prepare = {ast.unparse(c.func) for c in ast.walk(node)
+                                 if isinstance(c, ast.Call)}
+    assert "ensure_model_server" in called_in_prepare, \
+        "prepare() does not make sure there is a model server"
+
+
+def test_the_bat_still_pre_pulls_the_configured_models():
+    """The half that is not duplicated: fetching models already configured, so a
+    first conversation is not a multi-gigabyte wait halfway through a sentence."""
     bat = BAT.read_text(errors="replace")
-    assert "ollama pull" in bat and "winget install --id Ollama.Ollama" in bat
+    assert "ollama pull" in bat
     assert "reasoning_model" in bat, "the configured models are no longer read"
 
 

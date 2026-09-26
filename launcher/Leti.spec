@@ -53,6 +53,12 @@ a = Analysis(
         # --install-shortcuts branch. Without it the executable builds, runs, and
         # silently never puts Leti on the Desktop.
         "launcher.shortcuts",
+        # Same trap, worse consequence: imported lazily by
+        # bootstrap.ensure_model_server, and without it the executable builds,
+        # runs, and silently never makes sure there is a model server - which is
+        # the bug that module was added to fix.
+        "launcher.ollama_setup",
+        "urllib.error",
     ],
     hookspath=[],
     runtime_hooks=[],
