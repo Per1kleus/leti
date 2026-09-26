@@ -649,13 +649,31 @@ def _download(url: str, destination: Path) -> None:
 
     Written beside its destination and renamed, so an interrupted download is
     never mistaken for a finished one.
+
+    HTTPS is checked rather than assumed, before the request and after it. This
+    said "over HTTPS" and did not enforce it: urllib follows redirects and its
+    redirect handler allows https -> http, so a redirect could have delivered the
+    Python interpreter this is about to run over plaintext. That matters more here
+    than it would elsewhere, because EMBED_SHA256 is deliberately empty - HTTPS is
+    the whole of the trust, so it has to actually hold. The scheme check before the
+    request is for a future caller: nothing but the two constants above is passed
+    in today, and a bug that passed a file:// path should not be a way to run
+    arbitrary code either.
     """
     import urllib.request
+
+    if not str(url).lower().startswith("https://"):
+        raise ValueError(f"refusing to download over anything but HTTPS: {url!r}")
 
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
     with urllib.request.urlopen(url, timeout=120) as response:      # noqa: S310
+        landed = str(getattr(response, "url", "") or url)
+        if not landed.lower().startswith("https://"):
+            raise ValueError(
+                f"{url} redirected to {landed}, which is not HTTPS - refusing it "
+                f"rather than trusting a plaintext download")
         with open(partial, "wb") as handle:
             shutil.copyfileobj(response, handle, length=1 << 20)
     os.replace(partial, destination)

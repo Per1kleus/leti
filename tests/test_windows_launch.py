@@ -17,9 +17,9 @@ with their downloads and subprocesses handed in.
 from __future__ import annotations
 
 import json
+import ast
 import os
 import subprocess
-import ast
 import sys
 import zipfile
 from pathlib import Path
@@ -1794,3 +1794,54 @@ def test_the_launcher_looks_for_every_spelling_of_python():
     """`where py.exe` misses a py launcher registered without the extension."""
     for spelling in ("py.exe", "py ", "python.exe", "python3"):
         assert spelling.strip() in _BAT_TEXT
+
+
+# --- The download that is about to be executed ----------------------------------------
+
+def test_a_download_refuses_anything_but_https():
+    """EMBED_SHA256 is deliberately empty, so HTTPS is the whole of the trust.
+
+    A hash invented by whoever wrote this file would prove only that the download
+    matched what was typed, which is why it is left blank with the command to fill
+    it in. That makes the transport the only thing standing between a fetched
+    Python interpreter and being run - so it is enforced rather than described.
+    """
+    from launcher.bootstrap import _download
+
+    for url in ("http://www.python.org/x.zip", "file:///etc/passwd", "ftp://host/x",
+                "HTTP://www.python.org/x.zip", ""):
+        with pytest.raises(ValueError):
+            _download(url, Path("/tmp/should-not-be-written"))
+    assert not Path("/tmp/should-not-be-written").exists()
+
+
+def test_a_redirect_to_plaintext_is_refused_rather_than_followed():
+    """urllib follows redirects and its redirect handler allows https -> http."""
+    import io
+    import urllib.request
+
+    from launcher import bootstrap
+
+    class Downgraded(io.BytesIO):
+        url = "http://mirror.example.com/python-embed.zip"
+
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = lambda *a, **k: Downgraded(b"not really a zip")
+    try:
+        with pytest.raises(ValueError) as raised:
+            bootstrap._download("https://www.python.org/x.zip",
+                                Path("/tmp/should-not-be-written-either"))
+        assert "not HTTPS" in str(raised.value)
+    finally:
+        urllib.request.urlopen = original
+    assert not Path("/tmp/should-not-be-written-either").exists()
+
+
+def test_the_urls_the_launcher_actually_fetches_are_https():
+    from launcher import bootstrap
+
+    for url in (bootstrap.EMBED_URL, bootstrap.GET_PIP_URL):
+        assert url.lower().startswith("https://"), url
