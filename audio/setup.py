@@ -50,6 +50,91 @@ CHECK_SECONDS = 3.0
 # open mic sits around 0.001-0.01; speech at a normal distance clears 0.05 easily.
 SIGNAL_THRESHOLD = 0.02
 
+# Where the voice path got to. "The microphone is dead" is the wrong answer to
+# most of these and the one people reach for, so every stage has a name and the
+# checks below report which one they reached.
+#
+# The distinction that matters: NO_AUDIO_SIGNAL means the stream opened and
+# delivered silence (a muted input, the wrong device, permission granted to the
+# terminal but not to Python), while VAD_REJECTED and the TRANSCRIPTION_ states
+# mean the microphone worked and something after it did not. Reporting either of
+# those as a dead microphone sends somebody to fix hardware that is fine.
+NO_DEVICE = "NO_DEVICE"
+DEVICE_FOUND = "DEVICE_FOUND"
+DEVICE_OPEN_FAILED = "DEVICE_OPEN_FAILED"
+NO_AUDIO_SIGNAL = "NO_AUDIO_SIGNAL"
+AUDIO_SIGNAL_DETECTED = "AUDIO_SIGNAL_DETECTED"
+VAD_REJECTED = "VAD_REJECTED"
+TRANSCRIPTION_FAILED = "TRANSCRIPTION_FAILED"
+TRANSCRIPTION_EMPTY = "TRANSCRIPTION_EMPTY"
+TRANSCRIPTION_SUCCESS = "TRANSCRIPTION_SUCCESS"
+
+STAGES = (NO_DEVICE, DEVICE_FOUND, DEVICE_OPEN_FAILED, NO_AUDIO_SIGNAL,
+          AUDIO_SIGNAL_DETECTED, VAD_REJECTED, TRANSCRIPTION_FAILED,
+          TRANSCRIPTION_EMPTY, TRANSCRIPTION_SUCCESS)
+
+# What each stage means to somebody who just wants it to work, and what they can
+# do about it. The microphone stages are deliberately the only ones that talk
+# about the microphone.
+STAGE_MEANING = {
+    NO_DEVICE: "No microphone was found on this computer.",
+    DEVICE_FOUND: "A microphone is there but has not been listened to yet.",
+    DEVICE_OPEN_FAILED: ("The microphone could not be opened - usually another "
+                         "program is holding it, or Windows has not been given "
+                         "permission for it."),
+    NO_AUDIO_SIGNAL: ("The microphone opened but nothing came through it. It may be "
+                      "muted, or the wrong input may be selected."),
+    AUDIO_SIGNAL_DETECTED: "The microphone is working and sound is reaching Leti.",
+    VAD_REJECTED: ("Sound reached Leti but was too quiet to count as speech. The "
+                   "microphone is working; it may need to be turned up or spoken "
+                   "into more closely."),
+    TRANSCRIPTION_FAILED: ("The microphone is working and speech recognition failed. "
+                           "This is Whisper, not the microphone."),
+    TRANSCRIPTION_EMPTY: ("The microphone is working and speech recognition heard no "
+                          "words in it. This is Whisper, not the microphone."),
+    TRANSCRIPTION_SUCCESS: "Voice input is working end to end.",
+}
+
+
+def peak_of(audio: bytes) -> float:
+    """Loudest sample in a 16-bit mono buffer, 0.0-1.0.
+
+    Reads the bytes that were already captured, so asking costs no extra
+    recording and nothing is left running to answer it.
+    """
+    if not audio:
+        return 0.0
+    usable = len(audio) - (len(audio) % 2)
+    if usable <= 0:
+        return 0.0
+    values = struct.unpack(f"{usable // 2}h", audio[:usable])
+    return max(abs(v) for v in values) / 32768.0 if values else 0.0
+
+
+def classify_capture(audio: bytes, text: Optional[str],
+                     failed: bool = False) -> str:
+    """Which stage one captured utterance reached.
+
+    The point of this is the difference between "nothing reached the microphone"
+    and "something did and nothing came of it". Both end with Leti saying nothing,
+    and only one of them is a microphone problem - so a user who speaks and gets
+    silence is told which.
+    """
+    if failed:
+        return TRANSCRIPTION_FAILED
+    if peak_of(audio) < SIGNAL_THRESHOLD:
+        # The stream delivered a buffer, so the device is open and working; what
+        # is in the buffer is too quiet to be speech.
+        return VAD_REJECTED if audio else NO_AUDIO_SIGNAL
+    if not (text or "").strip():
+        return TRANSCRIPTION_EMPTY
+    return TRANSCRIPTION_SUCCESS
+
+
+def describe_stage(stage: str) -> str:
+    """One sentence for a stage, for anything that shows this to a person."""
+    return STAGE_MEANING.get(stage, "The state of voice input could not be determined.")
+
 TEST_TONE_HZ = 440.0
 TEST_TONE_SECONDS = 1.2
 TEST_TONE_RATE = 44100
@@ -206,7 +291,9 @@ def measure_microphone(device_index: Optional[int] = None,
     try:
         pa = _pyaudio()
     except Exception as e:
-        return {"ok": False, "error": f"Couldn't open the audio system: {e}"}
+        return {"ok": False, "stage": NO_DEVICE,
+                "error": f"Couldn't open the audio system: {e}",
+                "meaning": describe_stage(NO_DEVICE)}
 
     stream = None
     try:
@@ -225,17 +312,23 @@ def measure_microphone(device_index: Optional[int] = None,
                 total_squares += level * level
             samples += len(values)
         rms = math.sqrt(total_squares / samples) if samples else 0.0
+        heard = peak >= SIGNAL_THRESHOLD
+        stage = AUDIO_SIGNAL_DETECTED if heard else NO_AUDIO_SIGNAL
         return {
             "ok": True,
             "peak": round(peak, 4),
             "rms": round(rms, 4),
-            "heard_sound": peak >= SIGNAL_THRESHOLD,
+            "heard_sound": heard,
             "threshold": SIGNAL_THRESHOLD,
+            "stage": stage,
+            "meaning": describe_stage(stage),
         }
     except Exception as e:
         # A denied permission surfaces here as an OSError from the audio layer,
         # which is worth passing through verbatim - it names the real reason.
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "stage": DEVICE_OPEN_FAILED,
+                "error": f"{type(e).__name__}: {e}",
+                "meaning": describe_stage(DEVICE_OPEN_FAILED)}
     finally:
         if stream is not None:
             try:

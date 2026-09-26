@@ -318,14 +318,28 @@ def test_the_tool_count_is_unchanged():
 
 
 def test_speaking_costs_no_extra_websocket_traffic():
-    """The reply used to be pushed on every turn. Now it is pushed only when the
-    panel is open or there is no voice - strictly fewer messages, never more."""
+    """The reply used to be pushed on every turn. Now every push of it is guarded,
+    so a turn that was spoken normally sends strictly fewer messages, never more.
+
+    There are two pushes rather than one: the panel being open or there being no
+    voice at all, and the case where the speech engine accepted the words and said
+    nothing - which is not extra traffic on a working machine, because on one that
+    speaks it never fires. Counting pushes was the old way of saying "none of them
+    is unconditional"; that is now said directly.
+    """
     speak = API[API.index("def _make_gui_speak_callback"):]
     speak = speak[:speak.index("return _speak")]
-    pushes = re.findall(r'api\.push\("(\w+)"', speak)
-    assert pushes.count("appendLetiReply") == 1
-    guarded = speak[speak.index("appendLetiReply") - 200:speak.index("appendLetiReply")]
-    assert "is_visible()" in guarded and "tts is None" in guarded
+
+    for match in re.finditer(r'api\.push\("appendLetiReply"', speak):
+        preceding = speak[max(0, match.start() - 260):match.start()]
+        assert ("is_visible()" in preceding and "tts is None" in preceding) or \
+               ("not spoke_something" in preceding), \
+            "an unconditional push of the reply is back"
+
+    # And the guard for the second one really is "nothing was said", not "the
+    # engine was asked to say something".
+    assert "spoke_something |= bool(await tts.speak(" in speak, \
+        "the reply handler no longer knows whether anything was spoken"
 
 
 def test_the_whole_output_path_costs_microseconds():

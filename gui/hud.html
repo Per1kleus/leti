@@ -1651,12 +1651,26 @@
   // overwriting a good reading with N/A.
   let haveReading = false;
 
-  function setWeatherUnavailable(){
+  // Why there is no weather, in the words the user needs. A panel that just says
+  // "Unavailable" gives somebody no way to tell a missing location from a network
+  // outage - and the location case is the one they can fix in thirty seconds.
+  const WEATHER_REASONS = {
+    LOCATION_UNAVAILABLE: 'No location set',
+    MISSING_CONFIGURATION: 'Not configured',
+    NETWORK_ERROR: 'No connection',
+    PROVIDER_ERROR: 'Service error',
+    INVALID_RESPONSE: 'Bad response',
+  };
+
+  function setWeatherUnavailable(reason, detail){
     if(haveReading) return;
     const temp = document.getElementById('weatherTemp');
     temp.textContent = 'N/A';
     temp.classList.add('na');
-    document.getElementById('weatherDesc').textContent = 'Unavailable';
+    const desc = document.getElementById('weatherDesc');
+    desc.textContent = WEATHER_REASONS[reason] || 'Unavailable';
+    // The full sentence from the backend says exactly what to do about it.
+    if(detail) desc.title = detail;
   }
 
   function describeAge(minutes){
@@ -1671,7 +1685,7 @@
   function refreshWeather(){
     callApi('get_weather').then(data => {
       if(data.error){
-        setWeatherUnavailable();
+        setWeatherUnavailable(data.reason, data.error);
         return;
       }
       const temp = document.getElementById('weatherTemp');
@@ -1694,7 +1708,12 @@
         note.hidden = true;
       }
       haveReading = true;
-    }).catch(setWeatherUnavailable);
+    }).catch(e => {
+      // The call itself failed, so this is the transport rather than the
+      // provider. Passing the Error straight in would look up a reason code that
+      // is an Error object and quietly land on the generic wording.
+      setWeatherUnavailable('NETWORK_ERROR', e && e.message);
+    });
   }
   refreshWeather();
   setInterval(refreshWeather, 5 * 60 * 1000);
@@ -3952,10 +3971,20 @@
   }
 
   function refreshTasks(){
+    // A failed call used to become an empty list, which looks exactly like
+    // "there are no tasks" - so a broken transport and an idle Leti were
+    // indistinguishable in the one panel whose job is to say what is running.
+    // The empty shape still keeps the panel rendering, but it says so.
     return Promise.all([
-      callApi('get_tasks').catch(() => ({active: [], recent: []})),
+      callApi('get_tasks').catch(e => {
+        rtLog('error', 'Could not read the task list: ' + (e && e.message || e));
+        return {active: [], recent: [], unavailable: true};
+      }),
       callApi('get_computer_use').catch(() => ({sessions: []})),
     ]).then(([tasks, computer]) => {
+      if(tasks.error){
+        rtLog('error', 'The task store could not be read: ' + tasks.error);
+      }
       taskState = {
         active: tasks.active || [], recent: tasks.recent || [],
         sessions: computer.sessions || [],

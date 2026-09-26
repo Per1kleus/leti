@@ -459,8 +459,14 @@ def test_confirmations_still_reach_the_user_while_minimised():
 def test_a_failed_refresh_does_not_blank_a_good_reading():
     """Losing the backend for one poll should age the number, not erase it."""
     assert "haveReading" in HUD
-    unavailable = re.search(r"function setWeatherUnavailable\(\)\{(.*?)\n  \}", HUD, re.S)
-    assert unavailable and "if(haveReading) return;" in unavailable.group(1)
+    # It takes a reason and a detail now, so the panel can say WHY there is no
+    # weather; the guard this test is about is unchanged and still comes first.
+    unavailable = re.search(r"function setWeatherUnavailable\([^)]*\)\{(.*?)\n  \}", HUD, re.S)
+    assert unavailable, "setWeatherUnavailable is gone"
+    body = unavailable.group(1)
+    assert "if(haveReading) return;" in body
+    assert body.index("if(haveReading) return;") < 40, \
+        "the guard no longer runs before the panel is overwritten"
 
 
 def test_a_cached_reading_is_labelled_as_one_in_the_interface():

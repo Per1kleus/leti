@@ -28,12 +28,14 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Set
 
+import httpx
+
 from core import speech, transcript
 from core.orchestrator import Orchestrator
 from core.safety_guard import SafetyGuard
 from tools.system_health import SystemReportTool
 from tools.todo_list import add_todo, delete_todo, load_todos, toggle_todo
-from tools.weather import get_current_weather
+from tools.weather import LocationUnavailable, get_current_weather
 
 logger = logging.getLogger("leti.gui")
 
@@ -132,11 +134,39 @@ class LetiAPI:
             return {"cpu": 0, "mem": 0, "disk": 0, "error": str(e)}
 
     async def a_get_weather(self) -> dict:
+        """The current reading, or WHY there isn't one.
+
+        The reason is the point. tools/weather.py already tells these cases apart -
+        LocationUnavailable is deliberately not answered from the cache, because
+        "you never told me where you are" is something the user can fix - and the
+        interface used to throw all of that away and render a bare "Unavailable".
+        Somebody whose weather panel says nothing has no way to know whether their
+        network is down, the provider is failing, or they simply never set a
+        location. So the classification comes through with the error.
+        """
         try:
-            return await get_current_weather()
+            reading = await get_current_weather()
+        except LocationUnavailable as e:
+            logger.info("Weather has no location configured.")
+            return {"error": str(e), "reason": "LOCATION_UNAVAILABLE"}
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"Weather provider returned {e.response.status_code}.")
+            return {"error": f"The weather service answered {e.response.status_code}.",
+                    "reason": "PROVIDER_ERROR"}
+        except (httpx.RequestError, OSError) as e:
+            logger.warning(f"Weather network error: {type(e).__name__}.")
+            return {"error": "Could not reach the weather service.",
+                    "reason": "NETWORK_ERROR"}
+        except (ValueError, KeyError, TypeError) as e:
+            logger.warning(f"Weather response could not be read: {type(e).__name__}.")
+            return {"error": "The weather service sent something unreadable.",
+                    "reason": "INVALID_RESPONSE"}
         except Exception as e:
             logger.warning(f"get_weather failed: {e}")
-            return {"error": str(e)}
+            return {"error": str(e), "reason": "PROVIDER_ERROR"}
+        # A cached reading is a success that says how old it is; the panel already
+        # renders `stale` and `age_minutes`, so this only names it.
+        return {**reading, "reason": "STALE_DATA" if reading.get("stale") else "SUCCESS"}
 
     # ---- Sync: fast local file I/O, safe to call from anywhere. Return plain
     # Python values (not json.dumps strings) - gui/server.py's response envelope
@@ -615,6 +645,17 @@ def _serve_headless(note: str = "", url: str = "") -> None:
         print("\nShutting down...")
 
 
+async def _transcribe(transcriber, audio: bytes):
+    """(text, failed). Whisper raising is a different answer from Whisper hearing
+    nothing, and the caller reports them differently - so it is not swallowed
+    into an empty string here."""
+    try:
+        return await transcriber.transcribe(audio), False
+    except Exception as e:
+        logger.warning("Speech recognition failed (%s: %s).", type(e).__name__, e)
+        return "", True
+
+
 def _make_gui_speak_callback(api: LetiAPI, tts):
     """Unified reply handler for every input channel (typed, voice, from the desktop
     window or a phone): speaks the reply and focuses the text input once Leti
@@ -647,19 +688,44 @@ def _make_gui_speak_callback(api: LetiAPI, tts):
             return
         api.push("setHudState", "speaking")
         transcript.start_speaking()
+        spoke_something = False
+        stopped = False
         try:
             for utterance in speech.utterances(text):
                 # Checked between utterances, which is the only place it can be
                 # checked without a second thread. The one already playing is
                 # cut by the engine's own interrupt (see LetiAPI.stop_speaking).
                 if transcript.should_stop_speaking():
+                    stopped = True
                     break
-                await tts.speak(utterance)
+                spoke_something |= bool(await tts.speak(utterance))
         finally:
             transcript.finished_speaking()
             transcript.mark_spoken()
             api.push("setHudState", "idle")
             api.push("focusChatInput")
+
+        # The delivery guarantee, and the reason speak() returns anything at all.
+        # Voice-first means an answer that was SPOKEN is not also printed - but
+        # "handed to the speech engine" is not the same as "spoken", and when the
+        # engine silently does nothing the user got no audio and no text either.
+        # A whole reply could disappear that way, one utterance at a time, with
+        # the turn reporting success. So: if nothing was actually said, and the
+        # user did not stop it, the answer goes on screen where they can read it.
+        if not spoke_something and not stopped:
+            logger.warning("Nothing was spoken; showing the reply as text instead.")
+            api.push("appendLetiReply", text)
+            # Through the activity log rather than a new push event: the HUD only
+            # runs pushes on its allowlist, and this is exactly the kind of thing
+            # the RT-LOG is for. record_activity is already forwarded to the
+            # interface by run_gui_mode.
+            try:
+                from core import diagnostics
+
+                diagnostics.record_activity(
+                    "note", "Could not speak that - the answer is written above.")
+            except Exception:
+                logger.debug("Couldn't note the speech failure in the activity log.")
 
     return _speak
 
@@ -690,8 +756,28 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
     once the app looks interactive."""
     loop = asyncio.get_event_loop()
 
-    async def handle_utterance(text: str) -> None:
-        if not text:
+    async def handle_utterance(text: str, audio: bytes = b"",
+                               failed: bool = False) -> None:
+        """One thing the user said, or an honest account of why there wasn't one.
+
+        Returning silently on empty text is what made "I spoke and nothing
+        happened" indistinguishable from a dead microphone. It is not the same
+        thing at all: audio that arrived and produced no words means the
+        microphone worked and speech recognition found nothing in it, and the
+        person needs to know which so they do not go looking at hardware that is
+        fine. The stage is worked out from the buffer that was already captured,
+        so asking costs no extra recording.
+        """
+        if not (text or "").strip() or failed:
+            from audio import setup as audio_setup
+            from core import diagnostics
+
+            stage = audio_setup.classify_capture(audio, text, failed=failed)
+            logger.info("Voice input reached %s.", stage)
+            try:
+                diagnostics.record_activity("voice", audio_setup.describe_stage(stage))
+            except Exception:
+                logger.debug("Couldn't record the voice-input stage.")
             return
         api.push("appendUserMessage", text)
         api.push("focusChatInput")  # user just finished speaking
@@ -703,9 +789,9 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
         async def on_wake():
             api.push("setHudState", "listening")
             audio = await transcriber.record_until_silence()
-            text = await transcriber.transcribe(audio)
+            text, failed = await _transcribe(transcriber, audio)
             api.push("setHudState", "idle")
-            await handle_utterance(text)
+            await handle_utterance(text, audio, failed)
 
         # WakeWordListener's constructor also loads a (much smaller) model - still
         # offloaded to a thread rather than assumed harmless, for the same reason.
@@ -715,9 +801,9 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
         while True:
             api.push("setHudState", "listening")
             audio = await transcriber.record_until_silence()
-            text = await transcriber.transcribe(audio)
+            text, failed = await _transcribe(transcriber, audio)
             api.push("setHudState", "idle")
-            await handle_utterance(text)
+            await handle_utterance(text, audio, failed)
 
 
 def _window_icon() -> Optional[Path]:
