@@ -122,10 +122,37 @@ async def test_a_new_answer_clears_a_stop_left_over_from_the_last_one():
     from gui.api import _make_gui_speak_callback
 
     transcript.stop_speaking()
+    # The turn boundary is what spends a stop - transcript.begin() for an answer
+    # from the model, transcript.clear_stop() for a turn that does not call it.
+    # Deliberately NOT the start of an utterance: an answer is many utterances and
+    # clearing it there wipes a stop the user issued moments ago.
+    transcript.begin()
     tts = FakeTTS()
     speak = _make_gui_speak_callback(_SilentAPI(), tts)
     await speak("A new answer, which should be said in full this time around.")
     assert tts.said, "a stop from the previous answer silenced the next one"
+
+
+@pytest.mark.asyncio
+async def test_a_stop_survives_the_start_of_the_next_utterance():
+    """The race this used to lose.
+
+    An answer is spoken as a series of utterances and the stop is read between
+    them. start_speaking() ran at the head of each one and cleared the stop, so a
+    stop arriving after the check for utterance N passed was wiped by utterance N
+    beginning - and the whole rest of the answer was spoken after the user had
+    said stop.
+    """
+    from gui.api import _make_gui_speak_callback
+
+    transcript.begin()
+    tts = FakeTTS()
+    speak = _make_gui_speak_callback(_SilentAPI(), tts)
+    transcript.stop_speaking()
+    await speak("One sentence here. A second one. And a third for good measure.")
+
+    assert transcript.should_stop_speaking(), "starting an utterance cleared the stop"
+    assert not tts.said, f"speaking went ahead after a stop: {tts.said}"
 
 
 def test_the_stop_control_interrupts_the_engine_and_keeps_the_answer():

@@ -92,9 +92,9 @@ def begin() -> Response:
     A stop belongs to the answer it stopped, so it is cleared here. Without that,
     saying "stop" once would silence every answer after it.
     """
-    global _current, _asked_to_stop
+    global _current
     _current = Response()
-    _asked_to_stop = False
+    clear_stop()
     return _current
 
 
@@ -137,9 +137,17 @@ _asked_to_stop = False
 
 
 def start_speaking() -> None:
-    """A new answer is about to be said. Clears any stop left from the last one."""
-    global _speaking, _asked_to_stop
-    _speaking, _asked_to_stop = True, False
+    """The voice is about to say something.
+
+    Called once per UTTERANCE on the streaming path, so it deliberately does not
+    clear a stop. It used to: an answer is spoken as a series of utterances, the
+    orchestrator checks for a stop between them, and a stop arriving in the gap
+    between that check passing and the next utterance beginning was wiped by this
+    function - the user had said stop and the rest of the answer was spoken anyway.
+    Clearing a stop belongs to the turn boundary, which is `clear_stop` below.
+    """
+    global _speaking
+    _speaking = True
 
 
 def stop_speaking() -> None:
@@ -151,6 +159,18 @@ def stop_speaking() -> None:
     """
     global _asked_to_stop
     _asked_to_stop = True
+
+
+def clear_stop() -> None:
+    """A new request has arrived, so the previous stop is spent.
+
+    The one place a stop is cleared, called once per turn from
+    core/orchestrator.py's _handle_one_turn - every turn, not only the ones that
+    call the model, because "show me the text" also speaks a confirmation and a
+    stale stop would silence it. `begin` calls this rather than repeating it.
+    """
+    global _asked_to_stop
+    _asked_to_stop = False
 
 
 def finished_speaking() -> None:

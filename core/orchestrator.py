@@ -413,6 +413,13 @@ class Orchestrator:
     async def _handle_one_turn(self, user_text: str, session_id: str, voice_mode: bool,
                                preapproved: bool = False) -> str:
         self._set_state(AgentState.THINKING)
+        # A new request, so whatever the last answer was told to stop saying is
+        # spent. Here rather than in transcript.begin() because a turn answered
+        # without the model - showing the text, switching mode - does not call
+        # begin() and still speaks a confirmation. The stop shortcut above returns
+        # before this, so a stop aimed at the turn in flight is not cleared by the
+        # turn it is stopping.
+        transcript.clear_stop()
         self.session_memory.add_turn("user", user_text, session_id)
 
         # What this request IS, read deterministically before anything is sent -
