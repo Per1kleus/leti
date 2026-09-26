@@ -61,6 +61,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -931,7 +932,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
         # explicit repair (--install-shortcuts) is what puts a deleted one back.
         if not state.get("shortcuts"):
             place_shortcuts(root, progress)
-        ensure_model_server(progress, runner)
+        ensure_model_server(progress, runner, root)
         progress.say("Starting Leti...")
         return python
 
@@ -963,7 +964,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     write_state(root, requirements=fingerprint, complete=True, partial=None,
                 witnesses=witnesses_for(wanted, found))
     place_shortcuts(root, progress)
-    ensure_model_server(progress, runner)
+    ensure_model_server(progress, runner, root)
     progress.say("Starting Leti...")
     return python
 
@@ -997,7 +998,18 @@ def place_shortcuts(root: Path, progress: Progress,
         return []
 
 
+# How long a failed attempt is believed for. This step runs on every launch, and
+# both of the things it can do are expensive when they do not work: winget is tens
+# of seconds even to decline, and waiting for a server that will never answer is
+# the full timeout. So a failure is remembered, and the cost is paid again only
+# after long enough that the machine may genuinely have changed.
+RETRY_INSTALL_AFTER_SECONDS = 24 * 60 * 60
+SHORT_WAIT_WITHIN_SECONDS = 60 * 60
+SHORT_START_WAIT_SECONDS = 5.0
+
+
 def ensure_model_server(progress: Progress, run: Optional[Callable] = None,
+                        root: Optional[Path] = None,
                         ensure: Optional[Callable] = None) -> str:
     """Make sure Ollama is installed and answering, and say so if it is not.
 
@@ -1015,9 +1027,29 @@ def ensure_model_server(progress: Progress, run: Optional[Callable] = None,
     try:
         from launcher import ollama_setup
 
-        verdict = (ensure or ollama_setup.ensure)(progress, run)
+        # What happened last time, so a launch does not pay for the same failure
+        # twice. Without this, a machine with no Ollama and no way to install it
+        # re-ran winget on every single launch - measured: five launches, five
+        # invocations - and a warm launch is supposed to be half a second.
+        since = None
+        if root is not None:
+            failed_at = read_state(root).get("ollama_failed_at")
+            if isinstance(failed_at, (int, float)) and failed_at > 0:
+                since = max(0.0, time.time() - float(failed_at))
+
+        verdict = (ensure or ollama_setup.ensure)(
+            progress, run,
+            may_install=since is None or since > RETRY_INSTALL_AFTER_SECONDS,
+            timeout=(SHORT_START_WAIT_SECONDS
+                     if since is not None and since < SHORT_WAIT_WITHIN_SECONDS
+                     else ollama_setup.START_TIMEOUT_SECONDS))
         for line in ollama_setup.describe(verdict):
             progress.step(line)
+        if root is not None:
+            # Cleared on success, so a machine that gets Ollama working goes back to
+            # the thorough path rather than staying in the cheap one forever.
+            write_state(root, ollama_failed_at=(None if verdict == ollama_setup.RUNNING
+                                                else time.time()))
         return verdict
     except Exception as e:
         progress.step(f"Could not check on Ollama ({type(e).__name__}) - Leti will "

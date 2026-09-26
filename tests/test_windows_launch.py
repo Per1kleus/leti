@@ -1765,8 +1765,11 @@ def test_a_captured_run_never_waits_for_a_keypress():
     source = inspect_source(leti_launcher.main)
     assert "wait_for_the_user(hold=not print_python)" in source, \
         "a failure in --print-python mode could block on input forever"
-    assert source.count("wait_for_the_user(") == 3, \
+    # Four: the three setup failures, and the one for a Leti that started and then
+    # stopped. Every one of them passes hold=, which is what this counts.
+    assert source.count("wait_for_the_user(") == 4, \
         "a wait was added that does not know whether it is being captured"
+    assert source.count("wait_for_the_user(hold=not print_python)") == 4
 
 
 def inspect_source(function):
@@ -1874,3 +1877,86 @@ def test_the_urls_the_launcher_actually_fetches_are_https():
 
     for url in (bootstrap.EMBED_URL, bootstrap.GET_PIP_URL):
         assert url.lower().startswith("https://"), url
+
+
+# --- Leti failing after the console was hidden ------------------------------------------
+
+def _prepared_project(tmp_path):
+    (tmp_path / "main.py").write_text("print('leti')\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("pyyaml>=6.0.1\n", encoding="utf-8")
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    return tmp_path
+
+
+@pytest.mark.parametrize("code,should_explain", [
+    (0, False),        # a normal close
+    (130, False),      # the user interrupting on purpose
+    (1, True),         # Leti stopped for a reason
+    (3, True),
+])
+def test_a_leti_that_stops_brings_the_hidden_console_back(tmp_path, monkeypatch,
+                                                         capsys, code, should_explain):
+    """The failure a user would describe as "I double-clicked it and nothing happened".
+
+    leti_launcher hides the console and THEN starts Leti, so anything Leti says on
+    its way out goes to a window nobody can see. main.py exits when it cannot reach
+    Ollama, so on a machine without it the executable prepared everything, hid the
+    console, started Leti, Leti exited 1, and the user saw nothing at all. This is
+    the file whose docstring says a window that vanishes is the failure to avoid; it
+    covered setup failing and not Leti failing.
+    """
+    from launcher import leti_launcher
+
+    root = _prepared_project(tmp_path)
+    monkeypatch.setattr(leti_launcher, "project_root", lambda: root)
+    monkeypatch.setattr(bootstrap, "prepare", lambda r, p, **k: Path(sys.executable))
+    monkeypatch.setattr(bootstrap, "start_leti", lambda *a, **k: code)
+
+    seen = []
+    monkeypatch.setattr(leti_launcher, "hide_console", lambda: seen.append("hidden"))
+    monkeypatch.setattr(leti_launcher, "show_console", lambda: seen.append("shown"))
+    monkeypatch.setattr(leti_launcher, "wait_for_the_user", lambda hold=True: seen.append("held"))
+
+    status = leti_launcher.main([])
+    printed = capsys.readouterr().out
+
+    assert status == code, "the launcher changed Leti's exit code"
+    if should_explain:
+        assert seen == ["hidden", "shown", "held"], seen
+        assert "started and then stopped" in printed
+        assert str(code) in printed, "the exit code is not in the message"
+        assert "ollama.com" in printed, "it does not say what to do about the likely cause"
+        assert "logs" in printed
+    else:
+        assert seen == ["hidden"], f"a clean exit was treated as a failure: {seen}"
+        assert "started and then stopped" not in printed
+
+
+def test_showing_the_console_is_never_fatal(monkeypatch):
+    """Cosmetic, like hiding it. A console that will not come back is not a reason
+    to take the launch down on its way out."""
+    from launcher import leti_launcher
+
+    monkeypatch.setattr(leti_launcher.os, "name", "nt")
+
+    class Exploding:
+        def __getattr__(self, name):
+            raise OSError("no windows here")
+
+    monkeypatch.setitem(sys.modules, "ctypes", Exploding())
+    leti_launcher.show_console()          # must not raise
+
+
+def test_showing_the_console_does_nothing_off_windows(monkeypatch):
+    from launcher import leti_launcher
+
+    monkeypatch.setattr(leti_launcher.os, "name", "posix")
+    leti_launcher.show_console()
+
+
+def test_the_bat_already_reports_a_failing_leti():
+    """It never hides its console, so it only had to say so - and it does. Pinned
+    because the two front doors have to agree about this."""
+    bat = BAT.read_text(errors="replace")
+    assert "exited with an error" in bat
+    assert "pause" in bat

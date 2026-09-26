@@ -69,6 +69,29 @@ def hide_console() -> None:
         pass
 
 
+def show_console() -> None:
+    """Bring the setup window back, because there is something to read after all.
+
+    The mirror of hide_console(). Leti is started AFTER the console is hidden, so
+    anything Leti says on its way out - "Cannot reach Ollama at ...", a traceback,
+    a missing model - goes to a window nobody can see, and a user who
+    double-clicked Leti.exe watches nothing happen. This is the file whose whole
+    stated purpose is that a window which vanishes is the failure to avoid; it just
+    did not cover Leti failing rather than setup failing.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        window = ctypes.windll.kernel32.GetConsoleWindow()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 5)      # SW_SHOW
+            ctypes.windll.user32.SetForegroundWindow(window)
+    except Exception:
+        pass
+
+
 def wait_for_the_user(hold: bool = True) -> None:
     """Hold the window open so a message can be read.
 
@@ -186,9 +209,32 @@ def main(argv: list[str] | None = None) -> int:
 
     hide_console()
     try:
-        return bootstrap.start_leti(python, root, arguments or None)
+        status = bootstrap.start_leti(python, root, arguments or None)
     except KeyboardInterrupt:
         return 130
+
+    # 0 is a normal close. 130 is the user interrupting on purpose. Anything else
+    # means Leti stopped for a reason, and that reason went to a console this
+    # function hid a moment ago - so it comes back, rather than the launch simply
+    # appearing to do nothing.
+    if status not in (0, 130):
+        show_console()
+        progress.say()
+        progress.problem(
+            f"Leti started and then stopped (exit code {status})",
+            "run Leti itself, after preparing this folder successfully",
+            retry_is_safe=True, logs=root / "logs")
+        progress.say("  The reason is in the output above, and in logs/leti.log.")
+        progress.say("  If it says it cannot reach Ollama: Ollama is what runs the")
+        progress.say("  model Leti thinks with. Install it from https://ollama.com,")
+        progress.say("  then start Leti again.")
+        # hold= even though this branch cannot be reached in --print-python mode -
+        # that mode returns before the console is hidden and before Leti is started.
+        # Relying on that ordering would make this wait correct by accident, and the
+        # next edit to the order above would turn it into a hang with no visible
+        # reason. Every wait in this file says whether it is being captured.
+        wait_for_the_user(hold=not print_python)
+    return status
 
 
 if __name__ == "__main__":

@@ -23,13 +23,17 @@ to ask. Keeping that line means there is still exactly one model-selection syste
 
 IT NEVER BLOCKS THE LAUNCH
 
-Reporting and carrying on, rather than refusing to start. main.py already handles
-an unreachable Ollama with a message naming the host and what to do, and Leti's own
-window can show that where a console cannot - the console is hidden by then. A
-launcher that refuses to open because a background service is not running would be
-the less useful of the two failures, and the user would have nothing on screen to
-act on. So every function here reports through Progress and returns a verdict;
-none of them raises SetupFailed.
+Reporting and carrying on, rather than refusing to start - because whether Leti
+runs is not this step's decision to make, and the machine may be fine in a way this
+cannot see (a server on another host, a model already loaded). So every function
+here reports through Progress and returns a verdict; none of them raises
+SetupFailed.
+
+What happens next is worth being accurate about: main.py EXITS when it cannot reach
+a model server, so Leti does not open and explain. That is why
+launcher/leti_launcher.py brings the hidden console back when Leti stops with a
+non-zero code - without which a user who double-clicked Leti.exe watches nothing
+happen at all.
 
 Standard library only, like the rest of launcher/ - it runs before anything is
 installed.
@@ -222,22 +226,36 @@ def _spawn(command: str, runner: Callable) -> Any:
 
 def ensure(progress: Any, run: Optional[Callable] = None,
            opener: Optional[Callable] = None, sleep: Optional[Callable] = None,
-           installer: Optional[Callable] = None) -> str:
+           installer: Optional[Callable] = None, may_install: bool = True,
+           timeout: float = START_TIMEOUT_SECONDS) -> str:
     """Make sure there is a model server, and say what happened.
 
     Returns one of RUNNING, STOPPED, ABSENT. Never raises: every path reports
     through `progress` and returns, because a launch is not worth refusing over
     this (see the module docstring).
+
+    `may_install` and `timeout` are how the caller keeps this off the critical path
+    of a launch that is supposed to be half a second. This function runs on EVERY
+    launch, warm ones included, so a machine that cannot install Ollama would
+    otherwise re-run winget every time Leti was opened, and one where the server
+    will not start would wait the full timeout every time. launcher/bootstrap.py
+    remembers the last failure and decides both; here they are just parameters, so
+    this module stays a description of the step rather than of the policy.
     """
     try:
         if responding(opener=opener):
             return RUNNING
 
         if not executable():
+            if not may_install:
+                progress.step("Ollama is still not installed. Leti will open and say "
+                              "it cannot reach a model; installing Ollama from "
+                              "https://ollama.com is what fixes it.")
+                return ABSENT
             if not (installer or install)(progress, run):
                 return ABSENT
 
-        if start(progress, run, opener, sleep):
+        if start(progress, run, opener, sleep, timeout=timeout):
             return RUNNING
         return STOPPED
     except Exception as e:
@@ -255,10 +273,14 @@ def describe(verdict: str) -> Sequence[str]:
     """What to tell the user about a verdict that is not RUNNING."""
     if verdict == RUNNING:
         return ()
+    # Deliberately not "Leti will still open and say so": it will not. main.py
+    # exits when it cannot reach a model server, which is why the launcher brings
+    # the console back rather than letting the launch appear to do nothing.
     if verdict == ABSENT:
         return ("Leti needs Ollama to think with, and it is not on this machine yet.",
-                "Leti will still open - it will say it cannot reach a model.")
+                "Install it from https://ollama.com and start Leti again.")
     if verdict == STOPPED:
         return ("Ollama is installed but not answering yet.",
-                "Leti will still open - it will say it cannot reach a model.")
+                "Leti cannot start without it - 'ollama serve' in a terminal is the "
+                "quickest way to check why.")
     return ("Whether Ollama is running could not be determined.",)

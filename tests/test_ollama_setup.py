@@ -467,3 +467,127 @@ def test_the_search_is_not_a_hand_written_version_range():
     source = inspect.getsource(bootstrap._windows_python_installs)
     assert "range(" not in source
     assert "glob(" in source
+
+
+# --- A warm launch must not pay for the same failure twice ----------------------------
+
+def test_a_failed_install_is_not_retried_on_every_launch(tmp_path, monkeypatch):
+    """The regression this guards against was measured, not imagined.
+
+    ensure() runs on every launch, warm ones included. On a machine with no Ollama
+    and no way to install it, five launches produced five winget invocations - tens
+    of seconds each in reality, and the timeout allows up to half an hour - on a
+    path that is supposed to be half a second of stat calls.
+    """
+    invoked = []
+
+    class Failing(Runner):
+        def __call__(self, command, **kwargs):
+            invoked.append(command[0])
+            return Done(1)
+
+    monkeypatch.setattr(ollama_setup, "is_windows", lambda: True)
+    monkeypatch.setattr(ollama_setup, "executable", lambda: None)
+    monkeypatch.setattr(ollama_setup, "responding",
+                        lambda at=None, timeout=None, opener=None: False)
+    monkeypatch.setattr(ollama_setup.shutil, "which", lambda name: "C:\\winget.exe")
+
+    progress = Progress()
+    for _ in range(6):
+        bootstrap.ensure_model_server(progress, Failing(), tmp_path)
+
+    assert invoked.count("winget") == 1, \
+        f"winget was invoked {invoked.count('winget')} times across six launches"
+    assert bootstrap.read_state(tmp_path).get("ollama_failed_at"), \
+        "the failure was not remembered, so the next launch will pay for it again"
+
+
+def test_the_install_is_retried_once_the_machine_may_have_changed(tmp_path, monkeypatch):
+    """Remembered, not given up on - somebody may have installed winget since."""
+    import time
+
+    invoked = []
+
+    class Failing(Runner):
+        def __call__(self, command, **kwargs):
+            invoked.append(command[0])
+            return Done(1)
+
+    monkeypatch.setattr(ollama_setup, "is_windows", lambda: True)
+    monkeypatch.setattr(ollama_setup, "executable", lambda: None)
+    monkeypatch.setattr(ollama_setup, "responding",
+                        lambda at=None, timeout=None, opener=None: False)
+    monkeypatch.setattr(ollama_setup.shutil, "which", lambda name: "C:\\winget.exe")
+
+    bootstrap.write_state(tmp_path, ollama_failed_at=time.time()
+                          - bootstrap.RETRY_INSTALL_AFTER_SECONDS - 60)
+    bootstrap.ensure_model_server(Progress(), Failing(), tmp_path)
+    assert invoked.count("winget") == 1, "an old failure was treated as permanent"
+
+
+def test_a_success_clears_the_remembered_failure(tmp_path, monkeypatch):
+    """Otherwise a machine that gets Ollama working stays on the cheap path forever."""
+    import time
+
+    bootstrap.write_state(tmp_path, ollama_failed_at=time.time())
+    monkeypatch.setattr(ollama_setup, "responding",
+                        lambda at=None, timeout=None, opener=None: True)
+
+    verdict = bootstrap.ensure_model_server(Progress(), Runner(), tmp_path)
+    assert verdict == ollama_setup.RUNNING
+    assert bootstrap.read_state(tmp_path).get("ollama_failed_at") is None
+
+
+def test_the_wait_for_a_server_shortens_after_a_recent_failure(tmp_path, monkeypatch):
+    """A server that will not start must not cost the full timeout every launch."""
+    import time
+
+    waited = []
+    monkeypatch.setattr(ollama_setup, "executable", lambda: "/usr/bin/ollama")
+    monkeypatch.setattr(ollama_setup, "responding",
+                        lambda at=None, timeout=None, opener=None: False)
+    monkeypatch.setattr(ollama_setup, "start",
+                        lambda progress, run=None, opener=None, sleep=None,
+                        timeout=ollama_setup.START_TIMEOUT_SECONDS:
+                        waited.append(timeout) or False)
+
+    bootstrap.ensure_model_server(Progress(), Runner(), tmp_path)
+    assert waited[-1] == ollama_setup.START_TIMEOUT_SECONDS, \
+        "the first attempt should be a patient one"
+
+    bootstrap.ensure_model_server(Progress(), Runner(), tmp_path)
+    assert waited[-1] == bootstrap.SHORT_START_WAIT_SECONDS, \
+        "a second launch moments later waited the full timeout again"
+
+    bootstrap.write_state(tmp_path, ollama_failed_at=time.time()
+                          - bootstrap.SHORT_WAIT_WITHIN_SECONDS - 60)
+    bootstrap.ensure_model_server(Progress(), Runner(), tmp_path)
+    assert waited[-1] == ollama_setup.START_TIMEOUT_SECONDS, \
+        "after long enough it should be patient again"
+
+
+def test_not_being_allowed_to_install_still_says_what_fixes_it(monkeypatch):
+    monkeypatch.setattr(ollama_setup, "executable", lambda: None)
+    monkeypatch.setattr(ollama_setup, "responding",
+                        lambda at=None, timeout=None, opener=None: False)
+    progress = Progress()
+    verdict = ollama_setup.ensure(progress, Runner(), may_install=False)
+    assert verdict == ollama_setup.ABSENT
+    assert "ollama.com" in progress.text
+
+
+def test_the_policy_lives_in_the_launcher_not_in_the_step(monkeypatch):
+    """ollama_setup describes the step; bootstrap decides how often to pay for it.
+
+    Keeping the thresholds out of ollama_setup is what stops it needing to know
+    about the state file, which it runs too early to read.
+    """
+    import inspect
+
+    source = code_of(ollama_setup)
+    assert "launch_setup" not in source and "read_state" not in source
+    for name in ("RETRY_INSTALL_AFTER_SECONDS", "SHORT_WAIT_WITHIN_SECONDS",
+                 "SHORT_START_WAIT_SECONDS"):
+        assert hasattr(bootstrap, name), f"bootstrap has no {name}"
+        assert name not in source, f"{name} is duplicated into ollama_setup"
+    assert "may_install" in inspect.signature(ollama_setup.ensure).parameters
