@@ -181,6 +181,10 @@
     will-change:opacity;
   }
   .status-dot.warn{ background:var(--amber); box-shadow:0 0 8px var(--amber); }
+  /* Not connected to Leti at all. Red rather than amber, and deliberately louder
+     than "the machine is busy": a socket that is down means every control in the
+     interface is inert, and that used to look exactly like everything being fine. */
+  .status-dot.offline{ background:var(--red, #ff5f56); box-shadow:0 0 8px var(--red, #ff5f56); }
   .topbar-right{ display:flex; align-items:center; gap:10px; }
   .icon-btn{
     width:34px; height:34px; border-radius:6px; flex-shrink:0;
@@ -1536,21 +1540,64 @@
   const readyQueue = []; // calls made before the socket is authenticated wait here,
                           // instead of guessing a fixed timeout and permanently failing.
 
+  // How long a call may wait for a connection that has not arrived. Waiting
+  // forever was the old behaviour and it is the worst one: a promise that never
+  // settles leaves whatever awaited it stuck, and the controls in this page
+  // disable themselves and say "Saving..." while they wait. One socket that
+  // never authenticated made every button in the interface permanently dead, in
+  // silence, with the backend working perfectly.
+  const CONNECT_WAIT_MS = 15000;
+
   function flushReadyQueue(){
     const queued = readyQueue.splice(0, readyQueue.length);
-    queued.forEach(fn => fn());
+    queued.forEach(entry => entry.send());
+  }
+
+  // A call can only be answered by the socket it was sent on. When that socket
+  // goes, every promise still waiting on it has to be told - otherwise the page
+  // keeps waiting for an answer that can no longer arrive.
+  function failEveryWaitingCall(why){
+    const reason = new Error(why);
+    Object.keys(pendingCalls).forEach(id => {
+      const call = pendingCalls[id];
+      delete pendingCalls[id];
+      call.reject(reason);
+    });
+    readyQueue.splice(0, readyQueue.length).forEach(entry => entry.reject(reason));
+  }
+
+  // Whether the interface is actually talking to Leti, said out loud. A dead
+  // socket used to look exactly like a working one.
+  let wsEverConnected = false;
+  function setConnectionState(connected, detail){
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    if(dot) dot.classList.toggle('offline', !connected);
+    if(text && !connected) text.textContent = detail || 'Not connected';
+    if(!connected && wsEverConnected && typeof rtLog === 'function'){
+      rtLog('error', detail || 'Lost the connection to Leti - reconnecting.');
+    }
   }
 
   function connectWS(){
     ws = new WebSocket(wsProtocol + '//' + location.host + '/ws');
     ws.onopen = () => { ws.send(JSON.stringify({type:'auth', token: urlToken})); };
-    ws.onclose = () => { wsAuthed = false; setTimeout(connectWS, 2000); };
+    ws.onclose = () => {
+      wsAuthed = false;
+      setConnectionState(false, 'Not connected to Leti - reconnecting.');
+      // Nothing sent on this socket can be answered now. Saying so is what lets
+      // a control that was waiting show an error instead of staying disabled.
+      failEveryWaitingCall('The connection to Leti closed before this finished.');
+      setTimeout(connectWS, 2000);
+    };
     ws.onerror = () => { try { ws.close(); } catch(e){} };
     ws.onmessage = (event) => {
       let msg;
       try { msg = JSON.parse(event.data); } catch(e) { return; }
       if(msg.type === 'auth_ok'){
         wsAuthed = true;
+        wsEverConnected = true;
+        setConnectionState(true);
         flushReadyQueue();
         // The badge on connect, so a window opened while Coding Mode is on says so.
         if(typeof refreshMode === 'function') refreshMode();
@@ -1588,8 +1635,27 @@
           reject(e);
         }
       };
-      if(ws && ws.readyState === WebSocket.OPEN && wsAuthed) send();
-      else readyQueue.push(send); // sent automatically the moment auth_ok arrives, however long that takes
+      if(ws && ws.readyState === WebSocket.OPEN && wsAuthed){
+        send();
+        return;
+      }
+      // Waiting for a connection, not waiting forever. The call still goes out
+      // the moment auth_ok arrives - which is what the queue is for, and why a
+      // window opened before the socket is up still works - but a connection
+      // that never comes now fails the call instead of leaving it pending for
+      // the lifetime of the page.
+      const entry = {
+        send,
+        reject: (e) => { delete pendingCalls[id]; reject(e); },
+      };
+      readyQueue.push(entry);
+      setTimeout(() => {
+        const still = readyQueue.indexOf(entry);
+        if(still === -1) return;          // it was sent
+        readyQueue.splice(still, 1);
+        entry.reject(new Error("Leti's interface is not connected, so '" + method
+                               + "' could not be sent."));
+      }, CONNECT_WAIT_MS);
     });
   }
 
@@ -2938,7 +3004,19 @@
     if(!permissionsContent.innerHTML){
       permissionsContent.innerHTML = '<div class="audio-intro">Reading permissions\u2026</div>';
     }
-    try { renderPermissions(await callApi('get_permissions')); }
+    try {
+      const data = await callApi('get_permissions');
+      // The backend RETURNS its failure rather than throwing it, so a catch alone
+      // never saw it: the panel rendered its headings over empty lists and looked
+      // like a permissions manager with nothing to manage. An error here means
+      // SafetyGuard's own files could not be read, which is worth saying.
+      if(data && data.error){
+        permissionsContent.innerHTML =
+          '<div class="settings-error">Couldn\u2019t read permissions: ' + data.error + '</div>';
+        return;
+      }
+      renderPermissions(data);
+    }
     catch(e){
       permissionsContent.innerHTML =
         '<div class="settings-error">Couldn\u2019t read permissions: ' + e.message + '</div>';
@@ -3050,7 +3128,7 @@
       if(watch.id === openWatch && watchDetail) html += watchDetailHtml(watchDetail);
     });
 
-    html += renderConnections(d.connections);
+    html += renderConnectionsSummary(d.connections);
     html += renderContextReport(d.context);
     html += renderFullCheck();
 
@@ -3061,7 +3139,15 @@
   // Which accounts are set up. A view of core/connections.py, which is itself a
   // view of the settings - no credential is read here, none is sent here, and
   // nothing is contacted to draw it.
-  function renderConnections(c){
+  //
+  // Named for the summary it builds, not for the subject: this was also called
+  // renderConnections, and so was the Connections panel's own renderer further
+  // down. Two function declarations with one name in one scope is not an error -
+  // the later one simply wins - so every call here resolved to the panel
+  // renderer, which takes no argument and returns nothing. The diagnostics panel
+  // printed the string "undefined" where its connections summary should be, and
+  // redrew the Connections overlay as a side effect of being opened.
+  function renderConnectionsSummary(c){
     if(!c) return '';
     const s = c.summary || {};
     let html = '<div class="panel-head" style="margin-top:12px"><div><div class="sys">' +
