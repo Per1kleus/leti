@@ -58,9 +58,15 @@ class FakeHTTP:
         self.explode = explode
         self.response = None
         self.payloads = []
+        self.timeouts = []
 
-    def stream(self, method, url, json=None):
+    def stream(self, method, url, json=None, timeout=None):
+        # timeout is passed per-request by stream_response: a streamed answer waits
+        # longer for its first token than a whole-response call waits for all of
+        # it, because the wait covers the model reading the prompt. Recorded so a
+        # test can assert it was actually sent.
         self.payloads.append(json)
+        self.timeouts.append(timeout)
         if self.explode is not None:
             raise self.explode
         self.response = FakeResponse(self.lines, self.fail_after)

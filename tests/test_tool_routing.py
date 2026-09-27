@@ -457,3 +457,198 @@ def test_a_second_registry_is_never_answered_with_the_first_ones_tools():
             assert set(route("play a song", second).tool_names) <= set(second.names())
             return
         del second
+
+
+# --- The may_need_tool ceiling ---------------------------------------------------
+#
+# core/intent.py already reads whether a tool could plausibly be required at all,
+# and already says no for a question, a correction and a clarification. It was
+# marked "a hint for the report, not a gate" and nothing read it. These pin what
+# happened when it was finally wired in, in both directions: the saving it makes,
+# and every case where it must not narrow anything.
+
+def _tokens(registry, names):
+    """The same 4-chars-per-token ratio this file's docstring uses."""
+    return len(json.dumps(registry.schemas_for(names))) // 4
+
+
+@pytest.mark.parametrize("question", [
+    "what is the capital of France",
+    "what did we talk about yesterday",
+    "who wrote Middlemarch",
+])
+def test_a_question_that_matches_nothing_is_not_sent_the_whole_registry(registry, question):
+    """The measurement that made this necessary. Each of these matched no tool's
+    name or description and was therefore shown all 129 - about 22,300 tokens the
+    model had to read before writing a word of an answer it knew already."""
+    routing = route(question, registry, may_need_tool=False)
+
+    assert routing.full_fallback is False
+    assert routing.count < 12, f"{question} still sends {routing.count} tools"
+    assert _tokens(registry, routing.tool_names) < 1_000
+
+
+def test_a_question_with_nothing_to_match_on_is_not_sent_the_whole_registry(registry):
+    """"what is 2 + 2" has no terms at all: `what` and `is` are stopwords and `2`
+    is under the three-character floor. It was the most expensive turn Leti had."""
+    routing = route("what is 2 + 2", registry, may_need_tool=False)
+
+    assert routing.full_fallback is False
+    assert _tokens(registry, routing.tool_names) < 1_000
+
+
+def test_the_core_a_question_falls_back_to_can_still_search_the_web(registry):
+    """Narrowing must not leave a question with no way to look anything up."""
+    routing = route("what is the capital of France", registry, may_need_tool=False)
+
+    assert "web_search" in routing.tool_names
+
+
+@pytest.mark.parametrize("request_text", [
+    "play some music",                 # matches nothing, and needs launch_app
+    "asdkjfh qwptu zzz",
+])
+def test_a_request_that_asked_for_something_still_falls_all_the_way_back(registry, request_text):
+    """The ceiling is for requests that asked for nothing to happen. A command that
+    matched nothing keeps rule three of core/tool_router.py exactly as it was:
+    "play some music" matches no tool description in the registry, and narrowing it
+    would cost Leti the ability."""
+    routing = route(request_text, registry, may_need_tool=True)
+
+    assert routing.full_fallback is True
+    assert set(routing.tool_names) == set(registry.names())
+
+
+def test_the_default_is_the_behaviour_that_existed_before_the_ceiling(registry):
+    """Not passing may_need_tool must change nothing at all."""
+    assert (route("asdkjfh qwptu zzz", registry).tool_names
+            == route("asdkjfh qwptu zzz", registry, may_need_tool=True).tool_names)
+    assert set(route("asdkjfh qwptu zzz", registry).tool_names) == set(registry.names())
+
+
+@pytest.mark.parametrize("empty", ["", "   ", None, 12345])
+def test_a_genuine_failure_still_falls_back_however_the_intent_reads(registry, empty):
+    """No request text is not "a question that needs no tools" - it is a failure,
+    and a failure falls all the way back whatever the Intent Layer said."""
+    routing = route(empty, registry, may_need_tool=False)
+
+    assert routing.full_fallback is True
+    assert set(routing.tool_names) == set(registry.names())
+
+
+def test_a_question_is_still_shown_whatever_it_actually_matched(registry):
+    """The ceiling stops broadening. It does not withhold a match."""
+    routing = route("what is the weather in Athens", registry, may_need_tool=False)
+
+    assert "get_weather" in routing.tool_names
+
+
+def test_the_confident_expansion_is_never_gated_on_may_need_tool(registry):
+    """Regression. Skipping the category expansion for a question dropped
+    list_files from "what files are in this folder" - file_manager scores 2.2 on
+    that request while documents scores 5.5, and the shared "files" category is the
+    only thing that ever put the right tool in the set. It was measured, it cost an
+    ability, and it was reverted. The price of keeping the expansion is that "what
+    time is it" is shown tools that cannot answer it; that is the right way round."""
+    for may in (True, False):
+        assert "list_files" in route("what files are in this folder", registry,
+                                     may_need_tool=may).tool_names
+
+
+# --- Carrying the previous turn's tools ------------------------------------------
+
+def test_a_follow_up_with_no_vocabulary_of_its_own_keeps_the_previous_tools(registry):
+    """"what's the weather" routes to the weather tools. "and in Athens?" that
+    follows it matches nothing - no tool description mentions Athens - and intent.py
+    reads it as a question, so without this it would lose get_weather."""
+    first = route("what's the weather", registry)
+    assert "get_weather" in first.tool_names
+
+    second = route("and in Athens?", registry, may_need_tool=False,
+                   previous=first.tool_names)
+
+    assert "get_weather" in second.tool_names
+    assert second.full_fallback is False
+
+
+def test_carrying_the_previous_tools_leaves_the_prompt_prefix_untouched(registry):
+    """What makes it free as well as correct: every other path already includes
+    the always-on modules and the uncategorised safety net, so the carried set IS
+    the previous set, sorted the same way. A model server can reuse the prefix it
+    already has instead of reading the whole tool list again."""
+    first = route("what's the weather", registry)
+    second = route("and in Athens?", registry, may_need_tool=False,
+                   previous=first.tool_names)
+
+    assert second.tool_names == first.tool_names
+    assert (registry.schemas_for(second.tool_names)
+            == registry.schemas_for(first.tool_names))
+
+
+def test_a_tool_the_current_mode_hides_is_not_carried_forward(registry):
+    """The carried set is filtered through the index, so it can never reintroduce
+    a tool this turn is not allowed to be shown."""
+    allowed = {"web_search", "get_weather"}
+    routing = select_tools_for("and in Athens?", registry, may_need_tool=False,
+                               allowed=allowed,
+                               previous=["send_email", "delete_file", "get_weather"])
+
+    assert "send_email" not in routing.tool_names
+    assert "delete_file" not in routing.tool_names
+    assert set(routing.tool_names) <= allowed
+
+
+def test_no_previous_set_means_the_core_rather_than_an_error(registry):
+    routing = route("and in Athens?", registry, may_need_tool=False, previous=[])
+
+    assert routing.tool_names
+    assert "web_search" in routing.tool_names
+
+
+def test_a_fresh_information_request_that_matches_nothing_still_falls_back(registry):
+    """Measured, and the reason "and tomorrow?" still costs the full fallback.
+    Four of twenty fresh information requests match nothing - "what's in my inbox",
+    "what's my public ip", "how are my trades doing", "what's my upload speed" -
+    and each needs tools a carried-over set would not contain. So the ceiling
+    deliberately does not reach information_request, and a bare continuation that
+    asks for information pays for that."""
+    routing = route("what's in my inbox", registry, may_need_tool=True)
+
+    assert routing.full_fallback is True
+
+
+def test_the_loop_passes_the_intent_layers_reading_to_the_router():
+    """The ceiling is worthless if the orchestrator does not hand it over. This is
+    the wire that was missing: may_need_tool existed, was documented, was tested,
+    and nothing read it."""
+    import inspect
+
+    from core.orchestrator import Orchestrator
+
+    loop = inspect.getsource(Orchestrator._tool_calling_loop)
+    assert "may_need_tool=self._intent.may_need_tool" in loop
+    assert "previous=self._previous_tool_names" in loop
+
+
+def test_the_loop_remembers_the_tools_it_showed_for_the_next_turn():
+    """And does not remember an empty set: a greeting shows nothing, and nothing is
+    not what the next bare follow-up should inherit."""
+    import inspect
+
+    from core.orchestrator import Orchestrator
+
+    loop = inspect.getsource(Orchestrator._tool_calling_loop)
+    assert "if routing.tool_names and not routing.full_fallback:" in loop
+    assert "self._previous_tool_names = list(routing.tool_names)" in loop
+
+
+def test_a_full_fallback_is_not_carried_into_the_next_turn():
+    """Inheriting ignorance is not continuity. Measured: without this, "what is the
+    capital of France" following "play some music" carried all 129 schemas forward
+    and the ceiling saved nothing at all on that turn."""
+    import inspect
+
+    from core.orchestrator import Orchestrator
+
+    loop = inspect.getsource(Orchestrator._tool_calling_loop)
+    assert "if routing.tool_names and not routing.full_fallback:" in loop

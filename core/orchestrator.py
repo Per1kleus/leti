@@ -24,7 +24,7 @@ from core.config_loader import get_settings
 from core import intent as intent_reader
 from core import context_engine, entities, modes, performance, task_control
 from core.intent_signals import contains_explicit_denial, contains_request_approval
-from core.llm_client import OllamaClient
+from core.llm_client import OllamaClient, reasons as llm_reasons
 from core import (artifacts, connections, diagnostics, math_render, resources,
                   speech, transcript, verification)
 from core.safety_guard import ConfirmationDenied, PermissionDenied, SafetyGuard
@@ -201,6 +201,86 @@ def _call_from_object(blob: str, find_tool: Callable[[str], Any],
     return {"function": {"name": name, "arguments": arguments}}
 
 
+# --------------------------------------------------------------------------- #
+# Saying why an answer stopped
+#
+# One sentence for every failure was the bug. core/llm_client.py now reports WHICH
+# failure on the final event, and these are the sentences - one per cause, each of
+# them true of that cause and of no other. Measured against a real server, the old
+# single sentence ("the connection to the model stopped partway through") was
+# emitted for a read timeout, an uninstalled model, an out-of-memory refusal, a
+# clean close with the whole answer present, and a genuine mid-answer cut. It was
+# accurate for the last of those.
+#
+# They are spoken, so they are one plain sentence with no error codes in them. The
+# server's own words are quoted only for a model_error, because that is the case
+# where the server said something the user can act on ("try pulling it first"), and
+# they are truncated: a model server's message is about the model, but this is the
+# one place external text reaches the voice, so it is bounded rather than trusted
+# to be short.
+# --------------------------------------------------------------------------- #
+
+# Long enough for Ollama's real messages ('model "x" not found, try pulling it
+# first' is 44 characters), short enough that a runaway string is not read aloud.
+MAX_SERVER_DETAIL_CHARS = 200
+
+
+def _why_it_ended(event: Dict[str, Any]) -> str:
+    """The true sentence for why a streamed answer stopped.
+
+    Reads the event defensively. `reason` and `started` come from
+    core/llm_client.py, and a client that does not set them is not a broken client:
+    this file deliberately works with anything that yields the streaming shape, and
+    every test double is one of those. Absent `started`, whether the model wrote
+    anything is a question the event answers anyway - the assembled message is
+    right there - so it is derived rather than assumed false. Absent `reason`, the
+    last branch is the sentence that was there before any of this.
+    """
+    reason = str(event.get("reason") or "")
+    if "started" in event:
+        started = bool(event["started"])
+    else:
+        message = event.get("message")
+        started = bool(isinstance(message, dict) and (message.get("content") or "").strip())
+
+    if reason == llm_reasons.MODEL_ERROR:
+        detail = str(event.get("error") or "").strip()
+        if len(detail) > MAX_SERVER_DETAIL_CHARS:
+            detail = detail[:MAX_SERVER_DETAIL_CHARS].rstrip() + "..."
+        if detail:
+            return f"The model could not answer that: {detail}"
+        return "The model refused that request and did not say why."
+
+    if reason == llm_reasons.UNREACHABLE:
+        return ("I could not reach the model - Ollama does not look like it is "
+                "running.")
+
+    if reason == llm_reasons.TIMED_OUT:
+        if started:
+            return "I had to stop there - the model went quiet partway through."
+        return ("The model did not answer in time, so there is nothing to tell "
+                "you yet.")
+
+    if reason == llm_reasons.NO_ANSWER:
+        return "I reached the model and it sent nothing back."
+
+    if reason == llm_reasons.NO_MARKER:
+        # A clean close with text already delivered. Probably the whole answer,
+        # possibly not - so it is flagged as doubt rather than as a failure, which
+        # is what it used to be reported as.
+        if started:
+            return "That may not be all of it - the model closed without signing off."
+        return "The model closed the answer before writing any of it."
+
+    # cut_off, and anything a future version of the client reports that this
+    # function has not been taught. The original sentence, now said only where it
+    # is true.
+    if started:
+        return ("I could not finish that - the connection to the model stopped "
+                "partway through.")
+    return "I could not get an answer from the model."
+
+
 def _called_tool_name(call: Any) -> str:
     """The tool name off a call, for presentation only.
 
@@ -310,6 +390,12 @@ class Orchestrator:
     _owning_task = None              # set per turn; see handle_user_input
     interrupt_callback = None        # the speech engine's own interrupt, if any
     _spoke_while_streaming = False   # set per turn; see _ask
+    # The tool set the last turn was shown. Read by the router for a request that
+    # carries no vocabulary of its own ("and in Athens?"), which is both the
+    # correct set for it and byte-identical to last turn's prompt prefix. Not
+    # reset between turns - carrying it across is the whole point - and it costs
+    # one list of names.
+    _previous_tool_names: List[str] = []
     _intent = _DEFAULT_INTENT
     _mode = _DEFAULT_MODE
     _context = None                  # the last context package, for diagnostics
@@ -726,10 +812,29 @@ class Orchestrator:
             routing = Routing(tool_names=[], no_tools=True,
                               reason=f"{self._intent.kind}: nothing was asked for")
         else:
+            # may_need_tool is the Intent Layer's OTHER reading, and it is a
+            # ceiling on broadening rather than a veto: wants_action above decides
+            # whether a tool is offered at all, this decides whether a request
+            # that matched nothing is shown everything. A question answered from
+            # knowledge used to be sent all 129 schemas - 22,336 tokens the model
+            # had to read before writing a word - purely because "what is the
+            # capital of France" shares no vocabulary with any tool description.
+            # See core/tool_router.py's CORE_MODULES note.
             routing = select_tools_for(last_user_message(messages), self.tool_registry,
                                        budget=self._mode.tool_budget,
-                                       allowed=modes.visible_tools(self.tool_registry))
+                                       allowed=modes.visible_tools(self.tool_registry),
+                                       may_need_tool=self._intent.may_need_tool,
+                                       previous=self._previous_tool_names)
         tool_schemas = self.tool_registry.schemas_for(routing.tool_names)
+        # Remembered only when this turn was actually shown something, and only
+        # when it was shown it because something MATCHED. A greeting shows nothing,
+        # and "nothing" is not what the next bare follow-up should inherit; a full
+        # fallback means the router had no idea this turn either, and inheriting
+        # that is inheriting ignorance, not continuity. Measured: without the
+        # second condition, "what is the capital of France" following "play some
+        # music" carried all 129 schemas forward and saved nothing.
+        if routing.tool_names and not routing.full_fallback:
+            self._previous_tool_names = list(routing.tool_names)
         # Timings for the diagnostics panel, taken while doing the real work rather
         # than by measuring anything extra. Never allowed to affect the turn.
         try:
@@ -968,8 +1073,11 @@ class Orchestrator:
                 stopped = bool(event.get("stopped"))
                 message = event.get("message") or {}
                 if event.get("error") and not stopped:
-                    cut_short = str(event["error"])
-                    logger.warning(f"Streamed answer ended early: {cut_short}")
+                    cut_short = _why_it_ended(event)
+                    logger.warning(
+                        f"Streamed answer ended early ({event.get('reason') or 'unknown'}): "
+                        f"{event['error']}"
+                    )
                 break
             fragment = event.get("text")
             if not fragment:
@@ -1006,12 +1114,20 @@ class Orchestrator:
             # way to know the model was interrupted rather than finished. So it
             # is said, and it is part of the answer that gets kept.
             #
+            # Which sentence, though, is core/llm_client.py's `reason` - see
+            # _why_it_ended. This used to say "the connection to the model stopped
+            # partway through" for every one of seven measured failures, five of
+            # which produced no text at all, and two of which were the model server
+            # stating the exact problem ("model not found, try pulling it first";
+            # "requires more system memory than is available"). Sending the user
+            # after a network fault that was really an uninstalled model is worse
+            # than saying nothing.
+            #
             # Nothing is retried here. core/llm_client.py's fallback model is the
             # one retry policy and it covers the REQUEST; a connection that died
             # halfway through an answer is not a request to make again, and a
             # second call on its own initiative is a second call.
-            note = ("I could not finish that - the connection to the model "
-                    "stopped partway through.")
+            note = cut_short
             message["content"] = ((message.get("content") or "").rstrip()
                                   + ("\n\n" if message.get("content") else "") + note)
             if not message.get("tool_calls"):

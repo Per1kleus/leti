@@ -38,6 +38,18 @@ ollama:
   vision_model: "llama3.2-vision"
   embedding_model: "nomic-embed-text"
   request_timeout_seconds: 120
+  # How long to wait for the FIRST token of a STREAMED answer. Deliberately far
+  # larger than request_timeout_seconds, because it covers something different:
+  # the model reading the prompt before it can write anything. A full-fallback
+  # turn sends about 22,300 tokens of tool schemas and, on a machine where Ollama
+  # has moved layers onto the CPU, reading them takes minutes. Measured at 120
+  # seconds that read timed out with nothing on the socket, and Leti told the user
+  # "the connection to the model stopped partway through" an answer that had never
+  # started - which is the reported symptom, not a network fault.
+  #
+  # Lower it only if you would rather be told sooner that a generation has stalled
+  # than wait for a slow first token. Leave it unset for max(request_timeout, 600).
+  stream_timeout_seconds: 600
   temperature: 0.3
   # num_ctx is the model's context window. Ollama defaults to a conservative
   # value (often 2048-4096) when this isn't set explicitly, regardless of what

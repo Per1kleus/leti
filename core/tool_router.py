@@ -133,6 +133,39 @@ CATEGORIES: Dict[str, List[str]] = {
 # reaches for when nothing else fits, and it is two tools.
 ALWAYS_ON_MODULES = ("tools.web_search",)
 
+
+# The smallest honest answer to "this request matched nothing and asked for
+# nothing to happen": what is always sent anyway. Not a new list to maintain -
+# it is ALWAYS_ON_MODULES plus the modules this file has never been told about,
+# which is exactly the safety net every other path already gets.
+#
+# Why it exists. Rule three of this file is that failure falls all the way back,
+# and for a COMMAND that is right: "play some music" matches no tool description
+# in the registry, and narrowing it would cost Leti the ability. For a QUESTION
+# it is not right, and it was the single largest cost in a turn. Measured, on the
+# real registry: "what is 2 + 2", "what is the capital of France" and "what did
+# we talk about yesterday" each matched nothing and were therefore sent all 129
+# tools - 89,345 characters, about 22,336 tokens - before the system prompt, the
+# profile, the recalled memories or the conversation got any of a 28,672-token
+# window. The model then has to read all of it before it can write the first
+# token of "4".
+#
+# core/intent.py already decides this and already says so: `may_need_tool` is
+# false for a question, a correction and a clarification, with the reasoning
+# written out in full next to it ("the cost of withholding tools from something
+# that turns out to want one is the model saying so and the user rephrasing").
+# It was marked "a hint for the report, not a gate" and nothing read it. This is
+# the wire. The Intent Layer decides whether a request asked for anything; this
+# file decides which tools a request that did ask reaches. Neither guesses at the
+# other's job.
+#
+# What it does NOT do: withhold a tool from a request that asked for something.
+# A command, a task, a watch request and an information request all keep the full
+# fallback, unchanged, and so does every genuine failure (no request text, an
+# exception, routing switched off). A question is still shown whatever it actually
+# matched - this only stops a question that matched NOTHING from being shown
+# EVERYTHING, and stops a weak match from broadening into whole categories.
+
 # A message that is only a greeting or an acknowledgement needs no tools at all.
 # Deliberately anchored to the WHOLE message: "thanks" is chat, "thanks, now open
 # spotify" is not, and the cost of getting this wrong is a request Leti cannot act
@@ -246,7 +279,9 @@ def _names_in(index: _Index, modules: Iterable[str]) -> Set[str]:
     return out
 
 
-def route(request: str, registry: Any, budget: Optional[int] = None) -> Routing:
+def route(request: str, registry: Any, budget: Optional[int] = None,
+          may_need_tool: bool = True,
+          previous: Optional[Sequence[str]] = None) -> Routing:
     """Pick the tools for one request. Never raises; the worst case is all of them.
 
     `budget` is the adaptive engine's opinion of how small this turn should be
@@ -255,16 +290,63 @@ def route(request: str, registry: Any, budget: Optional[int] = None) -> Routing:
     everything, and the best-matching module is always kept whatever the number
     says. A budget cannot make a tool unreachable - it changes what one turn is
     shown, not what exists.
+
+    `may_need_tool` is core/intent.py's reading of whether a tool could plausibly
+    be required at all - false for a question, a correction and a clarification.
+    It is a CEILING ON BROADENING and nothing else: a request that matched tools
+    is shown them either way, and only a request that asked for nothing to happen
+    is stopped from being shown the whole registry on the strength of matching
+    nothing. Defaults true, which is the behaviour that existed before it. See
+    CORE_MODULES above for the measurement that made this necessary.
     """
     try:
-        return _route(request, registry, budget)
+        return _route(request, registry, budget, may_need_tool, previous)
     except Exception as e:
         logger.warning(f"Tool routing failed ({e}); sending the full tool set.")
         return Routing(tool_names=sorted(registry.names()), confident=False,
                        full_fallback=True, reason=f"routing failed: {e}")
 
 
-def _route(request: str, registry: Any, budget: Optional[int] = None) -> Routing:
+def _core_only(index: _Index, reason: str,
+               previous: Optional[Sequence[str]] = None) -> Routing:
+    """What is always sent, plus whatever the previous request was shown.
+
+    MIN_TOOLS deliberately does not apply. The floor exists because "the risk of
+    having left out the one tool that mattered" outweighs a small saving - and
+    that risk is what `may_need_tool` being false has already answered. Padding
+    the set back up to twelve with the next best-scoring modules would be padding
+    it with modules that scored nothing.
+
+    `previous` is the set the LAST turn was shown, and carrying it is a correction
+    to this path rather than an optimisation of it. "What's the weather" routes to
+    the weather tools; "and in Athens?" that follows it matches nothing at all -
+    no tool description mentions Athens - and intent.py reads it as a question, so
+    without this it would be shown the core and lose get_weather. A request with no
+    vocabulary of its own is about the request it follows. core/intent.py's
+    `refers_back` is not the signal for it: measured, that is false for "and in
+    Athens?", "and tomorrow?" and "what about tomorrow" alike.
+
+    It also happens to be free. Every other path already includes ALWAYS_ON_MODULES
+    and the uncategorised safety net, so for any non-empty `previous` the union IS
+    `previous`, sorted the same way - byte-identical to what was sent last turn,
+    which is what lets the model server reuse the prompt prefix it already has
+    instead of reading the whole tool list again. See registry.schemas_for.
+    """
+    modules = set(ALWAYS_ON_MODULES) | set(index.uncategorised_modules())
+    core = _names_in(index, modules)
+    if previous:
+        # Filtered through the index, so a tool the current mode does not show -
+        # or one that has since gone from the registry - is not carried forward.
+        carried = core | {n for n in previous if n in index.terms_of}
+        if carried != core:
+            return Routing(tool_names=sorted(carried), confident=False,
+                           reason=f"{reason}; carried over from the previous request")
+    return Routing(tool_names=sorted(core), confident=False, reason=reason)
+
+
+def _route(request: str, registry: Any, budget: Optional[int] = None,
+           may_need_tool: bool = True,
+           previous: Optional[Sequence[str]] = None) -> Routing:
     index = _index_for(registry)
     everything = index.all_names()
 
@@ -277,6 +359,13 @@ def _route(request: str, registry: Any, budget: Optional[int] = None) -> Routing
 
     asked = _terms(request)
     if not asked:
+        if not may_need_tool:
+            # "what is 2 + 2" gets here: `what` and `is` are stopwords and `2` is
+            # under the three-character floor, so there is literally nothing to
+            # score against. Measured as the most expensive turn Leti had - all
+            # 129 schemas, 22,336 tokens, to answer "4".
+            return _core_only(index, "nothing to match on and nothing was asked "
+                                     "for; sending the core only", previous)
         return Routing(tool_names=everything, confident=False, full_fallback=True,
                        reason="nothing to match on")
 
@@ -294,6 +383,11 @@ def _route(request: str, registry: Any, budget: Optional[int] = None) -> Routing
         module_score[module] = max(module_score.get(module, 0.0), score)
 
     if not module_score:
+        if not may_need_tool:
+            # A question that matched no tool's name or description. Answering it
+            # is what was asked for, and searching the web is still on the table.
+            return _core_only(index, "nothing matched and nothing was asked for; "
+                                     "sending the core only", previous)
         return Routing(tool_names=everything, confident=False, full_fallback=True,
                        reason="nothing matched; sending everything")
 
@@ -307,12 +401,22 @@ def _route(request: str, registry: Any, budget: Optional[int] = None) -> Routing
     categories: Set[str] = set()
     for module in list(chosen):
         categories.update(index.category_of.get(module, ()))
-    if not confident:
+    if not confident and may_need_tool:
         for category in list(categories):
             chosen.update(CATEGORIES.get(category, ()))
     else:
         # Confident still pulls in the rest of the top module's categories: the
         # tools people need together live together.
+        #
+        # This is load-bearing and `may_need_tool` deliberately does NOT gate it,
+        # though it was tried. Skipping it for a question dropped list_files from
+        # "what files are in this folder" - the same regression _tighten's
+        # docstring below records, for the same reason: file_manager scores 2.2 on
+        # that request and documents scores 5.5, and the shared "files" category is
+        # the only thing that ever put the right tool in the set. Measured cost of
+        # keeping it: "what time is it" is shown 74 tools, 14,023 tokens, none of
+        # which can answer it, because the registry has no clock tool. That is the
+        # price of not losing list_files and it is the right way round.
         for module in [m for m, s in module_score.items() if s >= best * 0.7]:
             for category in index.category_of.get(module, ()):
                 chosen.update(CATEGORIES.get(category, ()))
@@ -395,7 +499,9 @@ def _tighten(index: _Index, module_score: Dict[str, float], chosen: Set[str],
 
 def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None,
                      budget: Optional[int] = None,
-                     allowed: Optional[Set[str]] = None) -> Routing:
+                     allowed: Optional[Set[str]] = None,
+                     may_need_tool: bool = True,
+                     previous: Optional[Sequence[str]] = None) -> Routing:
     """The entry point. `enabled` false restores the previous behaviour exactly.
 
     `allowed` is the current mode's tool set (core/modes.py). It is applied to
@@ -403,6 +509,10 @@ def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None
     is measured by: Coding Mode's "everything" is sixty tools, not a hundred and
     thirty. A tool outside the set is not hidden from the registry, only from this
     turn - switching modes brings it straight back.
+
+    `may_need_tool` and `previous` are passed straight to route(); see the notes
+    there. Neither is applied when routing is switched off, because "off" means the
+    behaviour that existed before this file and that included the whole registry.
     """
     if enabled is None:
         enabled = _routing_enabled()
@@ -411,7 +521,7 @@ def select_tools_for(request: str, registry: Any, enabled: Optional[bool] = None
     if not enabled:
         return Routing(tool_names=sorted(registry.names()), full_fallback=True,
                        reason="tool routing is switched off")
-    return route(request, registry, budget)
+    return route(request, registry, budget, may_need_tool, previous)
 
 
 class _Scoped:

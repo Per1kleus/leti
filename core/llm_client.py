@@ -16,6 +16,38 @@ from core.config_loader import get_settings
 
 logger = logging.getLogger("leti.llm_client")
 
+# Why a streamed answer ended. Carried on the final event next to the free-text
+# `error`, so a caller can say the true thing rather than one sentence for
+# everything. See stream_response.
+REASON_OK = ""                              # it finished
+REASON_STOPPED = "stopped"                  # the user said stop
+REASON_MODEL_ERROR = "model_error"          # the server said what was wrong
+REASON_UNREACHABLE = "unreachable"          # nothing is listening
+REASON_TIMED_OUT = "timed_out"              # no bytes within the timeout
+REASON_CUT_OFF = "cut_off"                  # bytes, then the connection died
+REASON_NO_ANSWER = "no_answer"              # connected, and nothing came back
+REASON_NO_MARKER = "no_completion_marker"   # a clean close with no done flag
+
+
+class reasons:
+    """The same codes, gathered so a caller imports one name instead of eight.
+
+    Not an Enum: the value on the event is a plain string so that a dict of events
+    stays JSON, which is what the GUI transport and the diagnostics record carry.
+    """
+
+    OK = REASON_OK
+    STOPPED = REASON_STOPPED
+    MODEL_ERROR = REASON_MODEL_ERROR
+    UNREACHABLE = REASON_UNREACHABLE
+    TIMED_OUT = REASON_TIMED_OUT
+    CUT_OFF = REASON_CUT_OFF
+    NO_ANSWER = REASON_NO_ANSWER
+    NO_MARKER = REASON_NO_MARKER
+
+    ALL = (OK, STOPPED, MODEL_ERROR, UNREACHABLE, TIMED_OUT, CUT_OFF,
+           NO_ANSWER, NO_MARKER)
+
 
 class OllamaClient:
     def __init__(self):
@@ -24,7 +56,30 @@ class OllamaClient:
         # section they genuinely do need a restart to change.
         self.host = cfg["host"].rstrip("/")
         self.timeout = cfg["request_timeout_seconds"]
-        self._client = httpx.AsyncClient(base_url=self.host, timeout=self.timeout)
+        # How long to wait for the FIRST byte of a streamed answer, which is a
+        # different question from how long to wait between bytes once it is
+        # flowing. httpx has one read timeout and it applies to both, so passing
+        # request_timeout_seconds meant the gap while the model reads the prompt
+        # was measured against a number chosen for a whole request. A full-fallback
+        # turn is about 22,300 tokens of tool schemas (see core/tool_router.py) and
+        # the model has to read all of them before it can write anything; on a
+        # machine where Ollama has put layers on the CPU that is minutes, the read
+        # timed out with nothing on the socket, and the user was told the
+        # connection had dropped partway through an answer that had never started.
+        #
+        # So the streamed path gets its own, longer allowance - read live in
+        # _stream_timeout rather than baked in here, like everything else in
+        # `settings`. The cost is that a generation which genuinely stalls takes
+        # this long to notice; that is the right way round, because a slow prefill
+        # is ordinary and a stalled generation is not.
+        self._client = httpx.AsyncClient(
+            base_url=self.host,
+            # Connecting to something on this machine either works at once or is
+            # not going to. Spending the full request budget on it only delays
+            # telling the user that Ollama is not running.
+            timeout=httpx.Timeout(float(self.timeout),
+                                  connect=min(10.0, float(self.timeout))),
+        )
 
     @property
     def settings(self) -> Dict[str, Any]:
@@ -114,6 +169,31 @@ class OllamaClient:
         mid-answer ends the stream with `error` set and whatever arrived intact -
         because a partial answer that says it is partial is worth more than an
         exception on top of text the user already heard.
+
+        The final event also carries `reason`, one of the REASON_* codes below, and
+        `started`, which is whether any text arrived at all. Both exist because
+        `error` alone was a free-text string and the caller had nothing to tell the
+        cases apart with, so it said one sentence for all of them: "the connection
+        to the model stopped partway through". Measured against a real server, seven
+        distinct situations produced that sentence, and in five of them nothing had
+        arrived - so nothing was partway through anything:
+
+          normal              3 fragments, no error
+          long answer       120 fragments, no error
+          slow prefill        0 fragments, ReadTimeout
+          model not pulled    0 fragments, HTTP 404 - and Ollama had said
+                              'model "ghost" not found, try pulling it first',
+                              which this code read and threw away
+          out of memory       0 fragments, an {"error": ...} line in the stream
+                              naming the exact shortfall, also thrown away
+          cut mid-answer      2 fragments, then the peer closed
+          no done marker      1 fragment, clean close
+
+        Only the sixth is a connection stopping partway through. The fourth and
+        fifth are the model server explaining precisely what is wrong, in text this
+        function used to discard - which is why "install the model" looked like a
+        network fault. Nothing here is reported less loudly than before; each case
+        is reported as what it is.
         """
         payload = {
             "model": model or self.settings["reasoning_model"],
@@ -133,10 +213,21 @@ class OllamaClient:
         finished = False
         stopped = False
         error = ""
+        reason = REASON_OK
 
         try:
-            async with self._client.stream("POST", "/api/chat", json=payload) as response:
-                response.raise_for_status()
+            async with self._client.stream("POST", "/api/chat", json=payload,
+                                           timeout=self._stream_timeout()) as response:
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as bad:
+                    # raise_for_status is still what detects it - anything standing
+                    # in for a response knows that method. What is new is reading
+                    # the body afterwards: on a streaming response it has not been
+                    # read, and Ollama puts the real explanation in it ('model "x"
+                    # not found, try pulling it first'). The exception on its own
+                    # carries the status code and throws the instruction away.
+                    raise _ServerSaid(await _explain_status(bad.response)) from bad
                 async for line in response.aiter_lines():
                     if should_stop is not None and should_stop():
                         # Break rather than yield from in here. Leaving the
@@ -151,6 +242,14 @@ class OllamaClient:
                     chunk = _read_chunk(line)
                     if chunk is None:
                         continue
+                    said = chunk.get("error")
+                    if isinstance(said, str) and said.strip():
+                        # The model server explaining itself mid-stream: out of
+                        # memory, a model that failed to load, a template error.
+                        # Ollama sends this instead of a done marker, so without
+                        # this branch it fell through to "ended without a
+                        # completion marker" and the explanation was lost.
+                        raise _ServerSaid(said.strip())
                     message = chunk.get("message")
                     if isinstance(message, dict):
                         role = message.get("role") or role
@@ -170,20 +269,47 @@ class OllamaClient:
                     if chunk.get("done"):
                         finished = True
                         break
+        except _ServerSaid as e:
+            error = str(e)
+            reason = REASON_MODEL_ERROR
+            logger.warning(f"The model server refused the request: {error}")
         except Exception as e:
-            # Includes the connection dying, a non-200, and a read timing out.
-            # The text that arrived is still the text that arrived.
+            # Includes the connection dying and a read timing out. The text that
+            # arrived is still the text that arrived.
             error = f"{type(e).__name__}: {e}"
+            reason = _reason_for(e, bool(content))
             logger.warning(f"Streaming from Ollama stopped early ({error}).")
 
         if not finished and not error and not stopped:
             # The body ended without a done marker. Not fatal - the answer may be
             # complete - but the caller is told rather than left to assume.
             error = "the response ended without a completion marker"
+            reason = REASON_NO_MARKER
             logger.warning(error)
 
-        yield {"done": True, "stopped": stopped, "error": error,
+        if stopped:
+            reason = REASON_STOPPED
+
+        yield {"done": True, "stopped": stopped, "error": error, "reason": reason,
+               # Whether the model wrote anything at all. "Partway through" is only
+               # true when this is true, and it was false in five of the seven
+               # measured failures.
+               "started": bool(content),
                "message": _assembled(role, content, tool_calls)}
+
+    def _stream_timeout(self) -> Any:
+        """The timeout for one streamed request. See the note in __init__.
+
+        Read from the settings on every call, so raising it does not need a
+        restart - the same as the model and the temperature, and unlike the host.
+        """
+        base = float(self.timeout or 120)
+        try:
+            configured = self.settings.get("stream_timeout_seconds")
+        except Exception:
+            configured = None
+        return httpx.Timeout(float(configured) if configured else max(base, 600.0),
+                             connect=min(10.0, base))
 
     # ------------------------------------------------------------------ #
     # Vision
@@ -221,6 +347,49 @@ class OllamaClient:
             return resp.status_code == 200
         except httpx.ConnectError:
             return False
+
+
+class _ServerSaid(Exception):
+    """The model server explained what was wrong. Its words, not a guess at them.
+
+    A private exception rather than a flag because it can be raised from two
+    places - a non-200 status and an {"error": ...} line mid-stream - and both
+    have to leave the `async with` so the socket closes before anything is
+    yielded, exactly as the stop path does.
+    """
+
+
+async def _explain_status(response: Any) -> str:
+    """What a non-200 from the model server actually said.
+
+    Ollama answers a request for a model that was never pulled with 404 and
+    {"error": 'model "x" not found, try pulling it first'} - an instruction the
+    user can act on. Falls back to the status code when there is no body to read
+    or nothing useful in it, which is still better than a bare exception name.
+    """
+    detail = ""
+    try:
+        body = await response.aread()
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+            detail = parsed["error"].strip()
+    except Exception:
+        detail = ""
+    code = getattr(response, "status_code", "?")
+    return detail or f"the model server answered HTTP {code}"
+
+
+def _reason_for(exc: Exception, any_text: bool) -> str:
+    """Which REASON_* an exception is. Reported as what it is, not as one thing."""
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return REASON_UNREACHABLE
+    if isinstance(exc, httpx.TimeoutException):
+        return REASON_TIMED_OUT
+    # A protocol error, a reset, anything else: cut off if text had arrived, and
+    # if none had then the answer never started rather than stopped partway. The
+    # connection itself was fine in that case - something went wrong behind it -
+    # so it is not reported as nothing listening either.
+    return REASON_CUT_OFF if any_text else REASON_NO_ANSWER
 
 
 def _read_chunk(line: str) -> Optional[Dict[str, Any]]:

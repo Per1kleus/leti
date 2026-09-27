@@ -526,6 +526,35 @@ PARTICULAR THINGS
       looks like. Ask for diagnostics: the "Context window" check measures the
       tool list against the window and says whether it still fits.
 
+  "I could not finish that - the connection to the model stopped partway
+  through"
+      This sentence now means only one thing: the answer had started, and the
+      connection dropped while it was arriving. The usual cause is Ollama being
+      stopped or restarted mid-answer. Ask again.
+
+      It used to be the sentence for every kind of model failure, including
+      several that had nothing to do with the connection, so if you saw it before
+      an update and it made no sense, that is why. Leti now says which of these
+      it is instead:
+
+        "The model could not answer that: ..."
+            Ollama's own words, passed through. Usually a model that was never
+            downloaded ("try pulling it first") or one too big for the memory
+            available, and it names the shortfall. Section 6.
+        "I could not reach the model - Ollama does not look like it is running"
+            Start Ollama.
+        "The model did not answer in time"
+            The model spent longer reading the request than Leti was prepared to
+            wait. On a machine where the model does not fit the graphics card
+            this can happen on a complicated request; section 6, or raise
+            ollama.stream_timeout_seconds (section 14).
+        "I reached the model and it sent nothing back"
+            Ollama accepted the request and produced nothing. logs\leti.log has
+            what it said.
+        "That may not be all of it - the model closed without signing off"
+            The answer is probably complete; the model just did not mark it as
+            finished. Worth asking again if it reads as though it stops short.
+
   Leti cannot hear me
       Open the microphone-and-speakers check and test it. If the test tone plays
       but the microphone does not register, it is usually the wrong input device
@@ -632,7 +661,7 @@ have happened, restart before concluding it did not work.
 THE FULL LIST
 
   config\settings.yaml is the full list, and it is written to be read. There are
-  39 settings in use and every one of them is explained where it sits. The
+  40 settings in use and every one of them is explained where it sits. The
   "All settings" button in Leti's window shows the same list as it currently
   stands, which is the quickest way to see what a value actually is now rather
   than what the comment says it defaults to.
