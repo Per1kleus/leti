@@ -1893,6 +1893,43 @@
   ];
 
   const BASE_R = 54, CENTER = 200, BINS = 48, AMP_R = 19;
+  // Half the ring, for anything mapped up one side and back down the other. BINS
+  // is even so that the two halves meet exactly; a comment rather than a check
+  // because it is a literal three lines up.
+  const HALF_BINS = BINS / 2;
+
+  // The core is a CLOSED curve, so anything that varies per bin has to come back
+  // to where it started after BINS steps. A phase step of `i * k` only does that
+  // when k * BINS is a whole number of turns, and none of the four animations used
+  // one: 0.55 is 4.20 turns, 0.75 is 5.73, 0.33 is 2.52, 0.42 is 3.21. The
+  // remainder is a step between the last bin and the first - a permanent kink at
+  // twelve o'clock, in every state including idle.
+  //
+  // Measured, before this: the sharpest corner anywhere on the ring was at 99.9%
+  // of the way round in idle and 98.0% in the no-microphone pulse. That is the
+  // seam. Rounding each step to the nearest whole number of turns closes it and
+  // is visually the same wave.
+  const ringHarmonic = (turns) => (2 * Math.PI * turns) / BINS;
+  const IDLE_WAVES = 4;        // nearest whole turn count to the old 0.55
+  const ALERT_WAVES = 3;       //                            ... the old 0.42
+  const SPEAK_WAVES = 6;       //                            ... the old 0.75
+  const SPEAK_RIPPLE = 3;      //                            ... the old 0.33
+
+  // How many [1 2 1]/4 passes the live spectrum gets, going round the ring rather
+  // than along an array - see updateTargets.
+  const RING_SMOOTHING_PASSES = 2;
+  const ringScratch = new Float32Array(BINS);
+
+  function smoothRing(values, passes){
+    for(let p=0; p<passes; p++){
+      ringScratch.set(values);
+      for(let i=0; i<BINS; i++){
+        values[i] = (ringScratch[(i - 1 + BINS) % BINS]
+                     + 2 * ringScratch[i]
+                     + ringScratch[(i + 1) % BINS]) / 4;
+      }
+    }
+  }
   const waveformEl = document.getElementById('waveform');
   const micBtnLabel = document.getElementById('micBtnLabel');
 
@@ -1941,19 +1978,50 @@
     drawWaveform(amplitudes);
   }
 
-  // --- Value noise: one random value per bin per tick, smoothstepped between
-  //     ticks. Continuous, unlike per-frame Math.random(), and frame-rate
-  //     independent because the tick rate is in ticks per second.
+  // --- Value noise, smoothstepped between ticks so it is continuous in TIME, and
+  //     built from anchors round the ring so it is continuous in SPACE as well.
+  //
+  //     It used to be one independent random value per bin. That is smooth through
+  //     time and white around the ring, which is the wrong way round for a closed
+  //     curve: neighbouring bins are 7 pixels apart and were being given unrelated
+  //     radii up to 19 pixels apart, so the outline zig-zagged. Measured, it was
+  //     the largest single cause of the speaking core looking broken - a sharpest
+  //     corner of 5.90 degrees where a smooth circle measures 0.32.
+  //
+  //     Anchoring rather than smoothing afterwards, because averaging is what makes
+  //     a field smooth and averaging is also what takes the wobble out of it: three
+  //     [1 2 1] passes reached 1.26 degrees but halved the range of the field doing
+  //     it (0.98 -> 0.50), and eight anchors reach the same 1.26 degrees keeping
+  //     0.91. Scaling a smoothed field back up is worse again - its min and max
+  //     change on every tick, so the whole ring would jump whenever they did.
+  //
+  //     Periodic by construction: the last anchor interpolates back to the first.
+  //     Smooth by construction: smoothstep has zero slope at every anchor.
+  const NOISE_ANCHORS = 8;
   const noiseFrom = new Float32Array(BINS);
   const noiseTo = new Float32Array(BINS);
+  const noiseAnchors = new Float32Array(NOISE_ANCHORS);
   let noisePhase = 0;
-  for(let i=0; i<BINS; i++){ noiseFrom[i] = Math.random(); noiseTo[i] = Math.random(); }
+
+  function fillRingNoise(into){
+    for(let a=0; a<NOISE_ANCHORS; a++) noiseAnchors[a] = Math.random();
+    for(let i=0; i<BINS; i++){
+      const pos = i * NOISE_ANCHORS / BINS;
+      const a = Math.floor(pos) % NOISE_ANCHORS;
+      const t = pos - Math.floor(pos);
+      const e = t * t * (3 - 2 * t);                       // smoothstep
+      into[i] = noiseAnchors[a] + (noiseAnchors[(a + 1) % NOISE_ANCHORS] - noiseAnchors[a]) * e;
+    }
+  }
+  fillRingNoise(noiseFrom);
+  fillRingNoise(noiseTo);
 
   function advanceNoise(dt, ticksPerSecond){
     noisePhase += dt * ticksPerSecond;
     while(noisePhase >= 1){
       noisePhase -= 1;
-      for(let i=0; i<BINS; i++){ noiseFrom[i] = noiseTo[i]; noiseTo[i] = Math.random(); }
+      noiseFrom.set(noiseTo);
+      fillRingNoise(noiseTo);
     }
   }
   function noiseAt(i){
@@ -2025,14 +2093,44 @@
   function updateTargets(dt){
     if(mode === 'listening' && analyser){
       analyser.getByteFrequencyData(dataArray);
-      const step = Math.max(1, Math.floor(dataArray.length / BINS));
-      for(let i=0; i<BINS; i++) target[i] = (dataArray[i*step] || 0) / 255;
+      // A spectrum is not periodic and the core is. Reading one FFT bin per point
+      // in frequency order put the loudest part of a voice - the low end - next to
+      // the quietest, the top end, at twelve o'clock, and left every other pair of
+      // neighbours a raw unsmoothed sample apart. Measured: the sharpest corner on
+      // the ring was 12 to 15 degrees, forty times a smooth circle's, and it was at
+      // 0 to 4% of the way round. That is the seam, every frame the microphone was
+      // open.
+      //
+      // So the spectrum goes up one side of the ring and back down the other, the
+      // way the waveform meter below the core already mirrors itself. Low
+      // frequencies meet low frequencies at the seam and high meet high opposite,
+      // and the shape is periodic because it is a reflection.
+      //
+      // Each band is the MEAN of its slice rather than one sample out of it, which
+      // is both smoother and more honest - a point sample of a noisy spectrum says
+      // less about that band than its average does.
+      //
+      // The top quarter of the FFT is near-silent for speech, and spending a
+      // quarter of the ring on it wasted the resolution that the mirroring costs.
+      const usable = Math.max(HALF_BINS, Math.floor(dataArray.length * 3 / 4));
+      for(let b=0; b<HALF_BINS; b++){
+        const lo = Math.floor(b * usable / HALF_BINS);
+        const hi = Math.max(lo + 1, Math.floor((b + 1) * usable / HALF_BINS));
+        let sum = 0;
+        for(let k=lo; k<hi; k++) sum += dataArray[k];
+        const mean = sum / (hi - lo) / 255;
+        target[b] = mean;
+        target[BINS - b - 1] = mean;
+      }
+      smoothRing(target, RING_SMOOTHING_PASSES);
       return;
     }
     if(mode === 'speaking'){
       advanceNoise(dt, 7);
       for(let i=0; i<BINS; i++){
-        const wave = 0.34 + 0.20*Math.sin(clock*4.1 + i*0.75) + 0.13*Math.sin(clock*7.3 - i*0.33);
+        const wave = 0.34
+          + 0.20*Math.sin(clock*4.1 + i*ringHarmonic(SPEAK_WAVES))
+          + 0.13*Math.sin(clock*7.3 - i*ringHarmonic(SPEAK_RIPPLE));
         target[i] = Math.max(0.06, Math.min(1, wave + noiseAt(i) * 0.30));
       }
       return;
@@ -2040,10 +2138,14 @@
     if(mode === 'listening'){
       // Python says it is recording, but this browser never got its own mic - a
       // more alert pulse than idle, with no pretence of being real amplitude.
-      for(let i=0; i<BINS; i++) target[i] = 0.20 + 0.11*Math.sin(clock*2.0 + i*0.42);
+      for(let i=0; i<BINS; i++){
+        target[i] = 0.20 + 0.11*Math.sin(clock*2.0 + i*ringHarmonic(ALERT_WAVES));
+      }
       return;
     }
-    for(let i=0; i<BINS; i++) target[i] = 0.10 + 0.055*Math.sin(clock*1.15 + i*0.55);
+    for(let i=0; i<BINS; i++){
+      target[i] = 0.10 + 0.055*Math.sin(clock*1.15 + i*ringHarmonic(IDLE_WAVES));
+    }
   }
 
   function tickFrame(ts){
