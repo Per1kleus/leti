@@ -154,6 +154,23 @@ unless you ask it to.
 
 Three things happen, in this order, and each of them asks before it acts.
 
+The console counts its way through six stages so you can see how far along it
+is, rather than watching a line that does not change:
+
+    Preparing Leti...
+    [1/6] Checking Python
+    [2/6] Checking the packages Leti needs
+    [3/6] Setting up the browser Leti uses
+    [4/6] Checking the model server
+    [5/6] Checking Leti's models
+    [6/6] Starting Leti
+
+Downloads draw a bar, because several gigabytes with nothing on screen looks
+exactly like a program that has stopped responding:
+
+    Downloading qwen2.5:7b - this can take a while.
+    qwen2.5:7b [##############--------------]  51.0%  2.2 GB of 4.4 GB
+
   1. PYTHON AND PACKAGES
 
      The launcher looks for a Python it can use. If this machine has a good one
@@ -178,6 +195,20 @@ Three things happen, in this order, and each of them asks before it acts.
 
      Section 6 explains what it is weighing up, if you want to know.
 
+     Once you have answered - whichever way - Leti keeps the models your
+     configuration names downloaded. Stage 5 above checks on every launch that
+     the models are not only recorded as installed but can actually be loaded,
+     because a download interrupted partway and a model deleted afterwards both
+     leave the record saying everything is fine. Anything missing is fetched
+     again. Nothing is downloaded before you have answered this screen, because
+     your answer may change which model that is.
+
+     Only the two models Leti cannot work without are fetched this way: the one
+     it thinks with and the small one it turns memories into vectors with. The
+     vision model is about eight gigabytes and is only needed if you ask about
+     the screen, and the fallback model exists for when the main one is missing,
+     so neither is downloaded until it is wanted.
+
   3. THE MICROPHONE AND SPEAKERS
 
      Leti asks whether it may use them, then tests them - you hear a tone, you
@@ -188,7 +219,8 @@ Three things happen, in this order, and each of them asks before it acts.
      instead of speaking. You can change your mind later - see section 5.
 
 After all three, Leti's own window opens. Later launches skip straight to it:
-a few quick checks that nothing has been removed, then the interface.
+a few quick checks that nothing has been removed, then the interface. They do
+not re-download anything - stage 5 finds everything already there and says so.
 
 
 ===============================================================================

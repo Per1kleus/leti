@@ -30,7 +30,6 @@ the table above lives beside them and runs when node is available.
 """
 from __future__ import annotations
 
-import math
 import pathlib
 import re
 import shutil

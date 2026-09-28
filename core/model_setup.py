@@ -32,6 +32,7 @@ import logging
 import platform
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -376,26 +377,251 @@ def _is_installed(model: str, installed: List[str]) -> bool:
     return wanted in installed
 
 
-async def pull_model(model: str) -> Dict[str, Any]:
+async def pull_model(model: str, progress: Optional[Any] = None) -> Dict[str, Any]:
     """Download one model. Returns {"ok": bool, "error": str|None}.
 
     Long timeout because this is several gigabytes over whatever connection the
     machine has; a failure here is reported, never raised.
+
+    `progress`, when given, is called with (model, done_bytes, total_bytes,
+    status) as the download proceeds. Streaming exists for that: several
+    gigabytes with no output at all is indistinguishable from a hang, and the one
+    thing a person needs to see on a first launch is that something is happening
+    and roughly how much longer. Without a callback it still streams and simply
+    does not report, because the alternative - one request that returns after
+    twenty minutes - is also what a read timeout looks like.
+    """
+    import httpx
+
+    last_error = ""
+    saw_success = False
+    try:
+        async with httpx.AsyncClient(base_url=_host(), timeout=httpx.Timeout(None)) as client:
+            async with client.stream("POST", "/api/pull",
+                                     json={"model": model, "stream": True}) as resp:
+                if resp.status_code >= 400:
+                    body = await resp.aread()
+                    return {"ok": False, "error": _pull_error(body, resp.status_code)}
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    if chunk.get("error"):
+                        last_error = str(chunk["error"])
+                        break
+                    status = str(chunk.get("status") or "")
+                    if status == "success":
+                        saw_success = True
+                    if progress is not None:
+                        try:
+                            progress(model,
+                                     int(chunk.get("completed") or 0),
+                                     int(chunk.get("total") or 0),
+                                     status)
+                        except Exception:
+                            # A progress display is never allowed to fail a download.
+                            pass
+    except Exception as e:
+        logger.warning(f"Pulling '{model}' failed ({e}).")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    if last_error:
+        logger.warning(f"Ollama refused to pull '{model}': {last_error}")
+        return {"ok": False, "error": last_error}
+    if not saw_success:
+        # The stream ended without Ollama saying it had finished. Reported rather
+        # than assumed complete - ensure_models checks the model afterwards
+        # anyway, and a caller using pull_model directly deserves to know.
+        return {"ok": False,
+                "error": "the download ended without Ollama reporting success"}
+    return {"ok": True, "error": None, "status": "success"}
+
+
+def _pull_error(body: Any, status_code: int) -> str:
+    """What a non-200 from /api/pull said, rather than only its status code."""
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+            return parsed["error"].strip()
+    except Exception:
+        pass
+    return f"Ollama answered HTTP {status_code} to the download request"
+
+
+# --------------------------------------------------------------------------- #
+# Which models are required, and which may be fetched without being asked
+#
+# This is the one place that answers "what does Leti need downloaded". The
+# launcher asks it rather than naming a model, because a model name in the
+# launcher is a second configuration source that drifts the moment somebody edits
+# settings.yaml - and it would not know which of the four model settings matter.
+#
+# Roles, not names. Every entry is read from the live configuration, so changing
+# ollama.reasoning_model changes what this returns and nothing else has to know.
+# --------------------------------------------------------------------------- #
+
+# Leti cannot answer at all without these two: one to think with, one to turn a
+# memory into a vector. They are what a launch ensures.
+ESSENTIAL_ROLES = ("reasoning_model", "embedding_model")
+
+# Useful, large, and not needed to hold a conversation. The vision model is about
+# eight gigabytes and is only read when something asks about the screen; the
+# fallback exists precisely for when the primary is missing, so downloading it
+# alongside the primary would be downloading a spare tyre to carry in the boot of
+# another car. Both are pulled on demand by the code that uses them, not here.
+OPTIONAL_ROLES = ("vision_model", "fallback_reasoning_model")
+
+
+def required_models(include_optional: bool = False) -> List[Dict[str, Any]]:
+    """What the CURRENT configuration says Leti needs, as {role, model, essential}.
+
+    Order is ESSENTIAL_ROLES then OPTIONAL_ROLES, so a caller that pulls them in
+    order gets the machine working soonest. A role set to an empty string is left
+    out rather than reported as a model called "".
+    """
+    try:
+        ollama = get_settings()["ollama"]
+    except Exception as e:
+        logger.warning(f"Couldn't read the model configuration ({e}).")
+        return []
+    roles = ESSENTIAL_ROLES + (OPTIONAL_ROLES if include_optional else ())
+    out: List[Dict[str, Any]] = []
+    for role in roles:
+        model = str(ollama.get(role) or "").strip()
+        if model:
+            out.append({"role": role, "model": model,
+                        "essential": role in ESSENTIAL_ROLES})
+    return out
+
+
+def may_pull_unattended(role: str) -> bool:
+    """Whether this role may be downloaded without asking the user first.
+
+    The rule lives here rather than in the launcher because it is a statement
+    about this module's promise: nothing is downloaded before the first-launch
+    screen has been answered, because until then the answer may change which model
+    Leti uses and pre-fetching the default would spend several gigabytes on a
+    model the user is about to replace.
+
+    Once the choice has been made - whatever it was - the configuration is the
+    user's own, and keeping it downloaded needs no further permission.
+
+    The embedding model is the exception in both directions: the first-launch
+    screen only ever sets reasoning_model, so no answer to it can change what the
+    embedding model should be, and Leti's memory does not work without one.
+    """
+    if role == "embedding_model":
+        return True
+    return is_configured()
+
+
+async def model_is_usable(model: str) -> bool:
+    """Whether Ollama can actually load this model, not merely list it.
+
+    /api/tags lists what has a manifest. A download interrupted partway leaves
+    one behind with blobs missing, and a model whose blobs were corrupted or
+    deleted underneath it lists exactly like a good one - which is the case the
+    brief names: a state file saying a model is installed is not evidence that it
+    is. /api/show reads the manifest AND resolves the blobs, so it fails for both.
     """
     import httpx
 
     try:
-        async with httpx.AsyncClient(base_url=_host(), timeout=httpx.Timeout(None)) as client:
-            resp = await client.post("/api/pull", json={"model": model, "stream": False})
-            resp.raise_for_status()
+        async with httpx.AsyncClient(base_url=_host(), timeout=30) as client:
+            resp = await client.post("/api/show", json={"model": model})
+            if resp.status_code != 200:
+                logger.warning(
+                    f"Ollama lists '{model}' but cannot describe it "
+                    f"(HTTP {resp.status_code}); treating it as not installed.")
+                return False
             body = resp.json()
     except Exception as e:
-        logger.warning(f"Pulling '{model}' failed ({e}).")
-        return {"ok": False, "error": str(e)}
-    status = body.get("status") if isinstance(body, dict) else None
-    if isinstance(body, dict) and body.get("error"):
-        return {"ok": False, "error": str(body["error"])}
-    return {"ok": True, "error": None, "status": status}
+        logger.warning(f"Couldn't check whether '{model}' is usable ({e}).")
+        return False
+    return isinstance(body, dict) and not body.get("error")
+
+
+async def missing_models(include_optional: bool = False,
+                         verify: bool = True) -> List[Dict[str, Any]]:
+    """The required models this machine does not actually have.
+
+    Asks Ollama, never a state file. data/model_setup.json records what was
+    chosen, which is a different question from what is on the disk now: a model
+    can be removed with `ollama rm`, a download can be interrupted, and a blob
+    can be corrupted, and in all three cases the state file still says it is
+    there.
+
+    Returns [] when Ollama cannot be reached at all, because "I could not ask" is
+    not "nothing is installed" - pulling four models on the strength of a refused
+    connection is the wrong way to be wrong.
+    """
+    wanted = required_models(include_optional)
+    if not wanted:
+        return []
+    installed = await installed_models()
+    if not installed:
+        logger.info("Ollama listed no models; not treating that as a reason to pull.")
+        return []
+    missing: List[Dict[str, Any]] = []
+    for entry in wanted:
+        if not _is_installed(entry["model"], installed):
+            missing.append({**entry, "reason": "not installed"})
+        elif verify and not await model_is_usable(entry["model"]):
+            missing.append({**entry, "reason": "installed but unusable"})
+    return missing
+
+
+async def ensure_models(progress: Optional[Any] = None,
+                        include_optional: bool = False,
+                        unattended: bool = True) -> Dict[str, Any]:
+    """Download whatever is required and not already usable. Never raises.
+
+    `progress`, if given, is called with (model, done_bytes, total_bytes, status)
+    as each download proceeds, so a terminal can draw a bar and a window can show
+    one. `unattended` false ignores may_pull_unattended and fetches everything
+    required, which is what the first-launch screen does once the user has said
+    yes to something.
+
+    Returns {"ok", "pulled", "skipped", "failed", "checked"}. `ok` is false only
+    when something that had to be downloaded could not be.
+    """
+    try:
+        missing = await missing_models(include_optional)
+    except Exception as e:
+        logger.warning(f"Couldn't work out which models are missing ({e}).")
+        return {"ok": True, "pulled": [], "skipped": [], "failed": [], "checked": False,
+                "error": str(e)}
+
+    pulled: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+
+    for entry in missing:
+        if unattended and not may_pull_unattended(entry["role"]):
+            skipped.append({**entry, "why": "waiting for the first-launch model choice"})
+            continue
+        result = await pull_model(entry["model"], progress=progress)
+        if not result.get("ok"):
+            failed.append({**entry, "error": result.get("error")})
+            continue
+        # Verified rather than assumed: a pull that reports success and leaves
+        # nothing loadable behind is exactly the state this function exists to
+        # get out of, and reporting it as fixed would hide it until the first
+        # question the user asked.
+        if not await model_is_usable(entry["model"]):
+            failed.append({**entry,
+                           "error": "the download reported success but the model "
+                                    "still cannot be loaded"})
+            continue
+        pulled.append(entry["model"])
+
+    return {"ok": not failed, "pulled": pulled, "skipped": skipped,
+            "failed": failed, "checked": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -427,9 +653,29 @@ async def apply_choice(choice: str, model: Optional[str] = None) -> Dict[str, An
     """
     if choice == "keep_current":
         kept = current_model()
+        # "Keep what I have" is not the same as "I have it". Nothing used to check,
+        # so a machine with no model downloaded at all could answer this screen,
+        # have the answer saved, never be asked again, and then fail on the first
+        # question with a model error. The configuration is still not touched -
+        # the download is the only thing that happens, and only if it is missing.
+        note = "Keeping the models Leti is already configured for. Nothing was changed."
+        if kept:
+            installed = await installed_models()
+            if installed and not _is_installed(kept, installed):
+                pull = await pull_model(kept)
+                if not pull["ok"]:
+                    # Not saved: next launch asks again rather than leaving Leti
+                    # pointed at a model that is not there.
+                    return {"ok": False, "choice": "keep_current", "model": kept,
+                            "error": pull["error"],
+                            "note": (f"'{kept}' is the configured model but it is not "
+                                     "downloaded, and downloading it failed. Nothing "
+                                     "was changed.")}
+                note = (f"Keeping '{kept}', which was configured but not downloaded, "
+                        "so it was downloaded. No setting was changed.")
         save_setup({"choice": "keep_current", "model": kept})
         return {"ok": True, "choice": "keep_current", "model": kept, "error": None,
-                "note": "Keeping the models Leti is already configured for. Nothing was changed."}
+                "note": note}
 
     if choice != "recommended" or not model:
         return {"ok": False, "choice": choice, "model": model,
@@ -593,3 +839,153 @@ async def run_console_setup(force: bool = False) -> Optional[Dict[str, Any]]:
             print(f"  {result['note']}\n")
             return result
         print("  Please answer 1 or 2.")
+
+
+# --------------------------------------------------------------------------- #
+# Being asked from outside the application
+#
+# launcher/bootstrap.py runs before Leti does, under whatever interpreter started
+# it, and is standard library only on purpose - it is the code that runs when
+# nothing is installed. So it cannot import this module, and it must not carry a
+# model name of its own: that would be a second answer to "which models does Leti
+# need", and it would be wrong the moment somebody edited settings.yaml.
+#
+# It runs this instead, with the interpreter it has just finished preparing. One
+# authority, asked across a process boundary.
+#
+# The launcher does not capture the output and does not parse it: what is written
+# here goes straight to the console it is already writing to, live, and the exit
+# code is the whole of what it reads back. That is deliberate - reading a child's
+# pipe means starting something and not waiting for it, and the launcher starts
+# nothing it does not wait for.
+# --------------------------------------------------------------------------- #
+
+BAR_WIDTH = 28
+
+
+def _bytes_for_people(count: Any) -> str:
+    """Bytes as something worth reading. GB once MB stops being a small number."""
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return "?"
+    if count >= 1024 ** 3:
+        return f"{count / 1024 ** 3:.1f} GB"
+    return f"{count / 1024 ** 2:.0f} MB"
+
+
+def progress_bar(model: str, done: int, total: int, width: int = BAR_WIDTH) -> str:
+    """One line of download progress. Pure, so it can be tested without a terminal."""
+    if total and total > 0:
+        fraction = max(0.0, min(1.0, done / total))
+        filled = int(round(fraction * width))
+        return (f"  {model} [{'#' * filled}{'-' * (width - filled)}] "
+                f"{fraction * 100:5.1f}%  {_bytes_for_people(done)} "
+                f"of {_bytes_for_people(total)}")
+    return f"  {model}  {_bytes_for_people(done)}" if done else f"  {model}  starting"
+
+
+class _TerminalProgress:
+    """Draws the bar, in place on a terminal and one line per tenth otherwise.
+
+    The bar lives here rather than in launcher/bootstrap.py because this is where
+    the download happens and this is the only thing that draws one. The launcher
+    runs this as a child process and does not capture its output, so what is
+    written here goes straight to the console the user is already watching - which
+    is the point: three gigabytes with nothing on screen is indistinguishable
+    from a hang, and that is the longest thing a first launch does.
+    """
+
+    def __init__(self, out: Any = None) -> None:
+        self.out = out if out is not None else sys.stdout
+        self._open = False
+        self._last_tenth: Dict[str, int] = {}
+        self._announced: Dict[str, bool] = {}
+
+    def _terminal(self) -> bool:
+        try:
+            return bool(self.out.isatty())
+        except Exception:
+            return False
+
+    def line(self, text: str) -> None:
+        self.close()
+        print(text, file=self.out, flush=True)
+
+    def close(self) -> None:
+        if self._open:
+            self._open = False
+            print("", file=self.out, flush=True)
+
+    def __call__(self, model: str, done: int, total: int, status: str) -> None:
+        if not self._announced.get(model):
+            self._announced[model] = True
+            self.line(f"  Downloading {model} - this can take a while.")
+        if not total:
+            return
+        text = progress_bar(model, done, total)
+        if self._terminal():
+            self._open = True
+            print("\r" + text.ljust(78), end="", file=self.out, flush=True)
+            return
+        # Not a terminal - a log file or a captured pipe. One line per tenth, so a
+        # transcript stays readable instead of holding a thousand redraws.
+        tenth = int((done / total) * 10)
+        if self._last_tenth.get(model) != tenth:
+            self._last_tenth[model] = tenth
+            print(text, file=self.out, flush=True)
+
+
+async def _ensure_from_command_line() -> int:
+    show = _TerminalProgress()
+    try:
+        needed = required_models()
+    except Exception as e:
+        show.line(f"  Could not read which models Leti needs: {e}")
+        return 1
+
+    if not needed:
+        show.line("  No models are configured, so there is nothing to download.")
+        return 0
+
+    result = await ensure_models(progress=show)
+    show.close()
+
+    for model in result.get("pulled", ()):
+        show.line(f"  {model} is ready.")
+    for entry in result.get("skipped", ()):
+        show.line(f"  {entry.get('model')} will be chosen on the model screen "
+                  "in a moment.")
+    for entry in result.get("failed", ()):
+        show.line(f"  Could not download {entry.get('model')}: "
+                  f"{entry.get('error') or 'no reason given'}")
+    if not result.get("checked"):
+        show.line("  Could not ask Ollama what is installed; nothing was downloaded.")
+    elif not (result.get("pulled") or result.get("skipped") or result.get("failed")):
+        show.line("  Everything Leti needs is already downloaded.")
+    return 0 if result.get("ok") else 1
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """`python -m core.model_setup --ensure` downloads whatever is missing.
+
+    Deliberately the only thing the command line can do. Choosing a model is a
+    question for a person and it has a screen; this is the part that needs no
+    answer, because the configuration has already given one.
+    """
+    args = list(argv if argv is not None else sys.argv[1:])
+    if "--ensure" not in args:
+        print("usage: python -m core.model_setup --ensure", file=sys.stderr)
+        return 2
+    try:
+        return asyncio.run(_ensure_from_command_line())
+    except KeyboardInterrupt:
+        # Ctrl-C during a download. Ollama keeps what it has, so the next launch
+        # resumes rather than starting again; said so the user knows that.
+        print("\n  Stopped. The next launch picks the download up where it left off.",
+              file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

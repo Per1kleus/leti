@@ -43,10 +43,20 @@ not patched.
 
 WHAT IT DOES NOT DO
 
-It does not choose or pull models - core/model_setup.py already owns the
-model question and asks it on first launch, inside Leti, where it can see the
-hardware. It does not configure anything. It does not run in the background, hold
-a thread, or stay resident: it returns, and then Leti starts.
+It does not CHOOSE models. core/model_setup.py owns the model question and asks
+it on first launch, inside Leti, where it can see the hardware - and it owns the
+promise that nothing is downloaded until that has been answered.
+
+It does download the models the configuration already names, once that promise
+allows it, because a first launch that finishes and then cannot answer anything
+is not a finished first launch. It does that by asking core/model_setup.py, with
+the interpreter it has just prepared, and relaying what comes back. There is no
+model name in this file and there must never be one: that would be a second
+answer to a question another module owns, wrong from the first time anybody
+edited settings.yaml.
+
+It does not configure anything. It does not run in the background, hold a thread,
+or stay resident: it returns, and then Leti starts.
 
 Standard library only, deliberately. This is the code that runs when nothing is
 installed, so it cannot depend on anything being installed.
@@ -518,6 +528,26 @@ def requirements_fingerprint(path: Path) -> str:
 # is the useful thing to read, and hidden when it works.
 # --------------------------------------------------------------------------- #
 
+# The stages a launch goes through, in order, as they are announced. A first
+# launch installs Python, several hundred megabytes of packages, a browser and a
+# model, and until this existed it did all of that behind lines that said what was
+# happening but not how much of it was left - so a five-minute setup and a hung
+# one looked identical for the first four minutes.
+#
+# Every one of these happens on every platform. Putting Leti on the Desktop is
+# deliberately NOT one: it does nothing at all except on Windows, and a stage
+# count that means something different on two machines is worse than no count.
+# It still says what it did, as a note under the stage it runs in.
+STAGES = (
+    "Checking Python",
+    "Checking the packages Leti needs",
+    "Setting up the browser Leti uses",
+    "Checking the model server",
+    "Checking Leti's models",
+    "Starting Leti",
+)
+
+
 class Progress:
     """Says what is happening. Replaceable, which is how the tests read it."""
 
@@ -534,6 +564,21 @@ class Progress:
 
     def step(self, text: str) -> None:
         self.say(f"  {text}")
+
+    def stage(self, name: str) -> None:
+        """Announce one of STAGES, numbered.
+
+        The number is looked up from the name rather than passed in, so reordering
+        the list renumbers everything and there is no way to write [3/6] twice or
+        to skip one. A name that is not in the list is a programming error here and
+        is said plainly rather than being silently unnumbered.
+        """
+        try:
+            index = STAGES.index(name) + 1
+        except ValueError:
+            self.say(name)
+            return
+        self.say(f"[{index}/{len(STAGES)}] {name}")
 
     def done(self, text: str = "") -> None:
         self.say(f"  {text} OK" if text else "  OK")
@@ -576,7 +621,6 @@ class SetupFailed(Exception):
 
 def _run(command: Sequence[str], run: Callable, **kwargs: Any):
     return run([str(c) for c in command], **kwargs)
-
 
 def build_venv(root: Path, system_python: Path, progress: Progress,
                run: Optional[Callable] = None) -> Path:
@@ -898,7 +942,7 @@ def prepare(root: Path, progress: Optional[Progress] = None,
                           retry_is_safe=False)
 
     progress.say("Preparing Leti...")
-    progress.step("Checking Python...")
+    progress.stage("Checking Python")
     python = prepared_python(root)
     if python is not None and (Path(root) / RUNTIME_DIR) in python.parents:
         _open_up_path_file(Path(root) / RUNTIME_DIR)
@@ -925,18 +969,24 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     witnesses = state.get("witnesses") or []
     if (state.get("requirements") == fingerprint and state.get("complete")
             and all_present(witnesses)):
+        progress.stage("Checking the packages Leti needs")
         progress.step("Everything is already installed.")
+        progress.stage("Setting up the browser Leti uses")
+        progress.step("Already set up.")
         # Not on every launch: reading a .lnk costs two PowerShell processes, and
         # a normal launch should be the half-second it is. Done once, for a folder
         # set up before shortcuts existed, and then recorded - after which the
         # explicit repair (--install-shortcuts) is what puts a deleted one back.
         if not state.get("shortcuts"):
             place_shortcuts(root, progress)
-        ensure_model_server(progress, runner, root)
-        progress.say("Starting Leti...")
+        progress.stage("Checking the model server")
+        verdict = ensure_model_server(progress, runner, root)
+        progress.stage("Checking Leti's models")
+        ensure_models(progress, root, python, server=verdict)
+        progress.stage("Starting Leti")
         return python
 
-    progress.step("Checking the packages Leti needs...")
+    progress.stage("Checking the packages Leti needs")
     wanted = requirements(root / "requirements.txt")
     if not wanted:
         raise SetupFailed("requirements.txt lists no packages",
@@ -955,8 +1005,11 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     else:
         progress.done("nothing missing -")
 
+    progress.stage("Setting up the browser Leti uses")
     if not skip_browser:
         install_browser(python, root, progress, runner)
+    else:
+        progress.step("Skipped, as asked.")
 
     # Written last, and only once everything above actually finished. An
     # interrupted run never gets here, so the next launch checks properly rather
@@ -964,8 +1017,11 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     write_state(root, requirements=fingerprint, complete=True, partial=None,
                 witnesses=witnesses_for(wanted, found))
     place_shortcuts(root, progress)
-    ensure_model_server(progress, runner, root)
-    progress.say("Starting Leti...")
+    progress.stage("Checking the model server")
+    verdict = ensure_model_server(progress, runner, root)
+    progress.stage("Checking Leti's models")
+    ensure_models(progress, root, python, server=verdict)
+    progress.stage("Starting Leti")
     return python
 
 
@@ -1055,6 +1111,71 @@ def ensure_model_server(progress: Progress, run: Optional[Callable] = None,
         progress.step(f"Could not check on Ollama ({type(e).__name__}) - Leti will "
                       "open and say whether it can reach a model.")
         return "unknown"
+
+
+# Long enough for a model on a slow connection, bounded so a launch cannot hang on
+# it forever. A model that has not finished in an hour is one the next launch
+# should pick up rather than one this launch keeps waiting for - Ollama resumes a
+# partial download, so stopping costs nothing but the wait.
+MODEL_FETCH_TIMEOUT_SECONDS = 60 * 60
+
+
+def ensure_models(progress: Progress, root: Optional[Path] = None,
+                  python: Optional[Path] = None, server: str = "",
+                  run: Optional[Callable] = None) -> Dict[str, Any]:
+    """Download the models Leti is configured to need, if they are not there.
+
+    This module does not know and must not know which models those are. A model
+    name here would be a second answer to a question core/model_setup.py already
+    owns, and it would be the wrong answer the moment somebody edited
+    settings.yaml. So it asks, with the interpreter it has just finished
+    preparing - this file is standard library only because it is what runs when
+    nothing is installed, and core/model_setup.py needs the configuration loader
+    and an HTTP client.
+
+    It also does not decide WHETHER a model may be fetched without being asked
+    about. That rule belongs to the module that made the promise not to download
+    anything before the first-launch screen has been answered, and it is
+    model_setup.may_pull_unattended.
+
+    The child's output is not captured. It writes its progress to the console this
+    launcher is already writing to, which is what makes a three-gigabyte download
+    show something while it happens rather than after it. Capturing it and
+    relaying it would need a pipe read in this process, and this process starts
+    nothing it does not wait for - see the tests that pin that.
+
+    Never fatal. A launch that cannot download a model still opens Leti, which
+    says so on screen with the machine in front of it; refusing to start would
+    leave the user with nothing to act on and no way to change the setting.
+    """
+    outcome: Dict[str, Any] = {"ran": False, "ok": True}
+    if python is None:
+        progress.step("Skipped - no prepared Python to ask with.")
+        return outcome
+    if server and server != "running":
+        # Nothing to talk to. Said plainly rather than attempted and timed out:
+        # the model-server stage above has already explained what is wrong.
+        progress.step("Skipped - the model server is not answering yet.")
+        return outcome
+
+    runner = run or subprocess.run
+    try:
+        done = _run([python, "-m", "core.model_setup", "--ensure"], runner,
+                    cwd=str(root) if root else None,
+                    timeout=MODEL_FETCH_TIMEOUT_SECONDS)
+    except Exception as e:
+        progress.step(f"Could not check Leti's models ({type(e).__name__}) - "
+                      "Leti will open and say what it can reach.")
+        return outcome
+
+    outcome["ran"] = True
+    outcome["ok"] = getattr(done, "returncode", 0) == 0
+    if outcome["ok"]:
+        progress.step("Everything Leti needs is downloaded.")
+    else:
+        progress.step("A model could not be downloaded - Leti will open and can "
+                      "be pointed at one that works.")
+    return outcome
 
 
 def _remember_partial(root: Path, fingerprint: str, still_missing: Sequence[str]) -> None:

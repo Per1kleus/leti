@@ -1625,7 +1625,12 @@ def test_a_normal_launch_does_not_touch_the_shortcuts():
     """Reading a .lnk is two PowerShell processes. A launch should be the half
     second it is, so the quick path only checks once - and then records it."""
     source = (ROOT / "launcher" / "bootstrap.py").read_text()
-    quick = source[source.index("witnesses = state.get"):source.index("progress.step(\"Checking the packages")]
+    # The quick path runs from the witness check to where the full path starts.
+    # Anchored on the first line of the full path rather than on a progress
+    # message: the stage announcements are deliberately the same words in both
+    # paths, so one of them is not a boundary between them.
+    quick = source[source.index("witnesses = state.get"):
+                   source.index('wanted = requirements(root / "requirements.txt")')]
     assert 'if not state.get("shortcuts")' in quick, \
         "shortcuts would be re-read on every single launch"
 
@@ -1995,3 +2000,174 @@ def test_the_bat_already_reports_a_failing_leti():
     bat = BAT.read_text(errors="replace")
     assert "exited with an error" in bat
     assert "pause" in bat
+
+
+# --- The staged console, and who owns the model question ------------------------------
+#
+# A first launch installs Python, several hundred megabytes of packages, a browser
+# and a model. Until the stages existed it did all of that behind lines that said
+# what was happening but never how much was left, so a five-minute setup and a hung
+# one looked identical for the first four minutes.
+
+def test_the_stages_are_numbered_from_the_list_rather_than_by_hand():
+    """A hand-written [3/6] is a [3/6] that survives the list being reordered."""
+    from launcher import bootstrap
+
+    out = open(os.devnull, "w")
+    progress = bootstrap.Progress(out=out)
+    for name in bootstrap.STAGES:
+        progress.stage(name)
+
+    assert progress.lines[0].startswith("[1/")
+    for index, line in enumerate(progress.lines, start=1):
+        assert line.startswith(f"[{index}/{len(bootstrap.STAGES)}] "), line
+
+
+def test_the_first_and_last_stages_are_the_ones_a_person_is_waiting_for():
+    from launcher import bootstrap
+
+    assert bootstrap.STAGES[0] == "Checking Python"
+    assert bootstrap.STAGES[-1] == "Starting Leti"
+
+
+def test_a_stage_that_is_not_in_the_list_is_still_said():
+    """A programming error here must not swallow the line it was meant to print."""
+    from launcher import bootstrap
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    progress.stage("Doing something nobody listed")
+
+    assert progress.lines == ["Doing something nobody listed"]
+
+
+def test_every_stage_happens_on_every_platform():
+    """Putting Leti on the Desktop is deliberately not a stage: it does nothing at
+    all except on Windows, and a count that means something different on two
+    machines is worse than no count."""
+    from launcher import bootstrap
+
+    assert not any("Desktop" in name or "shortcut" in name.lower()
+                   for name in bootstrap.STAGES)
+
+
+def test_both_launch_paths_announce_the_same_stages():
+    """The quick path is the one a person sees almost every day. It used to say
+    one line and start, which is fine - but it must not number things differently
+    from the path that does the work."""
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    prepared = source[source.index("def prepare("):source.index("def place_shortcuts(")]
+    for name in ("Checking Python", "Checking the packages Leti needs",
+                 "Setting up the browser Leti uses", "Checking the model server",
+                 "Checking Leti's models", "Starting Leti"):
+        announced = prepared.count(f'progress.stage("{name}")')
+        expected = 1 if name == "Checking Python" else 2
+        assert announced == expected, (
+            f'"{name}" is announced {announced} time(s); the quick path and the '
+            f"full path should each announce it")
+
+
+def test_the_launcher_names_no_model_anywhere():
+    """The rule from the brief, and the reason ensure_models shells out at all. A
+    model name here would be a second answer to a question core/model_setup.py
+    owns, and it would be wrong the moment somebody edited settings.yaml.
+
+    Matched on whole words and on the name:tag shape, because "llama" is a
+    substring of "Ollama" and the launcher talks about Ollama constantly.
+    """
+    import re
+
+    source = (ROOT / "launcher" / "bootstrap.py").read_text().lower()
+    families = r"\b(qwen[\d.]*|llama[\d.]+|mistral|mixtral|nomic|gemma|phi[\d]|deepseek)\b"
+    named = re.findall(families, source)
+    assert not named, f"the launcher names a model family: {sorted(set(named))}"
+
+    tagged = re.findall(r"\b[a-z][a-z0-9.\-]*:[0-9]+b\b", source)
+    assert not tagged, f"the launcher names a specific model: {sorted(set(tagged))}"
+
+
+def test_the_launcher_asks_the_model_setup_module_instead():
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    assert '"-m", "core.model_setup", "--ensure"' in source
+
+
+def test_the_model_step_waits_for_what_it_starts_like_everything_else():
+    """The same rule as the rest of this file: no orphans, and a timeout."""
+    import ast
+
+    from launcher import bootstrap
+
+    tree = ast.parse((ROOT / "launcher" / "bootstrap.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "ensure_models":
+            calls = [n for n in ast.walk(node) if isinstance(n, ast.Call)]
+            runs = [c for c in calls if getattr(c.func, "id", "") == "_run"]
+            assert runs, "ensure_models does not shell out through _run"
+            for call in runs:
+                assert "timeout" in {k.arg for k in call.keywords}
+            break
+    else:
+        raise AssertionError("ensure_models is gone")
+    assert bootstrap.MODEL_FETCH_TIMEOUT_SECONDS > 0
+
+
+def test_the_model_step_is_skipped_when_there_is_no_model_server(tmp_path):
+    """Nothing to talk to. Said plainly rather than attempted and timed out - the
+    stage above has already explained what is wrong."""
+    from launcher import bootstrap
+
+    def never(*args, **kwargs):
+        raise AssertionError("it tried to download with no server running")
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    result = bootstrap.ensure_models(progress, tmp_path, tmp_path / "python",
+                                     server="absent", run=never)
+
+    assert result["ran"] is False
+    assert any("not answering" in line for line in progress.lines)
+
+
+def test_the_model_step_is_skipped_when_there_is_no_interpreter(tmp_path):
+    from launcher import bootstrap
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    result = bootstrap.ensure_models(progress, tmp_path, None, server="running")
+
+    assert result["ran"] is False
+
+
+def test_a_failed_model_download_never_stops_leti_starting(tmp_path):
+    """The same rule as the shortcuts: Leti opens and says what it can reach, with
+    the machine in front of it. Refusing to start would leave the user with
+    nothing to act on and no way to change the setting."""
+    from launcher import bootstrap
+
+    class Failed:
+        returncode = 1
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    result = bootstrap.ensure_models(progress, tmp_path, tmp_path / "python",
+                                     server="running", run=lambda *a, **k: Failed())
+
+    assert result["ok"] is False
+    assert any("Leti will open" in line for line in progress.lines)
+
+
+def test_a_model_step_that_throws_never_stops_leti_starting(tmp_path):
+    from launcher import bootstrap
+
+    def explode(*args, **kwargs):
+        raise OSError("the interpreter vanished")
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    result = bootstrap.ensure_models(progress, tmp_path, tmp_path / "python",
+                                     server="running", run=explode)
+
+    assert result["ok"] is True
+    assert any("Leti will open" in line for line in progress.lines)
+
+
+def test_the_models_are_checked_before_leti_is_started_not_after():
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    prepared = source[source.index("def prepare("):source.index("def place_shortcuts(")]
+    assert prepared.index("ensure_models(progress") < prepared.index(
+        'progress.stage("Starting Leti")')

@@ -414,3 +414,297 @@ def test_settings_yaml_quotes_the_arithmetic_this_module_computes():
                          - model_setup._VRAM_HEADROOM_GIB, 2)
         assert computed == budget, f"{vram}GB budget is {computed}, not the {budget} claimed"
         assert f"{vram}GB -> {budget}" in text, f"settings.yaml no longer states the {vram}GB budget"
+
+
+# --- Which models are required, and keeping them downloaded -------------------------
+#
+# The launcher asks these rather than naming a model, because a model name in the
+# launcher is a second answer to a question this module owns - wrong from the
+# first time anybody edits settings.yaml, and unable to say which of the four
+# model settings even matter.
+
+@pytest.fixture
+def configured(monkeypatch):
+    """A model configuration, without reading config/settings.yaml."""
+    settings = {"ollama": {
+        "reasoning_model": "qwen2.5:7b",
+        "embedding_model": "nomic-embed-text",
+        "vision_model": "llama3.2-vision",
+        "fallback_reasoning_model": "mistral-nemo",
+    }}
+    monkeypatch.setattr(model_setup, "get_settings", lambda: settings)
+    return settings
+
+
+def test_the_required_models_come_from_the_configuration(configured):
+    names = [entry["model"] for entry in model_setup.required_models()]
+    assert names == ["qwen2.5:7b", "nomic-embed-text"]
+
+
+def test_changing_the_configuration_changes_what_is_required(configured):
+    configured["ollama"]["reasoning_model"] = "qwen2.5:3b"
+    assert model_setup.required_models()[0]["model"] == "qwen2.5:3b"
+
+
+def test_the_large_optional_models_are_not_required(configured):
+    """Eight gigabytes of vision model on a first launch, for a feature nobody has
+    asked for yet, is not a first launch anybody would wait through. The fallback
+    exists for when the primary is missing, so fetching it alongside the primary
+    is fetching a spare for a car that is not broken."""
+    essential = [entry["model"] for entry in model_setup.required_models()]
+    assert "llama3.2-vision" not in essential
+    assert "mistral-nemo" not in essential
+
+    everything = [entry["model"] for entry in model_setup.required_models(include_optional=True)]
+    assert "llama3.2-vision" in everything
+    assert "mistral-nemo" in everything
+
+
+def test_a_role_left_blank_is_not_reported_as_a_model_called_nothing(configured):
+    configured["ollama"]["embedding_model"] = "   "
+    assert [e["model"] for e in model_setup.required_models()] == ["qwen2.5:7b"]
+
+
+def test_a_configuration_that_cannot_be_read_requires_nothing(monkeypatch):
+    def explode():
+        raise RuntimeError("no settings file")
+
+    monkeypatch.setattr(model_setup, "get_settings", explode)
+    assert model_setup.required_models() == []
+
+
+def test_nothing_is_downloaded_before_the_first_launch_screen_is_answered(monkeypatch):
+    """This module's promise, in the docstring at the top of the file: declining
+    leaves the configuration byte for byte as it was. Pre-fetching the default
+    model before the screen has run would spend several gigabytes on a model the
+    user is about to replace."""
+    monkeypatch.setattr(model_setup, "is_configured", lambda: False)
+    assert model_setup.may_pull_unattended("reasoning_model") is False
+
+
+def test_the_embedding_model_is_fetched_whatever_the_screen_says(monkeypatch):
+    """The screen only ever sets reasoning_model, so no answer to it can change
+    which embedding model is right - and memory does not work without one."""
+    monkeypatch.setattr(model_setup, "is_configured", lambda: False)
+    assert model_setup.may_pull_unattended("embedding_model") is True
+
+
+def test_once_the_screen_is_answered_the_configuration_is_kept_downloaded(monkeypatch):
+    monkeypatch.setattr(model_setup, "is_configured", lambda: True)
+    assert model_setup.may_pull_unattended("reasoning_model") is True
+
+
+# --- A state file is not evidence ---------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_model_the_state_file_claims_but_ollama_lacks_is_missing(
+        configured, monkeypatch):
+    """The rule from the brief: do not blindly trust a state file if the actual
+    model is missing. data/model_setup.json records what was CHOSEN, which is a
+    different question from what is on the disk now - `ollama rm` and an
+    interrupted download both leave the record saying it is there."""
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+
+    missing = await model_setup.missing_models()
+
+    assert [entry["model"] for entry in missing] == ["qwen2.5:7b"]
+    assert missing[0]["reason"] == "not installed"
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_lists_but_cannot_load_counts_as_missing(configured, monkeypatch):
+    """A download interrupted partway leaves a manifest with blobs missing, and a
+    corrupted blob lists exactly like a good one. /api/tags cannot tell them apart
+    and /api/show can, because it resolves the blobs."""
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable",
+                        _async_by(lambda model: model != "qwen2.5:7b"))
+
+    missing = await model_setup.missing_models()
+
+    assert [entry["model"] for entry in missing] == ["qwen2.5:7b"]
+    assert missing[0]["reason"] == "installed but unusable"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_ollama_is_not_read_as_nothing_installed(configured, monkeypatch):
+    """"I could not ask" is not "nothing is there". Pulling four models on the
+    strength of a refused connection is the wrong way to be wrong."""
+    monkeypatch.setattr(model_setup, "installed_models", _async([]))
+
+    assert await model_setup.missing_models() == []
+
+
+# --- Repairing ----------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_missing_model_is_downloaded_and_then_verified(configured, monkeypatch):
+    monkeypatch.setattr(model_setup, "is_configured", lambda: True)
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+    pulled = []
+
+    async def pull(model, progress=None):
+        pulled.append(model)
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(model_setup, "pull_model", pull)
+
+    result = await model_setup.ensure_models()
+
+    assert pulled == ["qwen2.5:7b"]
+    assert result["ok"] is True
+    assert result["pulled"] == ["qwen2.5:7b"]
+
+
+@pytest.mark.asyncio
+async def test_a_download_that_reports_success_but_leaves_nothing_is_a_failure(
+        configured, monkeypatch):
+    """Exactly the state this function exists to get out of. Reporting it as fixed
+    would hide it until the first question the user asked."""
+    monkeypatch.setattr(model_setup, "is_configured", lambda: True)
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(False))
+    monkeypatch.setattr(model_setup, "pull_model", _async({"ok": True, "error": None}, kw=True))
+
+    result = await model_setup.ensure_models()
+
+    assert result["ok"] is False
+    assert result["failed"][0]["model"] == "qwen2.5:7b"
+    assert "cannot be loaded" in result["failed"][0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_nothing_already_present_is_downloaded_again(configured, monkeypatch):
+    """Later launches must not re-download. The check is what Ollama has, so this
+    holds however many times Leti is started."""
+    monkeypatch.setattr(model_setup, "is_configured", lambda: True)
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+
+    async def pull(model, progress=None):
+        raise AssertionError(f"re-downloaded {model}")
+
+    monkeypatch.setattr(model_setup, "pull_model", pull)
+
+    result = await model_setup.ensure_models()
+
+    assert result["pulled"] == []
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_first_launch_defers_the_reasoning_model_only(
+        configured, monkeypatch):
+    monkeypatch.setattr(model_setup, "is_configured", lambda: False)
+    monkeypatch.setattr(model_setup, "installed_models", _async(["something:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+    pulled = []
+
+    async def pull(model, progress=None):
+        pulled.append(model)
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(model_setup, "pull_model", pull)
+
+    result = await model_setup.ensure_models()
+
+    assert pulled == ["nomic-embed-text"]
+    assert [entry["model"] for entry in result["skipped"]] == ["qwen2.5:7b"]
+
+
+@pytest.mark.asyncio
+async def test_keeping_the_current_model_downloads_it_when_it_is_not_there(
+        isolated, configured, monkeypatch):
+    """"Keep what I have" is not the same as "I have it". Answering this screen
+    used to save the answer and never ask again, so a machine with nothing
+    downloaded failed on its first question with a model error."""
+    monkeypatch.setattr(model_setup, "installed_models", _async(["something:latest"]))
+    pulled = []
+
+    async def pull(model, progress=None):
+        pulled.append(model)
+        return {"ok": True, "error": None}
+
+    monkeypatch.setattr(model_setup, "pull_model", pull)
+
+    result = await model_setup.apply_choice("keep_current")
+
+    assert pulled == ["qwen2.5:7b"]
+    assert result["ok"] is True
+    assert model_setup.is_configured()
+
+
+@pytest.mark.asyncio
+async def test_keeping_a_model_that_cannot_be_downloaded_is_not_recorded(
+        isolated, configured, monkeypatch):
+    """Not saved means the next launch asks again, rather than leaving Leti
+    pointed at a model that is not there."""
+    monkeypatch.setattr(model_setup, "installed_models", _async(["something:latest"]))
+    monkeypatch.setattr(model_setup, "pull_model",
+                        _async({"ok": False, "error": "no disk space"}, kw=True))
+
+    result = await model_setup.apply_choice("keep_current")
+
+    assert result["ok"] is False
+    assert not model_setup.is_configured(), "a failed download was recorded as done"
+
+
+# --- The progress bar ----------------------------------------------------------------
+
+def test_the_bar_is_drawn_from_the_numbers_it_is_given():
+    line = model_setup.progress_bar("qwen2.5:7b", 2_350_000_000, 4_700_000_000)
+    assert "qwen2.5:7b" in line
+    assert "50.0%" in line
+    assert line.count("#") == model_setup.BAR_WIDTH // 2
+
+
+def test_the_bar_does_not_divide_by_a_total_it_does_not_have():
+    """Ollama sends status lines with no total on them - "pulling manifest" and
+    "verifying sha256" carry no bytes at all."""
+    assert "starting" in model_setup.progress_bar("qwen2.5:7b", 0, 0)
+    assert "%" not in model_setup.progress_bar("qwen2.5:7b", 0, 0)
+
+
+def test_the_bar_never_runs_past_its_own_width():
+    """A resumed download can report more completed than total."""
+    line = model_setup.progress_bar("m", 9_000, 4_000)
+    assert line.count("#") == model_setup.BAR_WIDTH
+    assert "100.0%" in line
+
+
+def test_a_progress_display_that_throws_never_fails_a_download():
+    """It is a display. Nothing it does may cost somebody a three gigabyte
+    download they have already waited for."""
+    import inspect
+
+    source = inspect.getsource(model_setup.pull_model)
+    assert "except Exception:" in source
+    assert "# A progress display is never allowed to fail a download." in source
+
+
+def test_the_command_line_only_downloads_and_never_chooses():
+    """Choosing a model is a question for a person and it has a screen. The
+    command line is the part that needs no answer."""
+    assert model_setup.main([]) == 2
+    assert model_setup.main(["--pick", "qwen2.5:32b"]) == 2
+
+
+# --- helpers -------------------------------------------------------------------------
+
+def _async(value, kw=False):
+    async def f(*args, **kwargs):
+        return value
+    return f
+
+
+def _async_by(fn):
+    async def f(model, *args, **kwargs):
+        return fn(model)
+    return f
