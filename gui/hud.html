@@ -2439,6 +2439,12 @@
   // said, including the part that never was.
   orbPath.style.cursor = 'pointer';
   orbPath.addEventListener('click', () => {
+    // Not while minimised. The core is the middle of the puck and the puck means
+    // one thing there - reopen - so a click on the wordmark would otherwise both
+    // silence Leti and restore the window, and the person aiming at "LETI" asked
+    // for neither. Stopping the voice has its own control in the full interface,
+    // which is where they will be a moment later.
+    if(minimized) return;
     if(agentState !== 'speaking') return;
     callApi('stop_speaking').then(() => {
       rtLog('state', 'Stopped talking. The answer is still here - ask to see it.');

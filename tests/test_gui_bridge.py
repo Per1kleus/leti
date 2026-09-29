@@ -983,3 +983,31 @@ def test_voice_state_and_voice_active_are_not_two_answers_to_one_question():
     assert pushes, "the field and the push have come apart"
     for field, pushed in pushes:
         assert field == pushed, f"voice_state={field} but the page is told {pushed}"
+
+
+def test_the_whole_puck_reopens_leti_rather_than_one_spot_in_it():
+    """From the brief: the click target is the whole minimised area, not a small
+    element inside it. The listener is on .radar, which IS the puck, and the
+    readout over it does not take clicks."""
+    assert "radarEl.addEventListener('pointerup', endDrag);" in CODE
+    end = re.search(r"function endDrag\(e\)\{(.*?)\n  \}", CODE, re.S)
+    assert end and "if(!wasDrag && minimized) restore();" in end.group(1)
+    # The wordmark and the state sit over the middle of the puck. If they took
+    # clicks, the most natural place to aim would be the one place that did
+    # nothing.
+    assert ".radar-core{" in HUD
+    core = HUD[HUD.index(".radar-core{"):]
+    assert "pointer-events:none" in core[:core.index("}")]
+
+
+def test_clicking_the_middle_of_the_puck_does_not_also_silence_leti():
+    """The core carries its own click - stop talking - and the core is the middle
+    of the puck. One click there would have done two things, and the person aiming
+    at the wordmark asked for neither."""
+    handler = re.search(r"orbPath\.addEventListener\('click', \(\) => \{(.*?)\n  \}\);",
+                        CODE, re.S)
+    assert handler, "the core's click handler moved; this test needs updating"
+    body = handler.group(1)
+    assert "if(minimized) return;" in body
+    assert body.index("if(minimized) return;") < body.index("stop_speaking"), \
+        "the stop is sent before the minimised check"
