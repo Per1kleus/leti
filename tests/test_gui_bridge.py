@@ -957,3 +957,29 @@ def test_starting_voice_does_not_announce_itself_as_a_reply():
     source = inspect.getsource(run_gui_mode)
     assert "enable_voice(announce=False)" in source
     assert 'record_activity("note", "Voice is ready.")' in source
+
+
+def test_the_panel_can_tell_voice_starting_from_voice_broken():
+    """Since the speech models load after the window opens, "not running yet" and
+    "not going to run" stopped being the same thing. Reporting the first as the
+    second sends somebody off to fix a microphone that is about to start working
+    by itself."""
+    assert "voice_state" in (PROJECT_ROOT / "gui" / "api.py").read_text()
+    assert "info.voice_state === 'initializing'" in CODE
+    assert "info.voice_state === 'unavailable'" in CODE
+    assert "Starting\\u2026" in CODE or "Starting" in CODE
+
+
+def test_voice_state_and_voice_active_are_not_two_answers_to_one_question():
+    """voice_active stays the fact that voice is RUNNING. voice_state is the fact
+    that it is on its way. A second flag meaning the same thing would drift."""
+    source = (PROJECT_ROOT / "gui" / "api.py").read_text()
+    # Every push of a state sets the field beside it, in the one function that
+    # owns loading voice.
+    import re as _re
+
+    pushes = _re.findall(r'api\.voice_state = "(\w+)"\n\s+api\.push\("setVoiceState", "(\w+)"\)',
+                         source)
+    assert pushes, "the field and the push have come apart"
+    for field, pushed in pushes:
+        assert field == pushed, f"voice_state={field} but the page is told {pushed}"

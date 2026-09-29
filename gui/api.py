@@ -75,6 +75,12 @@ class LetiAPI:
         # than at the next launch. None means voice isn't available at all here.
         self.enable_voice: Any = None
         self.voice_active = False
+        # Where voice has got to, for the panel and the pill. Not a second source
+        # of truth about voice: voice_active stays the fact that it is RUNNING,
+        # and this is the fact that it is on its way. It exists because the speech
+        # models now load after the window opens rather than before it, so "not
+        # running yet" and "not going to run" stopped being the same thing.
+        self.voice_state = "idle"     # idle | initializing | ready | unavailable
         # Set by run_gui_mode once the voice stack is loaded. None means there is
         # nothing to interrupt, which is the text-only case.
         self.tts: Any = None
@@ -228,6 +234,7 @@ class LetiAPI:
             # Whether voice is live in THIS session, which is not the same as whether
             # it's permitted: accepting mid-session still has to load Whisper.
             "voice_active": self.voice_active,
+            "voice_state": self.voice_state,
         }
 
     async def a_get_permissions(self) -> dict:
@@ -1032,11 +1039,13 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         if api.voice_active:
             return
         diagnostics.record_activity("note", "Starting voice - loading the speech models.")
+        api.voice_state = "initializing"
         api.push("setVoiceState", "initializing")
         new_tts, new_stt, error = await loop.run_in_executor(None, load_voice_stack)
         if error:
             logger.warning(f"Voice couldn't start: {error}")
             diagnostics.record_activity("error", f"Voice is unavailable: {error}")
+            api.voice_state = "unavailable"
             api.push("setVoiceState", "unavailable")
             if announce:
                 api.push("appendLetiReply", f"I saved that, but voice couldn't start: {error}")
@@ -1045,6 +1054,7 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         api.tts = new_tts
         orchestrator.interrupt_callback = new_tts.interrupt if new_tts is not None else None
         diagnostics.record_activity("note", "Voice is ready.")
+        api.voice_state = "ready"
         api.push("setVoiceState", "ready")
         if announce:
             api.push("appendLetiReply", "Voice is on - say the wake word whenever you're ready.")

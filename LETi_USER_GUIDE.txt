@@ -550,8 +550,37 @@ PARTICULAR THINGS
       Ollama is not running. Start it. If it is running on another machine or
       another port, set ollama.host (section 14).
 
+      Leti's window opens either way now. It used to quit before showing
+      anything when Ollama was not answering yet - which is the ordinary state
+      for the first seconds after Ollama starts - so a slow start looked exactly
+      like Leti being broken, with nothing on screen to say otherwise.
+
+  Leti opened but the first thing I said got no answer
+      Run diagnostics. The "Model" check now says which of these it is rather
+      than only that a model is configured:
+
+        not downloaded          it tells you the exact `ollama pull` to run
+        cannot be loaded        the download was interrupted or the file is
+                                damaged; pull it again
+        does not fit this card  it names what the model needs, what your card
+                                has to spare, and which model does fit
+
+      The "Ollama" check tells a server that is still starting from one that is
+      not running at all, so you are not sent to start something already running.
+
+  Leti takes a few seconds before it will listen
+      The speech models load once per launch, and they now load after the window
+      appears rather than before it - so you get a usable interface immediately
+      and voice a few seconds later, instead of a blank screen for both. The
+      microphone pill says "Starting voice..." while that happens, and the
+      diagnostics panel says "Starting..." next to the microphone. Typing works
+      the whole time.
+
   The answers are very slow
-      The model is probably too big for your graphics card. Section 6.
+      The model is probably too big for your graphics card. Section 6. Ollama
+      does not refuse a model that does not fit - it moves part of it onto the
+      processor, which turns an ordinary answer into minutes. Diagnostics says so
+      explicitly if that is what is happening, with the numbers.
 
   Leti seems to have forgotten a tool it used to have
       Also section 6 - this is what a context window that has become too small

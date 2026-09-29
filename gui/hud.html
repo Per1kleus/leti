@@ -2889,7 +2889,16 @@
     // setup and no sound arrived. Reporting that as ON would be the same lie the
     // level check exists to catch. And voice_active is about THIS session:
     // permitted is not the same as running.
-    let mic = !m.allowed ? 'Off' : (m.verified ? (info.voice_active ? 'Listening' : 'Ready \u00b7 idle') : 'No signal');
+    // Loading is its own answer too, now that the speech models load after this
+    // window opens rather than before it: "not running yet" and "not going to
+    // run" stopped being the same thing, and reporting the first as the second
+    // sends somebody to fix a microphone that is about to start working.
+    let mic;
+    if(!m.allowed) mic = 'Off';
+    else if(info.voice_state === 'initializing') mic = 'Starting\u2026';
+    else if(info.voice_state === 'unavailable') mic = 'Unavailable';
+    else if(!m.verified) mic = 'No signal';
+    else mic = info.voice_active ? 'Listening' : 'Ready \u00b7 idle';
     return {
       mic,
       cls: !m.allowed ? 'off' : (m.verified ? '' : 'warn'),

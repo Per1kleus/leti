@@ -888,3 +888,57 @@ async def test_a_shape_nobody_asked_about_is_still_skipped_when_the_machine_is_b
 
     derived = [v for v in voice.shown if v.get("type") not in ("transcript", "math")]
     assert not derived, f"a shape nobody asked about was still derived: {derived}"
+
+
+# --- Speech starts before the model has finished writing ----------------------------
+
+@pytest.mark.asyncio
+async def test_the_first_sentence_is_spoken_long_before_the_last_one_arrives(guard_factory):
+    """The point of streaming at all, and a requirement in its own right: waiting
+    for the whole answer before the first word means silence for as long as the
+    model takes, and the answer is the same either way.
+
+    Counted in fragments rather than seconds, so it measures the ordering rather
+    than how fast this machine happens to be.
+    """
+    answer = ["The first sentence is complete. ",
+              "Here is the second one. ", "And a third. ",
+              "A fourth follows it. ", "This is the fifth and last."]
+    orch, _ = _orchestrator(guard_factory, [answer])
+    voice = Voice().attach(orch)
+    sent_when_first_spoken = {}
+
+    async def note(_voice):
+        sent_when_first_spoken.setdefault("at", orch.llm_client.fragments_sent)
+
+    voice.before_saying = note
+
+    await orch.handle_user_input("tell me some sentences")
+
+    assert voice.said, "nothing was spoken at all"
+    assert sent_when_first_spoken["at"] < len(answer), (
+        "the first sentence was not spoken until the model had sent everything")
+    assert sent_when_first_spoken["at"] <= 2, (
+        f"the voice waited for {sent_when_first_spoken['at']} fragments before "
+        "starting; the first sentence was complete after one")
+
+
+@pytest.mark.asyncio
+async def test_what_is_spoken_is_the_answer_split_at_sentences_not_at_fragments(guard_factory):
+    """No audible fragments. What goes to the voice is whole sentences, and joining
+    them back gives the answer the model wrote, character for character."""
+    answer = ["The first sen", "tence is comp", "lete. Here is the sec",
+              "ond one. And a third."]
+    orch, _ = _orchestrator(guard_factory, [answer])
+    voice = Voice().attach(orch)
+
+    await orch.handle_user_input("tell me some sentences")
+
+    # Joined with a space: each utterance is handed over trimmed, which is right
+    # for a speech engine and means the separator is the boundary, not the text.
+    spoken = " ".join(u.strip() for u in voice.said)
+    written = " ".join("".join(answer).split())
+    assert spoken == written, "the spoken answer is not the answer that was written"
+    for utterance in voice.said:
+        assert utterance.strip(), "an empty utterance reached the voice"
+        assert not utterance.strip().endswith("sen"), "a word was split across utterances"
