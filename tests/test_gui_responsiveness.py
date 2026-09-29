@@ -46,6 +46,7 @@ class StubAPI:
         self.ws_clients = set()
         self.started = []
         self.finished = []
+        self.hold_turn = None
 
     async def a_apply_model_setup(self, *args):
         # The call that really is slow: it downloads a model.
@@ -55,7 +56,15 @@ class StubAPI:
 
     async def a_send_text_message(self, *args):
         self.started.append("send_text_message")
-        await asyncio.sleep(SLOW)
+        if self.hold_turn is not None:
+            # Held until the test lets go, so "the turn is still running" is a
+            # fact rather than a bet on this machine being slower than a sleep.
+            # It WAS a sleep, and under the load of the whole suite the turn
+            # sometimes finished first and the test failed for being right about
+            # the wrong thing.
+            await self.hold_turn.wait()
+        else:
+            await asyncio.sleep(SLOW)
         self.finished.append("send_text_message")
 
     async def a_run_full_check(self, *args):
@@ -192,18 +201,23 @@ async def test_a_click_is_answered_while_a_turn_is_still_running(live_server):
     matters is that a click during the turn is answered while the turn is still
     running, which the stub can be asked directly."""
     server, api, port = live_server
+    api.hold_turn = asyncio.Event()
     session, ws = await _connected(port, server.token)
     try:
         await _send(ws, "turn", "send_text_message", ["tell me a long story"])
         await _wait_for(ws, "turn")
-        assert "send_text_message" in api.started
+        for _ in range(300):            # the turn starts on the server's own loop
+            if api.started:
+                break
+            await asyncio.sleep(0.01)
+        assert "send_text_message" in api.started, "the turn never started"
 
         await _send(ws, "click", "set_window_mode", ["puck"])
         answer = await _wait_for(ws, "click")
         assert answer["type"] == "result"
-        # Still running: the stub sleeps for SLOW and we are well inside it.
-        assert not api.finished, "the turn finished before the click was even sent"
+        assert not api.finished, "the turn finished before the click was answered"
     finally:
+        api.hold_turn.set()
         await ws.close()
         await session.close()
 
