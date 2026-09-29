@@ -810,3 +810,52 @@ def test_the_model_check_works_whether_or_not_a_loop_is_already_running(configur
         return diagnostics._check_model(reach_out=True)
 
     assert _asyncio.run(inside())["state"] == diagnostics.PASS
+
+
+def test_the_bar_finishes_when_the_download_does():
+    """Ollama's last line is {"status": "success"} and carries no byte counts, so
+    the bar's final reading was whatever the chunk before it happened to be -
+    measured at 91.3%, left on screen under a line saying the model was ready."""
+    import io
+
+    out = io.StringIO()
+    show = model_setup._TerminalProgress(out=out)
+    total = 4_700_000_000
+    for i in range(24):
+        show("m", int(total * i / 23), total, "downloading")
+    show("m", 0, 0, "success")
+    show.close()
+
+    percentages = [line for line in out.getvalue().splitlines() if "%" in line]
+    assert "100.0%" in percentages[-1], "the bar never reaches 100%"
+    assert sum("100.0%" in line for line in percentages) == 1
+
+
+def test_the_bar_never_claims_a_download_that_did_not_finish():
+    """From the brief: do not display 100% until the operation is complete."""
+    import io
+
+    out = io.StringIO()
+    show = model_setup._TerminalProgress(out=out)
+    total = 4_700_000_000
+    for i in range(20):                      # stops short, and no success line
+        show("m", int(total * i / 23), total, "downloading")
+    show.close()
+
+    assert "100.0%" not in out.getvalue()
+
+
+def test_a_transcript_gets_one_line_per_tenth_rather_than_a_thousand():
+    """On a terminal the bar is rewritten in place. Anything else - a log file, a
+    captured console - would otherwise hold every redraw of it."""
+    import io
+
+    out = io.StringIO()
+    show = model_setup._TerminalProgress(out=out)
+    total = 1_000_000
+    for i in range(500):
+        show("m", int(total * i / 499), total, "downloading")
+    show.close()
+
+    lines = [line for line in out.getvalue().splitlines() if line.strip()]
+    assert len(lines) <= 13, f"a transcript got {len(lines)} lines for one download"

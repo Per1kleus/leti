@@ -901,6 +901,7 @@ class _TerminalProgress:
         self._open = False
         self._last_tenth: Dict[str, int] = {}
         self._announced: Dict[str, bool] = {}
+        self._total: Dict[str, int] = {}
 
     def _terminal(self) -> bool:
         try:
@@ -921,6 +922,14 @@ class _TerminalProgress:
         if not self._announced.get(model):
             self._announced[model] = True
             self.line(f"  Downloading {model} - this can take a while.")
+        if total:
+            self._total[model] = total
+        elif status == "success" and model in self._total:
+            # Ollama's last line is {"status": "success"} and carries no byte
+            # counts, so the bar's final reading was whatever the chunk before it
+            # happened to be - 91% on a measured run, left on screen under a line
+            # saying the model was ready. Finished means finished.
+            done = total = self._total[model]
         if not total:
             return
         text = progress_bar(model, done, total)

@@ -86,8 +86,9 @@ SLOW_BACKEND = """() => {
   window.__calls = [];
   window.callApi = (method, ...args) => {
     window.__calls.push(method);
-    // Two seconds. The interface must have changed long before this settles.
-    return new Promise(r => setTimeout(() => r({desktop:false, mode:args[0]}), 2000));
+    // Eight seconds. The interface must have changed long before this settles,
+    // and the margin has to survive a loaded machine running the whole suite.
+    return new Promise(r => setTimeout(() => r({desktop:false, mode:args[0]}), 8000));
   };
 }"""
 
@@ -110,11 +111,11 @@ def test_one_click_minimises_without_waiting_for_the_backend(browser, page_url):
     try:
         assert not _minimized(page)
         page.click("#minimizeBtn")
-        # 1500ms is well inside the backend's 2000ms, so passing this means the
+        # 4000ms is well inside the backend's 8000ms, so passing this means the
         # page did not wait for it.
         page.wait_for_function(
             "() => document.getElementById('leti-root').classList.contains('minimized')",
-            timeout=1500)
+            timeout=4000)
         assert _minimized(page)
     finally:
         page.close()
@@ -129,7 +130,7 @@ def test_one_click_anywhere_on_the_puck_reopens_leti(browser, page_url, aim):
         page.click("#minimizeBtn")
         page.wait_for_function(
             "() => document.getElementById('leti-root').classList.contains('minimized')",
-            timeout=1500)
+            timeout=4000)
 
         spot = page.evaluate("""(aim) => {
             const puck = document.querySelector('.radar').getBoundingClientRect();
@@ -142,7 +143,7 @@ def test_one_click_anywhere_on_the_puck_reopens_leti(browser, page_url, aim):
         page.mouse.click(spot["x"], spot["y"])
         page.wait_for_function(
             "() => !document.getElementById('leti-root').classList.contains('minimized')",
-            timeout=1500)
+            timeout=4000)
         assert not _minimized(page)
     finally:
         page.close()
