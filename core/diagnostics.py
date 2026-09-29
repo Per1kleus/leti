@@ -616,10 +616,122 @@ def _check_model(reach_out: bool = False) -> Dict[str, Any]:
                       f"'{model}' answered a real request at "
                       + time.strftime("%H:%M:%S", time.localtime(last["at"])) + ".",
                       context_size=ollama.get("num_ctx"))
+    if reach_out:
+        # "Configured" was the whole of the old answer, and it is not one. A model
+        # that was never downloaded, one whose download was interrupted, and one
+        # too large for the card all read as configured - and all three appear to
+        # the user as Leti simply not answering. Asking costs one request and it is
+        # the question they actually have.
+        verdict = _model_reality(model, ollama.get("num_ctx"))
+        if verdict is not None:
+            return verdict
     return _check("Model", NOT_TESTED,
                   f"'{model}' is configured. Nothing has asked it anything this session, "
                   "so whether it answers is untested.",
                   context_size=ollama.get("num_ctx"))
+
+
+def _model_reality(model: str, num_ctx: Any) -> Optional[Dict[str, Any]]:
+    """Whether the configured model is downloaded, loadable, and fits this machine.
+
+    Everything here is asked of core/model_setup.py, which already owns "which
+    models does Leti need" and "is this one really there" - this is the panel
+    asking it, not a second opinion about models. None means the question could not
+    be put at all, and the caller falls back to saying that rather than guessing.
+    """
+    try:
+        import asyncio
+
+        from core import model_setup
+    except Exception:
+        return None
+
+    def _ask(coro):
+        """Run one coroutine from here, wherever "here" turns out to be.
+
+        full_check normally runs in a worker thread with no loop of its own (see
+        gui/api.py's run_full_check), and asyncio.run is exactly right there. It is
+        not right on a thread that already has a loop running - asyncio.run refuses,
+        and the check reported "couldn't ask the model server" for a server that was
+        answering perfectly well. So a running loop gets a thread of its own for the
+        duration of the call, which is a few milliseconds and ends with it.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=30)
+
+    try:
+        installed = _ask(model_setup.installed_models())
+    except Exception as e:
+        return _check("Model", NOT_AVAILABLE,
+                      f"Couldn't ask the model server what it has ({e}).",
+                      context_size=num_ctx)
+    if not installed:
+        return None      # the server is the thing that is wrong; _check_ollama says so
+
+    if not model_setup._is_installed(model, installed):
+        return _check("Model", FAIL,
+                      f"'{model}' is configured but is not downloaded. Leti cannot "
+                      f"answer anything until it is. Run: ollama pull {model}",
+                      context_size=num_ctx, installed=sorted(installed)[:12])
+
+    try:
+        usable = _ask(model_setup.model_is_usable(model))
+    except Exception:
+        usable = True    # unreadable is not evidence of damage
+    if not usable:
+        return _check("Model", FAIL,
+                      f"'{model}' is listed by the model server but cannot be loaded - "
+                      "an interrupted download or a damaged file. Re-download it: "
+                      f"ollama pull {model}",
+                      context_size=num_ctx)
+
+    fit = _model_fit(model, num_ctx)
+    if fit is not None:
+        return fit
+    return _check("Model", PASS,
+                  f"'{model}' is downloaded and the model server can load it. "
+                  "Nothing has asked it anything this session.",
+                  context_size=num_ctx)
+
+
+def _model_fit(model: str, num_ctx: Any) -> Optional[Dict[str, Any]]:
+    """Whether this model fits the graphics card, in the numbers the user needs.
+
+    A model that does not fit is not a failure to retry - Ollama accepts it and
+    moves layers onto the CPU, which turns a normal turn into minutes and looks
+    exactly like Leti hanging. Saying so, with the arithmetic, is the only useful
+    thing to do about it. The arithmetic is core/model_setup.py's own.
+    """
+    try:
+        from core import model_setup
+
+        hardware = model_setup.detect_hardware()
+        advice = model_setup.recommend(hardware, num_ctx if isinstance(num_ctx, int) else None)
+    except Exception:
+        return None
+    budget = advice.get("vram_budget_gib")
+    if not isinstance(budget, (int, float)) or budget <= 0:
+        return None      # no readable card; nothing honest to say about fit
+    row = next((r for r in advice.get("considered", []) if r.get("model") == model), None)
+    if row is None or row.get("fits"):
+        return None
+    needs = row.get("total_gib")
+    recommended = advice.get("recommended")
+    action = (f"Switch to '{recommended}', which does fit." if recommended
+              else "Use a smaller model, or lower ollama.num_ctx.")
+    return _check("Model", WARNING,
+                  f"'{model}' is downloaded, but it does not fit this graphics card. "
+                  f"It needs about {needs} GiB and there is about {budget} GiB to spare. "
+                  f"Ollama will run it partly on the processor, which makes an ordinary "
+                  f"answer take minutes. {action}",
+                  context_size=num_ctx, needs_gib=needs, available_gib=budget,
+                  recommended=recommended)
 
 
 def _check_ollama(reach_out: bool = False) -> Dict[str, Any]:
@@ -639,12 +751,33 @@ def _check_ollama(reach_out: bool = False) -> Dict[str, Any]:
                       f"Configured at {host}. Not contacted - run diagnostics with "
                       "connection checks to actually ask it.", host=host)
     try:
+        import socket
+        import urllib.error
         import urllib.request
 
         with urllib.request.urlopen(f"{host.rstrip('/')}/api/tags", timeout=5) as response:
             ok = response.status == 200
         return (_check("Ollama", PASS, f"{host} answered.", host=host) if ok
                 else _check("Ollama", FAIL, f"{host} answered with an error.", host=host))
+    except socket.timeout:
+        # Listening, and not answering. Ordinary for the first seconds after it
+        # starts and for as long as it takes to load a large model - and a
+        # different thing from not running, which is what this used to call it.
+        # Telling somebody to start a server that is already running wastes the
+        # time they came here to save.
+        return _check("Ollama", WARNING,
+                      f"{host} is listening but did not answer within 5 seconds. It is "
+                      "probably still starting, or loading a model. Ask again in a "
+                      "moment.", host=host)
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, socket.timeout):
+            return _check("Ollama", WARNING,
+                          f"{host} is listening but did not answer within 5 seconds - "
+                          "probably still starting or loading a model.", host=host)
+        return _check("Ollama", FAIL,
+                      f"{host} could not be reached ({reason}). Nothing that needs the "
+                      "model will work until it is running.", host=host)
     except Exception as e:
         return _check("Ollama", FAIL,
                       f"{host} could not be reached ({e}). Nothing that needs the model "

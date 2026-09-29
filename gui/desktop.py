@@ -151,13 +151,43 @@ class DesktopWindows:
         except Exception:
             logger.exception("Couldn't shrink to the puck after a native minimise.")
 
+    def transparency_available(self) -> bool:
+        """Whether a transparent window is actually honoured on this machine.
+
+        pywebview honours it on GTK and on Cocoa. On Windows the webview is Edge
+        WebView2 and the flag is ignored: the window is opaque whatever is asked
+        for. That is not a detail the page can discover for itself, and getting it
+        wrong is what produced the white box around the puck - see _puck_url.
+        """
+        return not sys.platform.startswith("win")
+
+    def _puck_url(self) -> str:
+        """The puck page, told whether its window can really be see-through.
+
+        The page used to force `background: transparent` on html and body
+        unconditionally. On a backend that honours window transparency that is
+        right and gives a round puck floating on the desktop. On one that does not,
+        it means a transparent PAGE inside an OPAQUE window - so what shows through
+        is whatever the toolkit paints behind the document, and that is white. A
+        white rectangle around the puck is exactly the reported symptom.
+
+        So the page is told, and paints its own dark backing when it has to. One
+        flag, decided by the side that knows, carried on the URL the page is
+        already parameterised with.
+        """
+        url = f"{self._base_url}/?puck=1"
+        return url + "&alpha=1" if self.transparency_available() else url
+
     def _create_puck(self):
         """The puck window. Made once, then hidden and shown.
 
         transparent lets the round puck sit on the desktop without a square of
-        background around it. It is honoured on GTK and Cocoa and ignored on
-        Windows, so the page keeps its own opaque circular backing and looks
-        deliberate either way rather than relying on it.
+        background around it.
+
+        background_color is passed ONLY when transparency is not available. Asking
+        for a transparent window and an opaque background colour in the same call
+        is a contradiction, and which one wins is a property of the backend rather
+        than of anything stated here - so it is not asked for.
 
         easy_drag is off: with it on, pywebview moves the window on any drag
         anywhere, which swallows the click that reopens the interface. Dragging is
@@ -167,16 +197,23 @@ class DesktopWindows:
         options = dict(
             width=PUCK_SIZE, height=PUCK_SIZE,
             frameless=True, on_top=True, easy_drag=False, resizable=False,
-            background_color="#050b14",
         )
+        url = self._puck_url()
+        if not self.transparency_available():
+            options["background_color"] = "#03080f"
+            window = self._webview.create_window("Leti", url, **options)
+            self._place_bottom_right(window)
+            return window
         try:
-            window = self._webview.create_window(
-                "Leti", f"{self._base_url}/?puck=1", transparent=True, **options)
+            window = self._webview.create_window("Leti", url, transparent=True, **options)
         except TypeError:
-            # An older pywebview without `transparent`. The page's own backing
-            # makes this a cosmetic difference, not a broken window.
-            logger.info("This pywebview has no transparent window support; using an opaque puck.")
-            window = self._webview.create_window("Leti", f"{self._base_url}/?puck=1", **options)
+            # An older pywebview without `transparent`. The page has been told it
+            # would be transparent, so tell it otherwise by loading the other URL.
+            logger.info("This pywebview has no transparent window support; "
+                        "using an opaque puck.")
+            options["background_color"] = "#03080f"
+            window = self._webview.create_window(
+                "Leti", f"{self._base_url}/?puck=1", **options)
 
         self._place_bottom_right(window)
         return window

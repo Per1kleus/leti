@@ -84,6 +84,28 @@ class LetiAPI:
         # minimising can only collapse the layout inside the window it already has.
         self.desktop: Any = None
 
+    def _spawn(self, coro: Any) -> None:
+        """Start something that must not make the caller wait for it.
+
+        Scheduled on the loop this API was built with, so it works from a
+        synchronous method, from the loop thread, and from a worker thread alike -
+        the three places these are started from. A strong reference is kept
+        because asyncio only holds a weak one and a task nobody holds can be
+        collected while it is still running.
+        """
+        def _keep(task: Any) -> None:
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self.loop:
+            _keep(asyncio.create_task(coro))
+        else:
+            _keep(asyncio.run_coroutine_threadsafe(coro, self.loop))
+
     def push(self, fn_name: str, *args: Any) -> None:
         """Broadcasts a call to a named JS function (e.g. appendLetiReply) to every
         connected client at once - one shared live session across every surface."""
@@ -357,16 +379,47 @@ class LetiAPI:
     def set_window_mode(self, mode: str) -> dict:
         """Switch between the full window and the always-on-top puck.
 
-        Returns whether a native swap actually happened. It won't have in a
-        browser tab or on a phone, and the page then collapses its own layout
-        instead - the same control doing the best available version of the same
-        thing, rather than a button that silently does nothing on half the
-        surfaces this interface runs on.
+        Returns whether this surface HAS a native window to swap, which is what
+        the page needs to know and is known at once. It won't in a browser tab or
+        on a phone, and the page then collapses its own layout instead - the same
+        control doing the best available version of the same thing, rather than a
+        button that silently does nothing on half the surfaces this runs on.
+
+        The swap itself does not happen before the reply. It used to, and it is
+        the reported "clicking minimised Leti needs several clicks and takes a
+        while": this method is in SYNC_METHODS, so it ran ON the event loop, and
+        the first shrink of a session builds a native window inside it. Everything
+        the interface does goes through that loop, so for however long the toolkit
+        took, the page had not been told anything, no other click was being read,
+        and the obvious response to a button that did nothing was to press it
+        again.
+
+        So the toolkit call goes to a thread - the same default executor
+        diagnostics already uses, not a thread of its own - and the answer to the
+        one question the page asked comes back immediately. If the swap then
+        fails, the page is told (see _finish_window_swap); it is not left believing
+        something happened that did not.
         """
         if self.desktop is None:
             return {"desktop": False, "mode": mode}
-        ok = self.desktop.show_puck() if mode == "puck" else self.desktop.show_full()
-        return {"desktop": bool(ok), "mode": mode}
+        self._start_window_swap(mode)
+        return {"desktop": True, "mode": mode}
+
+    def _start_window_swap(self, mode: str) -> None:
+        """Do the native show/hide off the event loop, and report a failure."""
+        desktop = self.desktop
+
+        async def swap() -> None:
+            loop = asyncio.get_running_loop()
+            ok = await loop.run_in_executor(
+                None, desktop.show_puck if mode == "puck" else desktop.show_full)
+            if not ok:
+                # The page assumed the swap worked, because that is what it was
+                # told. Correcting it is better than a window that is neither
+                # shrunk nor open.
+                self.push("windowModeFailed", mode)
+
+        self._spawn(swap())
 
     # ---- Settings editor (the /settings command) - deterministic, deliberately
     # not routed through the orchestrator/LLM. See core/settings_editor.py. ----
@@ -858,22 +911,34 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     # explaining it - not seconds after launch with nothing on screen to connect it
     # to. The interface starts text-only and the card asks; accepting starts voice
     # in this same session, via api.enable_voice below.
-    if not audio_setup.is_configured():
+    # Whether voice is wanted at all. Loading it is deliberately NOT done here any
+    # more - see _start_server_and_voice below.
+    #
+    # It used to be, synchronously, before the server or the window existed. The
+    # reason given was sound and still is: loading Whisper on the loop the
+    # websocket server shares freezes every connected client for however long it
+    # takes. But "not on that loop" and "before there is a window" are different
+    # requirements, and only the first one was ever needed. Importing whisper pulls
+    # in torch and then loads a model off disk, which is seconds of real work on an
+    # ordinary machine - and for all of it there was nothing on screen at all. Leti
+    # looked like it had failed to start.
+    #
+    # So the window opens first and voice arrives into it, through the executor
+    # enable_voice() already uses. Text-only is not a degraded mode being papered
+    # over: it is the state the interface is designed to start in, and every
+    # control works in it.
+    #
+    # On a machine that has never been asked, DON'T touch the microphone at all
+    # yet: the first open is what makes macOS and Windows show their permission
+    # dialog, and that dialog should appear while the user is looking at the card
+    # in the HUD explaining it - not seconds after launch with nothing on screen to
+    # connect it to.
+    tts, transcriber = None, None
+    voice_wanted = audio_setup.is_configured()
+    if not voice_wanted:
         print("Audio hasn't been set up yet - the interface will ask. Starting in text-only mode.")
-        tts, transcriber, voice_error = None, None, "First-run audio setup hasn't been completed yet."
     else:
-        print("Loading voice models (Whisper + TTS) - this happens once per launch...")
-        tts, transcriber, voice_error = load_voice_stack()
-        if voice_error:
-            # Deliberately not fatal. The HUD is fully usable by typing, and the
-            # server below is what serves it - a machine with no microphone, no
-            # speakers, or no espeak installed should get a working text interface
-            # and an honest note about what's missing, not a traceback instead of
-            # an application.
-            print(f"Voice is unavailable, continuing in text-only mode: {voice_error}")
-            logger.warning(f"Voice unavailable, text-only: {voice_error}")
-        else:
-            print("Voice models ready.")
+        print("Starting text-first; the speech models load once the window is up.")
 
     api.tts = tts
     orchestrator.speak_callback = _make_gui_speak_callback(api, tts)
@@ -951,33 +1016,52 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
         finally:
             api.voice_active = False
 
-    async def enable_voice() -> None:
-        """Turn voice on in THIS session, after the user accepts the audio prompt.
+    async def enable_voice(announce: bool = True) -> None:
+        """Turn voice on in THIS session, and then listen.
 
-        Loading Whisper takes seconds of real work, and this runs on the loop the
-        websocket server shares - so it goes to a thread, exactly as the startup
-        path loads it before the server exists. Doing it inline here is the same
-        bug that used to freeze every connected client's chat.
+        The one place voice is loaded - by the audio card when the user accepts,
+        and by startup once the window is up. Loading Whisper takes seconds of real
+        work and this runs on the loop the websocket server shares, so it goes to a
+        thread: the default executor, the same one diagnostics already uses, not a
+        thread of its own and not a thread that outlives the load.
+
+        `announce` is false at startup, where the interface has not been asked a
+        question and a chat message saying voice is on would be a reply to nothing.
+        The activity log says it either way, which is where a state belongs.
         """
         if api.voice_active:
             return
+        diagnostics.record_activity("note", "Starting voice - loading the speech models.")
+        api.push("setVoiceState", "initializing")
         new_tts, new_stt, error = await loop.run_in_executor(None, load_voice_stack)
         if error:
-            logger.warning(f"Voice couldn't start after audio setup: {error}")
-            api.push("appendLetiReply", f"I saved that, but voice couldn't start: {error}")
+            logger.warning(f"Voice couldn't start: {error}")
+            diagnostics.record_activity("error", f"Voice is unavailable: {error}")
+            api.push("setVoiceState", "unavailable")
+            if announce:
+                api.push("appendLetiReply", f"I saved that, but voice couldn't start: {error}")
             return
         _use_voice(new_tts, new_stt)
-        api.push("appendLetiReply", "Voice is on - say the wake word whenever you're ready.")
+        api.tts = new_tts
+        orchestrator.interrupt_callback = new_tts.interrupt if new_tts is not None else None
+        diagnostics.record_activity("note", "Voice is ready.")
+        api.push("setVoiceState", "ready")
+        if announce:
+            api.push("appendLetiReply", "Voice is on - say the wake word whenever you're ready.")
         await _listen(new_stt)
 
     api.enable_voice = enable_voice
 
     async def _start_server_and_voice():
+        # The server first, and nothing waits on what comes after it. The window
+        # below opens as soon as server_ready is set, so the several seconds of
+        # importing torch and loading a Whisper model happen with the interface
+        # already on screen and answering, rather than in front of it.
         await server.start()
         server_ready.set()
-        if transcriber is None:
-            return  # text-only for now; enable_voice() can still start it later
-        await _listen(transcriber)
+        if not voice_wanted:
+            return  # never been asked; the audio card will call enable_voice()
+        await enable_voice(announce=False)
 
     asyncio.run_coroutine_threadsafe(_start_server_and_voice(), loop)
     if not server_ready.wait(timeout=15):

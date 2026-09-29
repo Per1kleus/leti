@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 import types
 
 import pytest
@@ -41,6 +42,7 @@ class Server:
 
     def __init__(self):
         self.behaviour = "normal"
+        self.tags_stall = False
         self.requests = 0
         self._runner = None
         self.port = 0
@@ -65,6 +67,15 @@ class Server:
         return f"http://127.0.0.1:{self.port}"
 
     async def _tags(self, _):
+        # Listening and not answering, which is what Ollama looks like from
+        # outside while it starts or loads a model. Separate from `behaviour`
+        # because that one describes /api/chat and this is the health endpoint.
+        if self.tags_stall:
+            # Long enough to outlast the health timeout, short enough that
+            # shutting the test server down does not wait on it: aiohttp's
+            # cleanup waits for handlers that are still sleeping, and a thirty
+            # second stall cost twenty-seven seconds per test in teardown.
+            await asyncio.sleep(5.0)
         return web.json_response({"models": [{"name": "qwen2.5:7b"}]})
 
     async def _chat(self, request):
@@ -484,3 +495,90 @@ def test_the_servers_own_words_are_bounded_before_they_are_spoken():
                                    "error": "x" * 5_000})
     assert len(said) < orch_mod.MAX_SERVER_DETAIL_CHARS + 120
     assert said.endswith("...")
+
+
+# --- The health check is a different question from a request ------------------------
+
+@pytest.mark.asyncio
+async def test_a_health_check_does_not_wait_for_the_request_timeout(server, client_for):
+    """is_available asked with the REQUEST budget. A server that accepts the
+    connection and then says nothing - which is exactly what Ollama looks like
+    while it loads a model - held the answer for up to request_timeout_seconds.
+    Measured at the shipped 120s: still waiting at 8 seconds.
+
+    main.py calls this before anything else exists and exits the process if it is
+    false, so those two minutes were two minutes of a program that had not started
+    and had said nothing about why."""
+    server.tags_stall = True               # accepts, then stalls
+    client = client_for(timeout=120, stream_timeout=120)
+    started = time.perf_counter()
+    answer = await client.is_available()
+    waited = time.perf_counter() - started
+
+    assert answer is False
+    assert waited < 6, f"the health check took {waited:.1f}s"
+    assert client.HEALTH_TIMEOUT_SECONDS <= 5
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_read_timing_out_is_not_mistaken_for_a_healthy_server(server, client_for):
+    """It caught httpx.ConnectError alone. A read timing out is a ReadTimeout,
+    which is not a ConnectError, so it went past is_available entirely and out of
+    build_app - where nothing catches it either, and the process died with a
+    traceback instead of reporting that Ollama was busy."""
+    server.tags_stall = True
+    client = client_for(timeout=120, stream_timeout=120)
+    assert await client.is_available() is False      # a value, not an exception
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_tells_a_busy_server_apart_from_an_absent_one(server, client_for):
+    """Telling somebody to start a server that is already running wastes the time
+    they came to the diagnostics panel to save."""
+    from core.llm_client import OllamaClient
+
+    client = client_for()
+    assert (await client.probe())["state"] == "connected"
+
+    server.tags_stall = True
+    busy = await client.probe()
+    assert busy["state"] == "busy"
+    assert "starting" in busy["detail"] or "loading" in busy["detail"]
+    await client.close()
+
+    import core.config_loader as loader
+    settings = loader.get_settings()
+    settings["ollama"]["host"] = "http://127.0.0.1:9199"
+    gone = OllamaClient()
+    assert (await gone.probe())["state"] == "not_running"
+    await gone.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_lists_what_the_server_actually_has(server, client_for):
+    client = client_for()
+    found = await client.probe()
+    assert found["state"] == "connected"
+    assert "qwen2.5:7b" in found["models"]
+    await client.close()
+
+
+def test_the_interface_opens_even_when_the_model_server_does_not_answer():
+    """A terminal mode has nowhere to report this later and stopping is the only
+    useful thing. The window is different: quitting made "Ollama has not finished
+    starting" indistinguishable from "Leti is broken", because nothing appeared at
+    all - no panel to look at and no setting to change."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main.build_app)
+    assert "require_model_server: bool = True" in inspect.signature(main.build_app).__str__() \
+        or "require_model_server" in source
+    assert "if require_model_server:" in source
+    assert "sys.exit(1)" in source, "a terminal mode must still stop"
+
+    gui = inspect.getsource(main.run_gui)
+    assert "require_model_server=False" in gui, "the window still exits on a busy Ollama"

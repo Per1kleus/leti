@@ -341,12 +341,67 @@ class OllamaClient:
     # ------------------------------------------------------------------ #
     # Health check
     # ------------------------------------------------------------------ #
+    # A health check is a different question from a request, and it gets a
+    # different budget. Asking "is anything there" with the request timeout meant
+    # that a server which accepts the connection and then says nothing - which is
+    # exactly what Ollama looks like while it loads a model - held the answer for
+    # up to request_timeout_seconds. Measured at the shipped 120s, against a
+    # server that accepts and stalls: still waiting at 8s, and it would have kept
+    # waiting for two minutes.
+    HEALTH_TIMEOUT_SECONDS = 3.0
+
     async def is_available(self) -> bool:
+        """Whether the model server answers at all, quickly and without raising.
+
+        It used to catch httpx.ConnectError alone. A read timing out is a
+        ReadTimeout, which is not a ConnectError, so it went straight past this
+        and out of main.py's build_app - where nothing catches it either, so the
+        process died with a traceback instead of reporting that Ollama was busy.
+        Every failure is "no" here; which failure it was is `probe` below.
+        """
         try:
-            resp = await self._client.get("/api/tags")
+            resp = await self._client.get("/api/tags",
+                                          timeout=self.HEALTH_TIMEOUT_SECONDS)
             return resp.status_code == 200
-        except httpx.ConnectError:
+        except Exception:
             return False
+
+    async def probe(self) -> Dict[str, Any]:
+        """What state the model server is actually in, for the diagnostics panel.
+
+        One call, one honest answer, in the vocabulary the interface shows. Kept
+        here beside the client that makes the request rather than in a second
+        module that would have to know the host, the timeout and the shape of the
+        reply all over again.
+        """
+        try:
+            resp = await self._client.get("/api/tags",
+                                          timeout=self.HEALTH_TIMEOUT_SECONDS)
+        except httpx.ConnectError:
+            return {"state": "not_running", "detail": "Nothing is listening at "
+                                                      f"{self.host}.", "models": []}
+        except httpx.TimeoutException:
+            # Listening, not answering. Ordinary while it starts or loads a model,
+            # and a real answer rather than "not running" - telling somebody to
+            # start a server that is already running wastes their time.
+            return {"state": "busy",
+                    "detail": "The model server is running but did not answer in "
+                              f"{self.HEALTH_TIMEOUT_SECONDS:.0f} seconds - it is "
+                              "probably still starting or loading a model.",
+                    "models": []}
+        except Exception as e:
+            return {"state": "error", "detail": f"{type(e).__name__}: {e}", "models": []}
+
+        if resp.status_code != 200:
+            return {"state": "error",
+                    "detail": f"The model server answered HTTP {resp.status_code}.",
+                    "models": []}
+        try:
+            models = [m.get("name", "") for m in resp.json().get("models", [])
+                      if isinstance(m, dict) and m.get("name")]
+        except Exception:
+            models = []
+        return {"state": "connected", "detail": "", "models": models}
 
 
 class _ServerSaid(Exception):

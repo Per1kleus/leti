@@ -708,7 +708,7 @@ async def run_voice_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, 
                 print("(no speech detected)")
 
 
-async def build_app(start_scheduler: bool = True):
+async def build_app(start_scheduler: bool = True, require_model_server: bool = True):
     """Shared async setup for every mode - constructs and returns everything a mode
     needs. Factored out so GUI mode (see run_gui() below) can run this via
     run_until_complete() on its own dedicated loop, instead of the loop
@@ -719,11 +719,28 @@ async def build_app(start_scheduler: bool = True):
 
     llm_client = OllamaClient()
     if not await llm_client.is_available():
-        logger.error(
-            f"Cannot reach Ollama at {settings['ollama']['host']}. "
-            "Make sure 'ollama serve' is running and models are pulled."
+        where = settings["ollama"]["host"]
+        if require_model_server:
+            # A terminal mode has nowhere to report this later: there is no window
+            # to open and no panel to look at, so the only useful thing to do is
+            # say it here and stop.
+            logger.error(
+                f"Cannot reach Ollama at {where}. "
+                "Make sure 'ollama serve' is running and models are pulled."
+            )
+            sys.exit(1)
+        # The interface, on the other hand, must open. Ollama not answering YET is
+        # the ordinary state for the first seconds after it starts and for as long
+        # as it takes to load a large model, and quitting made that indistinguish-
+        # able from Leti being broken - the window never appeared, so there was
+        # nothing to tell anyone what was wrong or to let them fix it. The
+        # diagnostics panel reads the live state (see OllamaClient.probe), every
+        # control keeps working, and the first question reports honestly if the
+        # model is still not there.
+        logger.warning(
+            f"Cannot reach Ollama at {where} yet - opening anyway. "
+            "The interface will show what it can and cannot reach."
         )
-        sys.exit(1)
 
     browser_session = BrowserSession()
     social_login_manager = SocialLoginManager()
@@ -867,7 +884,7 @@ def run_gui() -> None:
     asyncio.set_event_loop(loop)
 
     llm_client, browser_session, social_login_manager, orchestrator, safety_guard, scheduler = \
-        loop.run_until_complete(build_app())
+        loop.run_until_complete(build_app(require_model_server=False))
 
     from gui.api import run_gui_mode
     try:

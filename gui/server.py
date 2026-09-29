@@ -185,10 +185,57 @@ class LetiWebServer:
                 continue
 
             if msg_type == "call":
-                await self._dispatch_call(ws, data)
+                # NOT awaited. This loop is the only thing reading this client's
+                # socket, so awaiting a call here meant no later message was even
+                # READ until it finished - the interface stopped answering for as
+                # long as the slowest thing in flight took.
+                #
+                # Measured, against this server with a call that takes 1.5s: a
+                # click sent 100ms into it came back after 1,502ms. A model
+                # download is minutes, not seconds, so "shrink the window" during
+                # one was not slow - it was not happening. That is the reported
+                # "clicking minimised Leti needs several clicks".
+                #
+                # Safe to run them concurrently: every reply carries the id of the
+                # call it answers and the page looks calls up by id (see callApi in
+                # gui/hud.html), so replies have never had to arrive in order.
+                self._start_call(ws, data)
 
         self.api.ws_clients.discard(ws)
         return ws
+
+    # A ceiling on how many calls one client can have in flight. Not a queue and
+    # not a rate limit: it is the point past which a page is misbehaving rather
+    # than busy - every control in the HUD is one call, and nothing legitimate
+    # sends this many without waiting for an answer. Refusing is better than
+    # growing a task per message until the process runs out of memory.
+    MAX_CALLS_IN_FLIGHT = 64
+
+    def _start_call(self, ws: web.WebSocketResponse, data: Dict[str, Any]) -> None:
+        """Run one call without making the next message wait for it."""
+        if len(self._background_tasks) >= self.MAX_CALLS_IN_FLIGHT:
+            logger.warning(
+                f"Refusing a call to '{data.get('method')}': "
+                f"{len(self._background_tasks)} are already in flight.")
+            self._start_task(self._refuse(
+                ws, data.get("id"),
+                "Leti is already handling as many requests as it will take at "
+                "once. Nothing was lost - try that again."))
+            return
+        self._start_task(self._dispatch_call(ws, data))
+
+    def _start_task(self, coro: Any) -> None:
+        """Keep a strong reference: asyncio only holds a weak one, and a task
+        nobody holds can be collected mid-flight."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _refuse(self, ws: web.WebSocketResponse, call_id: Any, why: str) -> None:
+        try:
+            await ws.send_str(json.dumps({"type": "error", "id": call_id, "message": why}))
+        except Exception:
+            pass
 
     async def _dispatch_call(self, ws: web.WebSocketResponse, data: Dict[str, Any]) -> None:
         from gui.api import SYNC_METHODS
@@ -198,12 +245,16 @@ class LetiWebServer:
         args = data.get("args", [])
         try:
             if method == "send_text_message":
-                # Answering a turn takes as long as it takes; the websocket must stay
-                # responsive meanwhile, so this is deliberately not awaited. The reply
-                # reaches every client through api.push() when it's ready.
-                task = asyncio.create_task(self.api.a_send_text_message(*args))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+                # Answered here rather than returned: a turn takes as long as it
+                # takes and the reply reaches every client through api.push() when
+                # it is ready, so the caller is told the turn STARTED and does not
+                # sit on an open call for the length of it.
+                #
+                # It no longer needs a task of its own - _start_call gives every
+                # call one - but it still must not be awaited before replying, or
+                # the page's own call would stay pending for the whole turn and
+                # time out.
+                self._start_task(self.api.a_send_text_message(*args))
                 value: Any = True
             elif method == "get_system_stats":
                 value = await self.api.a_get_system_stats()

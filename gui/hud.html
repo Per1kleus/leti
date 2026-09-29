@@ -30,6 +30,14 @@
   const params = new URLSearchParams(location.search);
   if(params.get('puck') === '1'){
     document.documentElement.classList.add('puck-window');
+    // Only when the window behind this page is really see-through. gui/desktop.py
+    // decides, because it is the side that knows: pywebview honours transparency
+    // on GTK and Cocoa and ignores it on Windows, and a page that assumes it has
+    // it when it has not is a transparent document in an opaque window - which
+    // renders as the toolkit's own backdrop, and that is white.
+    if(params.get('alpha') === '1'){
+      document.documentElement.classList.add('puck-alpha');
+    }
   }
   // Promoting the page's two full-viewport overlays to their own layers measured a
   // third off the page's CPU in Blink and a seventh ONTO it in WebKit, so what
@@ -570,12 +578,43 @@
      transparent - on GTK and Cocoa that leaves a round puck floating over the
      desktop, and on Windows, where transparency is unsupported, the puck's own
      circular backing keeps it looking deliberate. */
-  html.puck-window, html.puck-window body{ background:transparent !important; overflow:hidden; }
-  html.puck-window #leti-root{ background:transparent; min-height:100vh; }
+  /* The default is OPAQUE, deliberately. A page that paints nothing inside a
+     window that cannot be transparent shows whatever the toolkit paints behind
+     the document, and that is white - the reported white rectangle round the
+     puck. Dark is the right answer when there is no alpha to be had. */
+  html.puck-window, html.puck-window body{ background:var(--void); overflow:hidden; }
+  html.puck-window #leti-root{ background:var(--void); min-height:100vh; }
+  /* ...and transparent only when the window really is. */
+  html.puck-window.puck-alpha,
+  html.puck-window.puck-alpha body,
+  html.puck-window.puck-alpha #leti-root{ background:transparent !important; }
   html.puck-window #leti-root::before, html.puck-window #leti-root::after{ display:none; }
+  /* Square, centred, and never wider than the window is tall. border-radius:50%
+     on a non-square box is an ellipse, and a frameless window is not guaranteed
+     to be exactly the size it asked for once a display scale is applied. */
   html.puck-window #leti-root.minimized .radar{
-    position:fixed; inset:0; right:auto; bottom:auto;
-    width:100%; height:100%;
+    /* inset first: it is a shorthand for all four offsets, so setting it after
+       left/top silently resets them and the puck lands at its static position
+       shifted by the centring transform - which put it off the top-left corner
+       of a 190px window, drawing nothing at all. */
+    position:fixed; inset:auto;
+    left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(100vw, 100vh); height:min(100vw, 100vh);
+    aspect-ratio:1;
+  }
+  /* Room for the puck's own edge and shadow. Only where the window is really
+     transparent: there the inset is desktop showing through, and without it the
+     shadow is cut off square by the window - the one thing this is all for. On an
+     opaque window the square is already visible, so the circle fills it instead of
+     leaving a dark margin around itself. */
+  html.puck-window.puck-alpha #leti-root.minimized .radar{
+    width:calc(min(100vw, 100vh) - 12px);
+    height:calc(min(100vw, 100vh) - 12px);
+  }
+  /* A drop shadow is a dark smudge on a transparent window rather than depth.
+     The ring carries the edge instead. */
+  html.puck-window.puck-alpha #leti-root.minimized .radar{
+    box-shadow:0 0 0 1px var(--panel-border), 0 0 22px rgba(0,0,0,0.45);
   }
   html.puck-window .artifact-layer{ display:none !important; }
   /* pywebview moves the window when a drag starts on an element carrying this
@@ -634,6 +673,22 @@
     box-shadow:0 0 0 1px var(--cyan-dim), 0 0 26px rgba(79,227,255,0.28), 0 12px 40px rgba(0,0,0,0.6);
   }
   #leti-root.minimized .radar svg{ width:100%; height:100%; max-height:none; }
+  /* Nothing in the puck is CUT OFF. The previous version zoomed the viewBox in
+     and left the outer ring, the tick ring and the sweep running off the edge of
+     it, which is what "clipped" looks like. Everything that will not fit whole is
+     left out instead, and what remains is a deliberate composition: the core, the
+     ring around it, the wordmark and the state.
+     The rotating pieces are the ones that go - they all live between r=120 and
+     r=188, and the core is the part that carries the state and keeps moving. */
+  #leti-root.minimized #outerGraticule,
+  #leti-root.minimized #dashRing,
+  #leti-root.minimized #sweepGroup,
+  #leti-root.minimized #tickRing,
+  #leti-root.minimized #contactBlips,
+  #leti-root.minimized #bracketFrame{ display:none; }
+  /* The one ring the puck keeps, in the identity's own colour rather than the
+     panel border it wears inside a full interface full of other panels. */
+  #leti-root.minimized #coreRing{ stroke:var(--cyan-dim); stroke-width:1.6; }
   #leti-root.minimized .puck-name{ display:block; }
   #leti-root.minimized .core-label{ display:none; }
   /* Sized to sit inside the core, which is about 62px across once the SVG is
@@ -1223,16 +1278,20 @@
             <circle cx="200" cy="200" r="188" fill="none" stroke="var(--cyan-dim)" stroke-width="1.2"
                     stroke-dasharray="9 11" opacity="0.75"/>
           </g>
-          <!-- Fixed graticule: concentric rings, crosshair, and sector spokes. -->
-          <g fill="none" stroke="var(--panel-border)" stroke-width="1">
+          <!-- Fixed graticule: concentric rings, crosshair, and sector spokes.
+               Split so the puck can leave out what will not fit in it rather than
+               cutting it off at the edge - see PUCK_VIEWBOX. The ring closest to
+               the core is kept separate because the puck keeps that one. -->
+          <g id="outerGraticule" fill="none" stroke="var(--panel-border)" stroke-width="1">
             <circle cx="200" cy="200" r="164"/>
             <circle cx="200" cy="200" r="120"/>
-            <circle cx="200" cy="200" r="76"/>
             <line x1="36" y1="200" x2="364" y2="200"/>
             <line x1="200" y1="36" x2="200" y2="364"/>
             <line x1="84" y1="84" x2="316" y2="316" opacity="0.5"/>
             <line x1="316" y1="84" x2="84" y2="316" opacity="0.5"/>
           </g>
+          <circle id="coreRing" cx="200" cy="200" r="76"
+                  fill="none" stroke="var(--panel-border)" stroke-width="1"/>
           <!-- Sweep: a soft wedge trailing a leading edge, one rotation every 6s. -->
           <g id="sweepGroup">
             <path d="M 200 200 L 200 36 A 164 164 0 0 1 282 58 Z" fill="url(#sweepFade)"/>
@@ -1241,7 +1300,7 @@
           <!-- Contact blips. They brighten as the sweep passes over them rather
                than on timers of their own - a blip that lights up on the far side
                from the sweep is the kind of small wrongness that reads as fake. -->
-          <g stroke="var(--cyan)" stroke-width="3" stroke-linecap="round">
+          <g id="contactBlips" stroke="var(--cyan)" stroke-width="3" stroke-linecap="round">
             <line id="blipA" x1="248" y1="92" x2="256" y2="112" opacity="0.2"/>
             <line id="blipB" x1="292" y1="286" x2="286" y2="306" opacity="0.2"/>
           </g>
@@ -1260,7 +1319,7 @@
             <path class="mark-stem" d="M112.0 97.2L104.6 96.2L97.5 94.2L91.0 91.4L85.0 87.9L79.6 83.8L74.8 79.3L70.9 74.4L67.9 69.0L65.8 63.4L64.8 57.5L65.0 51.5L66.4 45.4L69.1 39.2L73.2 33.0L78.8 27.0L84.8 22.9L90.8 20.3L96.7 19.1L102.3 19.1L107.6 20.0L112.4 21.7L116.9 24.1L121.0 27.2L124.5 31.0L127.2 35.6L128.9 40.6L129.8 46.0L129.7 51.7L128.6 57.7L126.6 64.2L124.9 70.4L123.2 76.7L121.4 83.1L119.5 89.5L117.6 95.9L115.5 102.3L113.5 108.8L111.5 115.4L109.6 122.1L107.8 128.8L106.2 135.7L104.7 142.6L103.2 149.6L101.7 156.6L100.7 160.6L99.6 162.8L98.0 165.0L96.0 167.1L93.5 169.2L90.8 171.2L87.7 172.8L84.4 174.2L80.9 175.1L77.5 175.6L74.2 175.5L71.2 174.9L68.6 173.9L66.4 172.6L64.5 171.0L63.0 169.0L62.1 167.2L61.7 165.7L61.8 164.4L62.2 163.0L63.2 161.7L64.8 160.3L67.1 159.1L69.9 158.2L73.1 157.7L76.8 157.7L80.7 158.1L85.0 158.9L89.4 160.2L94.0 162.0L99.5 164.3L105.2 166.3L111.1 168.2L117.2 169.9L123.4 171.2L129.9 172.1L136.5 172.6L143.3 172.6L150.2 172.2L157.3 171.3L164.4 170.0L171.7 168.0L179.1 165.4L186.5 162.1L194.1 158.3L194.1 158.3L193.9 157.7L193.9 157.7L186.2 161.3L178.6 164.1L171.2 166.2L164.0 167.8L156.9 168.9L150.0 169.5L143.3 169.5L136.8 169.0L130.4 168.2L124.2 167.0L118.2 165.6L112.4 163.9L106.8 161.9L101.4 159.7L96.3 157.2L91.3 155.0L86.4 153.3L81.6 152.2L77.1 151.7L72.7 151.7L68.7 152.2L64.9 153.0L61.5 154.4L58.5 156.2L56.0 158.7L54.2 161.7L53.4 165.3L53.5 169.2L54.7 173.1L56.9 177.0L60.0 180.4L63.8 183.1L68.1 184.9L72.6 186.0L77.3 186.6L82.1 186.8L86.9 186.5L91.9 185.6L96.7 184.2L101.4 182.2L105.8 179.5L109.8 176.1L113.2 171.9L115.9 167.1L117.9 160.6L119.9 153.9L122.0 147.3L124.2 140.8L126.4 134.3L128.6 127.7L130.6 121.2L132.6 114.6L134.5 108.0L136.3 101.3L138.1 94.7L139.8 88.1L141.6 81.5L143.1 74.9L144.4 68.2L145.5 60.2L145.5 51.5L144.0 43.4L141.4 36.1L137.8 29.5L133.3 23.8L128.2 18.8L122.5 14.8L116.2 11.9L109.3 10.4L102.3 10.2L95.2 11.5L88.4 14.1L81.7 18.0L75.3 23.1L69.1 29.9L64.6 36.9L61.7 44.0L60.4 51.0L60.4 57.9L61.6 64.6L64.1 70.8L67.6 76.7L71.9 82.0L77.1 86.8L83.1 90.8L89.8 94.1L96.9 96.4L104.3 98.0L112.0 98.8Z"/>
           </g>
           <!-- Bracket frame around the core readout. -->
-          <g fill="none" stroke="var(--cyan)" stroke-width="1.4" opacity="0.7">
+          <g id="bracketFrame" fill="none" stroke="var(--cyan)" stroke-width="1.4" opacity="0.7">
             <path d="M122 138 v-20 h20"/><path d="M278 138 v-20 h-20"/>
             <path d="M122 262 v20 h20"/><path d="M278 262 v20 h-20"/>
           </g>
@@ -1528,7 +1587,7 @@
   // Functions the backend is allowed to invoke via a 'push' message.
   const PUSH_HANDLERS = new Set([
     'appendLetiReply', 'appendUserMessage', 'setHudState', 'focusChatInput', 'showVisual',
-    'letiActivity',
+    'letiActivity', 'windowModeFailed', 'setVoiceState',
   ]);
 
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2293,7 +2352,7 @@
     // readout and the glow take - all of them plain CSS transitions that run
     // once and then stop.
     root.setAttribute('data-state', newState);
-    micBtnLabel.textContent = spec.pill;
+    micBtnLabel.textContent = pillTextFor(newState, spec.pill);
     micBtn.classList.toggle('active', newState !== 'idle');
     // Coming out of idle, don't wait out the idle timer before going full rate.
     if(running && newMode !== 'idle' && idleTimer){
@@ -2304,6 +2363,37 @@
     // Deliberately does NOT restart the loop: the core eases from wherever it
     // currently is to the new mode's shape, which is the whole point.
   }
+
+  // ---------- Whether voice is ready yet ----------
+  //
+  // The speech models are loaded after this window is on screen rather than
+  // before it (see gui/api.py), so for the first few seconds of a launch there is
+  // an interface that works, and no voice yet. That is a state, and a state the
+  // user has to be able to see: an assistant that ignores the wake word because
+  // it is still loading looks exactly like one that is broken.
+  //
+  // Shown on the pill that already describes what Leti is doing, and only while
+  // it is idle - once Leti is listening, thinking or speaking, the pill is saying
+  // something more important than how it got there.
+  let voiceState = 'unknown';   // unknown | initializing | ready | unavailable
+
+  const VOICE_PILL = {
+    initializing: 'Starting voice...',
+    unavailable: 'Type to talk to Leti',
+  };
+
+  function pillTextFor(state, fallback){
+    if(state === 'idle' && VOICE_PILL[voiceState]) return VOICE_PILL[voiceState];
+    return fallback;
+  }
+
+  window.setVoiceState = function(state){
+    voiceState = String(state || 'unknown');
+    root.setAttribute('data-voice', voiceState);
+    if(displayState === 'idle'){
+      micBtnLabel.textContent = pillTextFor('idle', (STATES.idle || {}).pill || '');
+    }
+  };
 
   micBtn.onclick = async () => {
     if(displayState === 'listening'){
@@ -2557,7 +2647,14 @@
   // viewBox in keeps the sweep and the rings while making the middle big enough
   // to read, rather than scaling everything down uniformly into illegibility.
   const FULL_VIEWBOX = '0 0 400 400';
-  const PUCK_VIEWBOX = '50 50 300 300';
+  // Centred on 200,200 with a radius of 88. Chosen to CONTAIN what the puck
+  // draws rather than to crop what it does not: the core reaches r=73 at its
+  // loudest, its backing glow r=82 and the ring it sits in r=76, so the largest
+  // thing in the frame clears the edge by six units and nothing touches it.
+  // The old '50 50 300 300' was a radius of 150 with a tick ring at 158, a
+  // graticule at 164 and a dashed ring at 188 still switched on, so three
+  // separate rings ran off the edge of the picture.
+  const PUCK_VIEWBOX = '112 112 176 176';
   let minimized = false;
   let unseen = 0;
 
@@ -2585,31 +2682,68 @@
   //           so restoring it is not a state that has to be put back.
   //   Browser: no window to swap to, so the layout collapses in place - the same
   //           control doing the best available version of the same thing.
-  async function minimize(){
-    let swapped = false;
-    // Only the native window asks for the swap. A phone or a browser tab is one
-    // more client of the same session, and minimising THERE must not hide the
-    // desktop app's windows on someone else's screen - the window a client can
-    // shrink is the window it is.
-    if(IN_DESKTOP_WINDOW){
-      try {
-        swapped = (await callApi('set_window_mode', 'puck')).desktop;
-      } catch(e) { /* not connected - fall through to collapsing in place */ }
+  // Shrinking and reopening never wait for the backend to finish anything.
+  //
+  // They used to. minimize() awaited set_window_mode before doing ANYTHING, and
+  // that call built a native window on the event loop the first time - so a click
+  // produced no visible change at all for as long as the toolkit took, and the
+  // reasonable response to a button that did nothing was to press it again. The
+  // backend answers the only question the page actually asks - is there a native
+  // window to swap - immediately now, and does the swap behind the reply.
+  //
+  // The page does its own half first, in the same turn as the click, so the
+  // interface has already responded before any message is sent.
+  function minimize(){
+    // A browser tab or a phone is one more client of the same session. Minimising
+    // THERE must not hide the desktop app's windows on someone else's screen, so
+    // only the native window asks for the swap - the window a client can shrink
+    // is the window it is.
+    if(!IN_DESKTOP_WINDOW){
+      applyMinimizedLayout(true);
+      try { localStorage.setItem(MINIMIZED_KEY, '1'); } catch(e) {}
+      return;
     }
-    if(!swapped) applyMinimizedLayout(true);
-    try { localStorage.setItem(MINIMIZED_KEY, swapped ? '0' : '1'); } catch(e) {}
+    // The desktop swap hides this window and shows the puck, so collapsing this
+    // one as well would be work nobody sees. If the swap turns out to be
+    // impossible the backend says so and windowModeFailed collapses in place.
+    callApi('set_window_mode', 'puck').then(result => {
+      if(!(result && result.desktop)){
+        applyMinimizedLayout(true);
+        try { localStorage.setItem(MINIMIZED_KEY, '1'); } catch(e) {}
+      }
+    }).catch(() => {
+      // Not connected. The control still has to do something.
+      applyMinimizedLayout(true);
+      try { localStorage.setItem(MINIMIZED_KEY, '1'); } catch(e) {}
+    });
   }
 
-  async function restore(){
+  function restore(){
     if(IS_PUCK_WINDOW){
-      // Hand back to the full window; this one is hidden, not restyled.
-      try { await callApi('set_window_mode', 'full'); } catch(e) {}
+      // Hand back to the full window; this one is hidden, not restyled. Not
+      // awaited: there is nothing to do with the answer, and waiting for it is
+      // what made reopening feel broken.
+      callApi('set_window_mode', 'full').catch(() => {});
       unseen = 0; renderUnseen();
       return;
     }
     applyMinimizedLayout(false);
     try { localStorage.setItem(MINIMIZED_KEY, '0'); } catch(e) {}
   }
+
+  // The backend could not make the native swap after all. Said rather than left:
+  // a window that is neither shrunk nor open is the one outcome worse than either.
+  window.windowModeFailed = function(mode){
+    if(mode === 'puck'){
+      applyMinimizedLayout(true);
+      try { localStorage.setItem(MINIMIZED_KEY, '1'); } catch(e) {}
+    } else {
+      applyMinimizedLayout(false);
+    }
+    if(typeof rtLog === 'function'){
+      rtLog('error', 'Could not resize the window - showing the best available layout.');
+    }
+  };
 
   document.getElementById('minimizeBtn').onclick = () => minimize();
   document.addEventListener('keydown', (e) => {

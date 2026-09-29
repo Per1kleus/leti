@@ -407,25 +407,70 @@ def test_dragging_the_puck_does_not_also_reopen_it():
     assert "if(!wasDrag && minimized) restore();" in end.group(1)
 
 
+def _minimize_body():
+    """minimize()'s body. Matched without `async` on purpose - see the test below
+    on why it stopped being one."""
+    found = re.search(r"function minimize\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert found, "minimize() moved; this test needs updating"
+    return found.group(1)
+
+
 def test_the_puck_asks_for_a_real_window_before_settling_for_a_smaller_layout():
     """Overlapping other applications needs a native always-on-top window. In a
     browser tab there isn't one, so the same control collapses the layout instead
     - but it must try for the real thing first."""
     assert "callApi('set_window_mode', 'puck')" in CODE
-    minimize = re.search(r"async function minimize\(\)\{(.*?)\n  \}", CODE, re.S)
-    assert minimize and "if(!swapped) applyMinimizedLayout(true);" in minimize.group(1)
+    body = _minimize_body()
+    # It asks, and it collapses in place only when the answer is that there is no
+    # native window to swap. Checked by behaviour rather than by one spelling of
+    # it, because the shape of this changed when it stopped being awaited.
+    assert "result.desktop" in body
+    assert "applyMinimizedLayout(true)" in body
 
 
 def test_only_the_native_window_asks_to_swap_windows():
     """Every client shares one session, so a phone minimising must not hide the
     desktop app's windows on someone else's screen. The window a client can
     shrink is the window it is."""
-    minimize = re.search(r"async function minimize\(\)\{(.*?)\n  \}", CODE, re.S)
-    assert minimize, "minimize() moved; this test needs updating"
-    body = minimize.group(1)
+    body = _minimize_body()
     guard = body.index("IN_DESKTOP_WINDOW")
     call = body.index("set_window_mode")
     assert guard < call, "the window swap is not gated on actually being a native window"
+
+
+def test_shrinking_and_reopening_never_wait_for_the_backend():
+    """The reported bug: clicking the minimised Leti needed several clicks and
+    took a while.
+
+    minimize() awaited set_window_mode before doing anything at all, and that call
+    built a native window ON the event loop the first time a session shrank. So a
+    click produced no visible change for as long as the toolkit took, no other
+    click was being read meanwhile, and pressing it again was the only sensible
+    response to a control that appeared dead.
+
+    Neither function may await the round trip now. They may still send it - the
+    swap has to be asked for - but nothing the user sees may be behind it.
+    """
+    for name in ("minimize", "restore"):
+        assert f"async function {name}()" not in CODE, (
+            f"{name}() is async again; awaiting the backend is what made the "
+            "control feel broken")
+
+    body = _minimize_body()
+    assert "await callApi" not in body, "minimize() waits for the backend again"
+
+    restore = re.search(r"function restore\(\)\{(.*?)\n  \}", CODE, re.S)
+    assert restore, "restore() moved; this test needs updating"
+    assert "await callApi" not in restore.group(1), "restore() waits for the backend again"
+
+
+def test_a_swap_that_fails_is_reported_rather_than_left():
+    """The page is told the swap will happen before it has. A window that is
+    neither shrunk nor open is the one outcome worse than either, so the backend
+    says when it could not do it."""
+    assert "windowModeFailed" in CODE
+    assert "'windowModeFailed'" in CODE.split("PUSH_HANDLERS")[1][:400], \
+        "windowModeFailed is not in the push allowlist, so it would be ignored"
 
 
 def test_the_puck_window_renders_itself_collapsed():
@@ -436,8 +481,80 @@ def test_the_puck_window_renders_itself_collapsed():
     assert HUD.count('id="orbPath"') == 1, "the puck must not be a second renderer"
 
 
-def test_the_puck_window_is_transparent_behind_the_circle():
-    assert "html.puck-window, html.puck-window body{ background:transparent" in HUD
+def test_the_puck_is_transparent_only_when_its_window_really_is():
+    """The reported white rectangle around the minimised Leti.
+
+    The page used to force `background: transparent` on html and body whenever it
+    was the puck. That is right on a backend that honours a transparent window -
+    GTK, Cocoa - and wrong on one that does not. On Windows the webview is Edge
+    WebView2 and the flag is ignored, so a transparent DOCUMENT sat inside an
+    OPAQUE window and what showed through was the toolkit's own backdrop: white.
+
+    So the page paints dark by default and goes transparent only when it has been
+    told the window can be. gui/desktop.py decides, because it is the side that
+    knows, and says so on the URL it already parameterises.
+    """
+    assert "html.puck-window, html.puck-window body{ background:var(--void)" in HUD, \
+        "the puck no longer paints its own backing, so an opaque window shows white"
+    assert "html.puck-window.puck-alpha," in HUD, \
+        "nothing turns the transparency back on where it is available"
+    assert "puck-alpha" in CODE, "the page never reads the flag"
+    assert "params.get('alpha') === '1'" in CODE
+
+
+def test_the_backend_only_promises_transparency_where_it_exists():
+    from gui import desktop
+
+    source = (PROJECT_ROOT / "gui" / "desktop.py").read_text()
+    assert "def transparency_available" in source
+    assert "_puck_url" in source
+    # An opaque background colour and a transparent window in the same call is a
+    # contradiction, and which one wins is the backend's business rather than
+    # anything this code states. So it is not asked for.
+    create = source[source.index("def _create_puck"):]
+    create = create[:create.index("def _place_bottom_right")]
+    transparent_line = [l for l in create.splitlines() if "transparent=True" in l]
+    assert transparent_line, "the puck never asks for a transparent window at all"
+    assert "background_color" in create, "the opaque fallback has no colour, so it is white"
+    assert desktop is not None
+
+
+def test_the_puck_draws_nothing_that_runs_off_its_own_edge():
+    """"No clipping" from the brief. The puck used to zoom the viewBox to a radius
+    of 150 with a tick ring at 158, a graticule at 164 and a dashed ring at 188
+    still switched on, so three rings ran off the edge of the picture. Whatever
+    does not fit whole is left out instead."""
+    import re as _re
+
+    box = _re.search(r"const PUCK_VIEWBOX = '([\d ]+)'", CODE)
+    assert box, "PUCK_VIEWBOX moved; this test needs updating"
+    x, y, w, h = (int(n) for n in box.group(1).split())
+    assert w == h, "the puck's viewBox is not square, so its ring would be an ellipse"
+    centre_x, centre_y = x + w / 2, y + h / 2
+    assert (centre_x, centre_y) == (200, 200), "the puck is not centred on the core"
+    radius = w / 2
+
+    # Everything the puck still draws has to fit inside that radius.
+    kept_max = 82        # the core's backing glow, the largest thing left
+    assert radius > kept_max, f"the core backing at r={kept_max} does not fit r={radius}"
+
+    for hidden in ("#outerGraticule", "#dashRing", "#sweepGroup", "#tickRing",
+                   "#contactBlips", "#bracketFrame"):
+        assert f"#leti-root.minimized {hidden}" in HUD, \
+            f"{hidden} is still drawn in the puck, where it does not fit"
+
+
+def test_the_puck_is_a_circle_rather_than_whatever_shape_the_window_is():
+    """border-radius:50% on a non-square box is an ellipse, and a frameless window
+    is not guaranteed to be exactly the size it asked for once a display scale is
+    applied."""
+    assert "aspect-ratio:1;" in HUD
+    block = HUD[HUD.index("html.puck-window #leti-root.minimized .radar{"):]
+    block = block[:block.index("}")]
+    assert "inset:auto" in block
+    assert block.index("inset:auto") < block.index("left:50%"), (
+        "inset is a shorthand for all four offsets; setting it after left/top "
+        "resets them and the puck lands off the corner of its own window")
 
 
 def test_native_dragging_is_scoped_to_a_region_the_page_marks():
@@ -775,3 +892,68 @@ def test_the_mark_is_not_a_webfont():
     fonts = re.search(r'fonts\.googleapis\.com/css2\?family=([^"]+)', HUD).group(1)
     assert "Vibes" not in fonts and "Script" not in fonts and "Tangerine" not in fonts
 
+
+
+# --- Voice does not hold the window shut --------------------------------------------
+
+def test_the_window_opens_before_the_speech_models_load():
+    """Measured startup complaint: for the several seconds it takes to import torch
+    and load a Whisper model there was nothing on screen at all, so Leti looked
+    like it had failed to start.
+
+    Loading it off the shared loop was always necessary - doing it there freezes
+    every connected client - but "not on that loop" and "before there is a window"
+    are different requirements and only the first was ever needed.
+    """
+    import inspect
+
+    from gui.api import run_gui_mode
+
+    source = inspect.getsource(run_gui_mode)
+    assert "load_voice_stack()" not in source, (
+        "the voice stack is loaded synchronously again, before the server exists")
+    assert "await server.start()" in source
+    start = source.index("await server.start()")
+    voice = source.index("await enable_voice(announce=False)")
+    assert start < voice, "voice is still loaded before the server is up"
+
+
+def test_voice_is_loaded_in_one_place_rather_than_two():
+    """The audio card and startup both need it. Two loaders would be two chances
+    to get the thread wrong."""
+    import inspect
+
+    from gui.api import run_gui_mode
+
+    source = inspect.getsource(run_gui_mode)
+    assert source.count("run_in_executor(None, load_voice_stack)") == 1
+    assert "async def enable_voice(" in source
+
+
+def test_the_interface_is_told_while_voice_is_still_loading():
+    """An assistant that ignores the wake word because it is still loading looks
+    exactly like one that is broken."""
+    import inspect
+
+    from gui.api import run_gui_mode
+
+    source = inspect.getsource(run_gui_mode)
+    assert 'api.push("setVoiceState", "initializing")' in source
+    assert 'api.push("setVoiceState", "ready")' in source
+    assert 'api.push("setVoiceState", "unavailable")' in source
+
+    assert "setVoiceState" in CODE, "the page never handles it"
+    assert "'setVoiceState'" in CODE.split("PUSH_HANDLERS")[1][:400], \
+        "setVoiceState is not in the push allowlist, so it would be ignored"
+
+
+def test_starting_voice_does_not_announce_itself_as_a_reply():
+    """At startup nobody asked a question, and a chat message saying voice is on
+    would be a reply to nothing. The activity log carries it instead."""
+    import inspect
+
+    from gui.api import run_gui_mode
+
+    source = inspect.getsource(run_gui_mode)
+    assert "enable_voice(announce=False)" in source
+    assert 'record_activity("note", "Voice is ready.")' in source

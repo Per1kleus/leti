@@ -708,3 +708,105 @@ def _async_by(fn):
     async def f(model, *args, **kwargs):
         return fn(model)
     return f
+
+
+# --- What the diagnostics panel says about a model that is not usable ---------------
+#
+# "Configured" was the whole of the old answer and it is not one. A model that was
+# never downloaded, one whose download was interrupted, and one too big for the
+# card all read as configured - and all three look to the user like Leti simply not
+# answering, which is the reported symptom.
+
+def test_the_model_check_says_when_the_model_was_never_downloaded(configured, monkeypatch):
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models", _async(["something-else:latest"]))
+    verdict = diagnostics._check_model(reach_out=True)
+
+    assert verdict["state"] == diagnostics.FAIL
+    assert "not downloaded" in verdict["detail"]
+    assert "ollama pull qwen2.5:7b" in verdict["detail"], "no way to act on it"
+
+
+def test_the_model_check_says_when_the_file_is_damaged(configured, monkeypatch):
+    """A download interrupted partway leaves a manifest with blobs missing, and it
+    lists exactly like a good model."""
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(False))
+    verdict = diagnostics._check_model(reach_out=True)
+
+    assert verdict["state"] == diagnostics.FAIL
+    assert "cannot be loaded" in verdict["detail"]
+
+
+def test_the_model_check_passes_when_the_model_is_really_there(configured, monkeypatch):
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+    monkeypatch.setattr(diagnostics, "_model_fit", lambda *a: None)
+    verdict = diagnostics._check_model(reach_out=True)
+
+    assert verdict["state"] == diagnostics.PASS
+
+
+def test_the_model_check_is_not_a_guess_when_the_server_is_unreachable(configured, monkeypatch):
+    """No models listed means the server is what is wrong, and _check_ollama says
+    so. Reporting the model as missing on top of that would be two complaints
+    about one fault, and the second one wrong."""
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models", _async([]))
+    verdict = diagnostics._check_model(reach_out=True)
+
+    assert verdict["state"] == diagnostics.NOT_TESTED
+
+
+def test_a_model_too_big_for_the_card_is_a_warning_with_the_numbers(configured, monkeypatch):
+    """Ollama does not refuse a model that does not fit - it moves layers onto the
+    processor, which turns an ordinary turn into minutes and looks exactly like
+    Leti hanging. Retrying does not help; saying so, with the arithmetic, does."""
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+    monkeypatch.setattr(model_setup, "detect_hardware", lambda: {
+        "ok": True, "gpu": {"name": "GTX 1650", "vram_gib": 4.0}, "ram_gib": 16.0,
+        "free_disk_gib": 200.0, "cpu": {}, "gpu_detected": True})
+
+    verdict = diagnostics._check_model(reach_out=True)
+
+    assert verdict["state"] == diagnostics.WARNING
+    assert "does not fit" in verdict["detail"]
+    assert verdict["needs_gib"] and verdict["available_gib"]
+    assert str(verdict["needs_gib"]) in verdict["detail"], "the requirement is not shown"
+    assert str(verdict["available_gib"]) in verdict["detail"], "what is available is not shown"
+
+
+def test_the_model_check_works_whether_or_not_a_loop_is_already_running(configured, monkeypatch):
+    """full_check normally runs in a worker thread with no loop of its own, where
+    asyncio.run is right. It is not right on a thread that already has one -
+    asyncio.run refuses, and the check reported that it could not ask a server
+    that was answering perfectly well."""
+    import asyncio as _asyncio
+
+    from core import diagnostics
+
+    monkeypatch.setattr(model_setup, "installed_models",
+                        _async(["qwen2.5:7b", "nomic-embed-text:latest"]))
+    monkeypatch.setattr(model_setup, "model_is_usable", _async(True))
+    monkeypatch.setattr(diagnostics, "_model_fit", lambda *a: None)
+
+    # No loop here.
+    assert diagnostics._check_model(reach_out=True)["state"] == diagnostics.PASS
+
+    # And inside one.
+    async def inside():
+        return diagnostics._check_model(reach_out=True)
+
+    assert _asyncio.run(inside())["state"] == diagnostics.PASS
