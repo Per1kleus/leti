@@ -2171,3 +2171,108 @@ def test_the_models_are_checked_before_leti_is_started_not_after():
     prepared = source[source.index("def prepare("):source.index("def place_shortcuts(")]
     assert prepared.index("ensure_models(progress") < prepared.index(
         'progress.stage("Starting Leti")')
+
+
+# --- The voice models are part of a clean install ------------------------------------
+
+def test_the_voice_models_are_fetched_on_first_launch():
+    """openWakeWord does not ship its models - the package has code and an empty
+    resources/models directory, and download_models() fetches them on first use.
+    Nothing called it, so a clean install reached the first spoken word and
+    raised: "Could not find pretrained model" for a name that is not one of the
+    six built in, or "Could not open ...tflite" for one that is. Both verified
+    against the installed package before this was written."""
+    from launcher import bootstrap
+
+    assert "Checking Leti's voice" in bootstrap.STAGES
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    assert '"-m", "audio.wake_word", "--install"' in source
+
+
+def test_the_launcher_names_no_wake_word():
+    """Same rule as the model names: which wake word Leti needs is
+    audio/wake_word.py's question, and a copy here would be wrong the moment
+    somebody edited settings.yaml.
+
+    Checked against the CODE rather than the file. A wake word quoted in a
+    comment - the launcher's docstring quotes the real error message, which
+    names a model file - is documentation. One in code is a second source of
+    truth.
+    """
+    import ast
+
+    tree = ast.parse((ROOT / "launcher" / "bootstrap.py").read_text())
+    literals = [node.value.lower() for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    # Docstrings are string constants too, and they are the thing being excluded.
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            text = ast.get_docstring(node, clean=False)
+            if text:
+                docstrings.add(text.lower())
+    code_strings = [text for text in literals if text not in docstrings]
+
+    for name in ("hey_leti", "hey leti", "hey_jarvis", "alexa", "hey_mycroft",
+                 "hey_rhasspy"):
+        offenders = [text for text in code_strings if name in text]
+        assert not offenders, f"the launcher names a wake word in code: {offenders[:2]}"
+
+
+def test_the_voice_step_waits_for_what_it_starts_and_has_a_timeout():
+    import ast
+
+    from launcher import bootstrap
+
+    tree = ast.parse((ROOT / "launcher" / "bootstrap.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "ensure_voice_assets":
+            runs = [c for c in ast.walk(node)
+                    if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_run"]
+            assert runs, "ensure_voice_assets does not shell out through _run"
+            for call in runs:
+                assert "timeout" in {k.arg for k in call.keywords}
+            break
+    else:
+        raise AssertionError("ensure_voice_assets is gone")
+    # Megabytes, not gigabytes: a much shorter leash than the model download.
+    assert 0 < bootstrap.VOICE_ASSET_TIMEOUT_SECONDS < bootstrap.MODEL_FETCH_TIMEOUT_SECONDS
+
+
+def test_a_failed_voice_download_never_stops_leti_starting(tmp_path):
+    """A machine that cannot download these still gets a Leti that types, and a
+    diagnostics panel that says what is missing."""
+    from launcher import bootstrap
+
+    class Failed:
+        returncode = 1
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    outcome = bootstrap.ensure_voice_assets(progress, tmp_path, tmp_path / "python",
+                                            run=lambda *a, **k: Failed())
+
+    assert outcome["ran"] is True
+    assert outcome["ok"] is False
+    assert any("diagnostics" in line for line in progress.lines)
+
+
+def test_a_voice_step_that_throws_never_stops_leti_starting(tmp_path):
+    from launcher import bootstrap
+
+    def explode(*args, **kwargs):
+        raise OSError("gone")
+
+    progress = bootstrap.Progress(out=open(os.devnull, "w"))
+    outcome = bootstrap.ensure_voice_assets(progress, tmp_path, tmp_path / "python",
+                                            run=explode)
+
+    assert outcome["ok"] is True          # not fatal
+    assert any("Leti will open" in line for line in progress.lines)
+
+
+def test_the_voice_models_are_checked_before_leti_is_started():
+    source = (ROOT / "launcher" / "bootstrap.py").read_text()
+    prepared = source[source.index("def prepare("):source.index("def place_shortcuts(")]
+    assert prepared.index("ensure_voice_assets(progress") < prepared.index(
+        'progress.stage("Starting Leti")')

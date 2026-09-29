@@ -544,6 +544,7 @@ STAGES = (
     "Setting up the browser Leti uses",
     "Checking the model server",
     "Checking Leti's models",
+    "Checking Leti's voice",
     "Starting Leti",
 )
 
@@ -983,6 +984,8 @@ def prepare(root: Path, progress: Optional[Progress] = None,
         verdict = ensure_model_server(progress, runner, root)
         progress.stage("Checking Leti's models")
         ensure_models(progress, root, python, server=verdict)
+        progress.stage("Checking Leti's voice")
+        ensure_voice_assets(progress, root, python)
         progress.stage("Starting Leti")
         return python
 
@@ -1021,6 +1024,8 @@ def prepare(root: Path, progress: Optional[Progress] = None,
     verdict = ensure_model_server(progress, runner, root)
     progress.stage("Checking Leti's models")
     ensure_models(progress, root, python, server=verdict)
+    progress.stage("Checking Leti's voice")
+    ensure_voice_assets(progress, root, python)
     progress.stage("Starting Leti")
     return python
 
@@ -1175,6 +1180,59 @@ def ensure_models(progress: Progress, root: Optional[Path] = None,
     else:
         progress.step("A model could not be downloaded - Leti will open and can "
                       "be pointed at one that works.")
+    return outcome
+
+
+# Several megabytes rather than several gigabytes, so a much shorter leash than
+# the model download gets.
+VOICE_ASSET_TIMEOUT_SECONDS = 10 * 60
+
+
+def ensure_voice_assets(progress: Progress, root: Optional[Path] = None,
+                        python: Optional[Path] = None,
+                        run: Optional[Callable] = None) -> Dict[str, Any]:
+    """Download the wake-word models, if they are not already there.
+
+    openWakeWord does NOT ship its models - the package contains code and an
+    empty resources/models directory, and openwakeword.utils.download_models()
+    fetches them on first use. Nothing called it. So a clean install reached the
+    first spoken word and raised, either
+
+        ValueError: Could not find pretrained model for model name '...'
+
+    for a name that is not one of the six built in, or
+
+        Could not open .../hey_jarvis_v0.1.tflite
+
+    for one that is. Both were verified before this was written.
+
+    Which models, and whether the configured wake word is among them, is
+    audio/wake_word.py's question and stays there - this runs it, with the
+    interpreter it has just prepared, and relays the exit code. No wake word is
+    named in this file for the same reason no model name is.
+
+    Never fatal. A machine that cannot download these still gets a Leti that
+    types, and the diagnostics panel says what is missing.
+    """
+    outcome: Dict[str, Any] = {"ran": False, "ok": True}
+    if python is None:
+        progress.step("Skipped - no prepared Python to ask with.")
+        return outcome
+    runner = run or subprocess.run
+    try:
+        done = _run([python, "-m", "audio.wake_word", "--install"], runner,
+                    cwd=str(root) if root else None,
+                    timeout=VOICE_ASSET_TIMEOUT_SECONDS)
+    except Exception as e:
+        progress.step(f"Could not check the voice models ({type(e).__name__}) - "
+                      "Leti will open and say what is missing.")
+        return outcome
+    outcome["ran"] = True
+    outcome["ok"] = getattr(done, "returncode", 0) == 0
+    if not outcome["ok"]:
+        # The command prints the reason itself, to this same console.
+        progress.step("Voice may not be able to listen for a wake word - the "
+                      "diagnostics panel has the details.")
     return outcome
 
 

@@ -262,6 +262,15 @@ def list_devices() -> Dict[str, Any]:
             except Exception:
                 return None
 
+        # How many inputs this machine has, and nothing about what they are
+        # called - a device name can carry a person's own name.
+        try:
+            from core import diagnostics
+
+            diagnostics.record_voice_stage("MICROPHONE_DEVICE_DETECTED",
+                                           count=len(inputs))
+        except Exception:
+            pass
         return {
             "available": True,
             "inputs": inputs,

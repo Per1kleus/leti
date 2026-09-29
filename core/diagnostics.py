@@ -68,6 +68,93 @@ def record_activity(kind: str, message: str, **detail: Any) -> None:
             logger.debug("An activity listener raised; dropping it from this entry.")
 
 
+# --------------------------------------------------------------------------- #
+# The voice pipeline, stage by stage
+#
+# "I spoke and nothing happened" has nine or ten possible meanings, and until
+# this existed the only way to tell them apart was to read a log that the
+# Windows launchers hide the moment Leti's window appears. Each stage is one
+# line, recorded where the work actually happens, so the last one recorded IS
+# the place it stopped.
+#
+# Deliberately state transitions and nothing else. No audio samples ever - not
+# a buffer, not a level, not a spectrum - and no transcript beyond a length,
+# because a transcript is the content of what somebody said and this is a
+# diagnostic. Nothing here runs per audio frame; the highest-frequency entry is
+# one per utterance.
+# --------------------------------------------------------------------------- #
+
+VOICE_STAGES = (
+    "MICROPHONE_DEVICE_DETECTED",
+    "MICROPHONE_INITIALIZED",
+    "WAKE_WORD_MODEL_LOADED",
+    "WAKE_WORD_LISTENING",
+    "WAKE_WORD_UNAVAILABLE",
+    "WAKE_WORD_DETECTED",
+    "RECORDING_STARTED",
+    "RECORDING_STOPPED",
+    "AUDIO_BUFFER_RECEIVED",
+    "TRANSCRIPTION_STARTED",
+    "TRANSCRIPTION_SUCCESS",
+    "TRANSCRIPTION_EMPTY",
+    "TRANSCRIPTION_FAILED",
+    "INTENT_CLASSIFIED",
+    "MODEL_REQUEST_STARTED",
+    "MODEL_STREAM_STARTED",
+    "MODEL_FIRST_FRAGMENT",
+    "MODEL_RESPONSE_COMPLETE",
+    "MODEL_FAILED",
+    "TTS_STARTED",
+    "TTS_COMPLETE",
+)
+
+_VOICE_KEEP = 40
+_voice: Deque[Dict[str, Any]] = deque(maxlen=_VOICE_KEEP)
+
+
+def record_voice_stage(stage: str, **detail: Any) -> None:
+    """Note that the voice pipeline reached one stage. Never raises.
+
+    `detail` is for things that help identify a stage, never for its content:
+    how many characters a transcript had, which runtime loaded a model, how long
+    something took. Anything that looks like speech or a credential does not
+    belong here - see _SAFE_DETAIL.
+    """
+    try:
+        entry = {"at": time.time(), "stage": str(stage)}
+        entry.update({k: v for k, v in detail.items() if k in _SAFE_DETAIL})
+        _voice.append(entry)
+        # Shown in the activity log too, so the person watching the interface
+        # sees the pipeline move without opening anything.
+        logger.debug(f"voice: {stage}")
+    except Exception:
+        logger.debug("Couldn't record a voice stage.")
+
+
+# What a stage is allowed to carry. An allowlist rather than a denylist, because
+# the failure to avoid is a new call site quietly adding a field that turns out
+# to hold what somebody said.
+_SAFE_DETAIL = frozenset({
+    "chars", "seconds", "ms", "bytes", "device", "sample_rate", "channels",
+    "kind", "framework", "detail", "repair", "reason", "model", "stage", "count",
+})
+
+
+def voice_trail() -> List[Dict[str, Any]]:
+    """The stages reached, oldest first. What the panel and the tests read."""
+    return list(_voice)
+
+
+def last_voice_stage() -> Optional[str]:
+    """Where the pipeline got to. None if it has not run."""
+    return _voice[-1]["stage"] if _voice else None
+
+
+def reset_voice_trail() -> None:
+    """Forget the trail. For tests, and for a fresh run of the voice check."""
+    _voice.clear()
+
+
 def on_activity(listener: Any) -> None:
     """Subscribe to activity as it happens (gui/api.py pushes it to the HUD)."""
     _activity_listeners.append(listener)
@@ -784,6 +871,53 @@ def _check_ollama(reach_out: bool = False) -> Dict[str, Any]:
                       "will work until it is running.", host=host)
 
 
+def _check_wake_word() -> Dict[str, Any]:
+    """Whether Leti can actually listen for its wake word.
+
+    A check of its own, because voice failing at THIS stage looks identical from
+    outside to a dead microphone, and the two have nothing to do with each other.
+    It used to raise out of the voice loop into a bare `except Exception: log`,
+    which killed voice while the interface still said it was ready - so the panel
+    reported a working microphone for a Leti that could never hear its name.
+
+    Asked of audio/wake_word.py, which owns the question. Nothing is downloaded
+    or loaded here; this reads what is on disk.
+    """
+    try:
+        from audio import wake_word
+    except Exception as e:
+        return _check("Wake word", NOT_AVAILABLE,
+                      f"The wake-word code could not be loaded ({e}). Voice will "
+                      "work by pressing the microphone button.")
+    try:
+        found = wake_word.resolve()
+        assets = wake_word.assets_present()
+    except Exception as e:
+        return _check("Wake word", NOT_AVAILABLE,
+                      f"The wake word could not be checked ({e}).")
+
+    if not assets:
+        return _check("Wake word", FAIL,
+                      "openWakeWord's speech models are not downloaded, so no wake "
+                      "word can be detected. Leti still listens when you press the "
+                      "microphone button. Run the launcher again, or: "
+                      "python -m audio.wake_word --install",
+                      wake_word=found.wake_word)
+    if found.kind == wake_word.PRETRAINED:
+        return _check("Wake word", PASS, found.detail, wake_word=found.wake_word)
+    if found.kind == wake_word.CUSTOM:
+        return _check("Wake word", PASS, found.detail,
+                      wake_word=found.wake_word, model=found.path)
+    if found.kind == wake_word.NEEDS_DOWNLOAD:
+        return _check("Wake word", FAIL, f"{found.detail} {found.repair}",
+                      wake_word=found.wake_word, model=found.path)
+    # UNTRAINED: the configured wake word has no model anywhere, and cannot get
+    # one by downloading. The only honest thing is to say what it would take.
+    return _check("Wake word", FAIL, f"{found.detail} {found.repair}",
+                  wake_word=found.wake_word,
+                  expected_location=str(wake_word.custom_model_dir()))
+
+
 def _check_tools(registry: Any) -> Dict[str, Any]:
     if registry is None:
         return _check("Tool registry", NOT_TESTED,
@@ -1143,6 +1277,7 @@ def full_check(registry: Any = None, reach_out: bool = False) -> Dict[str, Any]:
         ("Core", lambda: _check_core()),
         ("Model", lambda: _check_model(reach_out)),
         ("Ollama", lambda: _check_ollama(reach_out)),
+        ("Wake word", lambda: _check_wake_word()),
         ("Tool registry", lambda: _check_tools(registry)),
         ("Permissions", lambda: _check_permissions(registry)),
         ("Context window", lambda: _check_context_window(registry)),

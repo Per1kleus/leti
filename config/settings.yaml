@@ -4,7 +4,29 @@
 
 app:
   name: "Leti"
-  wake_word: "hey_leti"          # must match a trained/available openwakeword model name
+  # The phrase that wakes Leti in continuous mode. Two kinds of value work:
+  #
+  #   a built-in name  alexa, hey_jarvis, hey_mycroft, hey_rhasspy, timer,
+  #                    weather - openWakeWord's own models, which Leti downloads
+  #                    on first launch. These work immediately.
+  #
+  #   a custom model   any name, with a matching model file in
+  #                    data/wake_words/<name>.tflite (or .onnx). This is how a
+  #                    wake word that is not on that list is made to work.
+  #
+  # "hey_leti" is the second kind and THE MODEL FOR IT DOES NOT EXIST YET. It has
+  # to be trained - openWakeWord's own training notebooks do it from synthetic
+  # speech, no recording required - and the result dropped into data/wake_words/.
+  # Until then Leti cannot listen for its own name, and says so in the
+  # diagnostics panel rather than failing silently. Everything else works: press
+  # the microphone button to talk, or type.
+  #
+  # This is left as "hey_leti" deliberately. Quietly changing it to hey_jarvis
+  # would make a launch look successful while Leti answered to a name nobody
+  # chose, and the person would find out by talking to a machine that ignores
+  # them. Set it to one of the built-in names above if you would rather have a
+  # working wake word today than the right one later.
+  wake_word: "hey_leti"
   wake_word_threshold: 0.5
   log_level: "INFO"              # DEBUG | INFO | WARNING | ERROR
 

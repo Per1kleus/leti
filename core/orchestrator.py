@@ -396,6 +396,9 @@ class Orchestrator:
     # reset between turns - carrying it across is the whole point - and it costs
     # one list of names.
     _previous_tool_names: List[str] = []
+    # Reset each turn; see _say. Exists so TTS_STARTED is recorded once per
+    # answer rather than once per spoken sentence.
+    _said_anything_this_turn = False
     _intent = _DEFAULT_INTENT
     _mode = _DEFAULT_MODE
     _context = None                  # the last context package, for diagnostics
@@ -515,6 +518,7 @@ class Orchestrator:
         self._intent = intent_reader.read(
             user_text, self.session_memory.get_recent_messages())
         self._mode = performance.for_turn(self._intent)
+        diagnostics.record_voice_stage("INTENT_CLASSIFIED", kind=self._intent.kind)
         try:
             diagnostics.record_intent(self._intent.as_dict())
         except Exception:
@@ -640,6 +644,7 @@ class Orchestrator:
         # would throw it away just as "show that graph again" needed it.
         transcript.begin()
         self._spoke_while_streaming = False
+        self._said_anything_this_turn = False
 
         messages = await self._build_messages(user_text)
         _turn_started = time.perf_counter()
@@ -1066,13 +1071,21 @@ class Orchestrator:
         cut_short = ""
         message: Dict[str, Any] = {}
 
+        diagnostics.record_voice_stage("MODEL_REQUEST_STARTED",
+                                       count=len(tool_schemas or ()))
+        first_fragment_seen = False
         async for event in self.llm_client.stream_response(
                 messages, tools=tool_schemas,
                 should_stop=transcript.should_stop_speaking):
+            if not first_fragment_seen and event.get("text"):
+                first_fragment_seen = True
+                diagnostics.record_voice_stage("MODEL_FIRST_FRAGMENT")
             if event.get("done"):
                 stopped = bool(event.get("stopped"))
                 message = event.get("message") or {}
                 if event.get("error") and not stopped:
+                    diagnostics.record_voice_stage(
+                        "MODEL_FAILED", reason=str(event.get("reason") or "unknown"))
                     cut_short = _why_it_ended(event)
                     logger.warning(
                         f"Streamed answer ended early ({event.get('reason') or 'unknown'}): "
@@ -1102,6 +1115,9 @@ class Orchestrator:
                 transcript.said(partial)
             return None
         if not message.get("tool_calls"):
+            diagnostics.record_voice_stage(
+                "MODEL_RESPONSE_COMPLETE",
+                chars=len((message.get("content") or "")))
             for utterance in buffer.flush():
                 if transcript.should_stop_speaking():
                     return None
@@ -1142,6 +1158,12 @@ class Orchestrator:
         if self.speak_callback is None:
             return
         self._set_state(AgentState.SPEAKING)
+        # Once per ANSWER rather than once per sentence: a long reply is a dozen
+        # utterances and a dozen identical lines would bury the trail this exists
+        # to make readable.
+        if not self._said_anything_this_turn:
+            self._said_anything_this_turn = True
+            diagnostics.record_voice_stage("TTS_STARTED", chars=len(utterance))
         await self.speak_callback(utterance)
 
     async def _execute_tool_call(self, call: Dict[str, Any]) -> ToolResult:

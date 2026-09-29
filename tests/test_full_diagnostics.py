@@ -33,6 +33,12 @@ EXPECTED_SUBSYSTEMS = {
     "Core", "Model", "Ollama", "Tool registry", "Permissions", "Context window",
     "Memory", "Project Memory", "Coding Mode", "Business Mode", "Calendar",
     "GitHub", "Voice", "Computer Use", "Scheduler", "Workflows", "Connections",
+    # Separate from "Voice" on purpose. A wake word that cannot load looks
+    # identical from outside to a dead microphone and has nothing to do with one:
+    # it is a missing model file, not missing hardware. Reporting them as one
+    # subsystem is how a working microphone came to be shown for a Leti that
+    # could never hear its own name.
+    "Wake word",
 }
 
 

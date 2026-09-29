@@ -621,6 +621,36 @@ PARTICULAR THINGS
       but the microphone does not register, it is usually the wrong input device
       or the operating system's own microphone permission.
 
+      Diagnostics now names the stage rather than leaving you to guess. The
+      spoken path is recorded step by step - device found, microphone opened,
+      wake word loaded, wake word heard, recording, transcribing, asking the
+      model, speaking - and the last step reached is where it stopped. No audio
+      and no transcript is ever recorded, only lengths and timings.
+
+  Leti does not answer to "Hey Leti"
+      There is no "Hey Leti" model yet, and this is the honest position rather
+      than a bug: openWakeWord ships six wake words - alexa, hey_jarvis,
+      hey_mycroft, hey_rhasspy, timer and weather - and anything else needs a
+      model trained for it. The one for "hey_leti" has not been trained.
+
+      Until it is, Leti hears you when you press the microphone button, and
+      typing works normally. Diagnostics says "Wake word: FAIL" with the reason,
+      so it is never pretending to listen.
+
+      Two ways forward, whichever suits you:
+
+        use a built-in name    set app.wake_word (section 14) to hey_jarvis, or
+                               any of the six. Works immediately.
+        train "hey_leti"       openWakeWord's own training notebooks make one
+                               from synthetic speech - no recording needed - and
+                               the result goes in data\wake_words\hey_leti.tflite.
+                               Leti picks it up on the next launch.
+
+      Earlier versions crashed here instead, with
+      "ValueError: Could not find pretrained model" in the console, and voice
+      then silently did nothing for the rest of the session while the interface
+      still said it was ready.
+
   Leti talks over me, or cuts me off
       "Stop listening after" in Voice settings, section 5.
 

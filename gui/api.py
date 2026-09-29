@@ -30,7 +30,7 @@ from typing import Any, Optional, Set
 
 import httpx
 
-from core import speech, transcript
+from core import diagnostics, speech, transcript
 from core.orchestrator import Orchestrator
 from core.safety_guard import SafetyGuard
 from tools.system_health import SystemReportTool
@@ -260,7 +260,6 @@ class LetiAPI:
 
     async def a_get_diagnostics(self) -> dict:
         """A snapshot for the diagnostics panel. Reads only what already exists."""
-        from core import diagnostics
 
         try:
             return diagnostics.snapshot(self.orchestrator.tool_registry)
@@ -277,7 +276,6 @@ class LetiAPI:
         model server, and the window must stay responsive while they do. Nothing
         here changes, sends or deletes anything.
         """
-        from core import diagnostics
 
         try:
             return await self.loop.run_in_executor(
@@ -305,7 +303,6 @@ class LetiAPI:
 
     def get_context_report(self) -> dict:
         """What the last turn's context was assembled from, and what it left out."""
-        from core import diagnostics
 
         try:
             return diagnostics.context_section()
@@ -485,7 +482,6 @@ class LetiAPI:
     # connected after some of it had already scrolled past. ----
 
     def get_activity(self) -> list:
-        from core import diagnostics
 
         return diagnostics.recent_activity()
 
@@ -762,6 +758,8 @@ def _make_gui_speak_callback(api: LetiAPI, tts):
         finally:
             transcript.finished_speaking()
             transcript.mark_spoken()
+            diagnostics.record_voice_stage(
+                "TTS_COMPLETE", reason="stopped" if stopped else "finished")
             api.push("setHudState", "idle")
             api.push("focusChatInput")
 
@@ -780,7 +778,6 @@ def _make_gui_speak_callback(api: LetiAPI, tts):
             # the RT-LOG is for. record_activity is already forwarded to the
             # interface by run_gui_mode.
             try:
-                from core import diagnostics
 
                 diagnostics.record_activity(
                     "note", "Could not speak that - the answer is written above.")
@@ -830,7 +827,6 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
         """
         if not (text or "").strip() or failed:
             from audio import setup as audio_setup
-            from core import diagnostics
 
             stage = audio_setup.classify_capture(audio, text, failed=failed)
             logger.info("Voice input reached %s.", stage)
@@ -844,9 +840,10 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
         await orchestrator.handle_user_input(text, voice_mode=True)
 
     if continuous:
-        from audio.wake_word import WakeWordListener
+        from audio.wake_word import WakeWordListener, WakeWordUnavailable
 
         async def on_wake():
+            diagnostics.record_voice_stage("WAKE_WORD_DETECTED")
             api.push("setHudState", "listening")
             audio = await transcriber.record_until_silence()
             text, failed = await _transcribe(transcriber, audio)
@@ -855,15 +852,42 @@ async def _run_voice_loop(orchestrator: Orchestrator, api: LetiAPI, continuous: 
 
         # WakeWordListener's constructor also loads a (much smaller) model - still
         # offloaded to a thread rather than assumed harmless, for the same reason.
-        listener = await loop.run_in_executor(None, lambda: WakeWordListener(on_wake=on_wake))
-        await listener.start()
-    else:
-        while True:
-            api.push("setHudState", "listening")
-            audio = await transcriber.record_until_silence()
-            text, failed = await _transcribe(transcriber, audio)
-            api.push("setHudState", "idle")
-            await handle_utterance(text, audio, failed)
+        try:
+            listener = await loop.run_in_executor(
+                None, lambda: WakeWordListener(on_wake=on_wake))
+        except WakeWordUnavailable as unavailable:
+            # The wake word is one part of voice, and losing it must not lose the
+            # rest. This used to raise out of here into a bare `except Exception:
+            # logger.exception(...)` that killed the whole voice loop and left the
+            # interface still saying voice was ready - so the microphone appeared
+            # to work and Leti simply never answered.
+            #
+            # Push-to-talk needs no wake-word model at all, so that is what runs.
+            found = unavailable.resolution
+            diagnostics.record_voice_stage(
+                "WAKE_WORD_UNAVAILABLE", detail=found.detail, repair=found.repair)
+            logger.warning(f"Wake word unavailable: {found.detail}")
+            api.push("setVoiceState", "no_wake_word")
+            api.push("appendLetiReply",
+                     f"I can hear you, but I can't listen for '{found.wake_word}' - "
+                     f"{found.detail} Use the microphone button and I'll listen.")
+            # and fall through to the push-to-talk loop below
+        else:
+            diagnostics.record_voice_stage(
+                "WAKE_WORD_MODEL_LOADED",
+                detail=f"{listener.resolution.kind} model, {listener.framework} runtime")
+            diagnostics.record_voice_stage("WAKE_WORD_LISTENING")
+            await listener.start()
+            return
+
+    # Push to talk: no wake-word model needed, so this is both the mode the user
+    # asked for and the one a missing wake word falls back to.
+    while True:
+        api.push("setHudState", "listening")
+        audio = await transcriber.record_until_silence()
+        text, failed = await _transcribe(transcriber, audio)
+        api.push("setHudState", "idle")
+        await handle_utterance(text, audio, failed)
 
 
 def _window_icon() -> Optional[Path]:
@@ -961,7 +985,6 @@ def run_gui_mode(orchestrator: Orchestrator, safety_guard: SafetyGuard, loop: as
     # what state Leti is in; this only forwards the transitions the orchestrator
     # makes anyway, which is why "thinking" and "executing" can be shown at all -
     # before this, only the reply and voice paths ever said anything.
-    from core import diagnostics
 
     orchestrator.on_state_change(lambda state: api.push("setHudState", state.value))
     diagnostics.on_activity(lambda entry: api.push("letiActivity", entry))

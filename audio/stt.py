@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
@@ -89,11 +90,29 @@ class WhisperTranscriber:
 
     def _open_input_stream(self):
         """One place that opens the microphone, so the chosen device applies to
-        every capture path - push-to-talk and silence-detected alike."""
-        return self._pa.open(
-            format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True,
-            frames_per_buffer=CHUNK, input_device_index=self.input_device_index,
-        )
+        every capture path - push-to-talk and silence-detected alike.
+
+        A device being LISTED is not the same as a device that opens, and this is
+        where the difference shows up. Both answers are recorded, because
+        "Leti cannot hear me" needs to distinguish a machine with no microphone
+        from one whose microphone another application is holding.
+        """
+        from core import diagnostics
+
+        try:
+            stream = self._pa.open(
+                format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True,
+                frames_per_buffer=CHUNK, input_device_index=self.input_device_index,
+            )
+        except Exception as e:
+            diagnostics.record_voice_stage(
+                "MICROPHONE_INITIALIZED", reason=f"failed: {type(e).__name__}",
+                device=self.input_device_index)
+            raise
+        diagnostics.record_voice_stage(
+            "MICROPHONE_INITIALIZED", device=self.input_device_index,
+            sample_rate=SAMPLE_RATE, channels=CHANNELS)
+        return stream
 
     def _transcribe_array(self, audio_np: np.ndarray) -> str:
         result = self.model.transcribe(audio_np, fp16=self.fp16)
@@ -116,7 +135,10 @@ class WhisperTranscriber:
 
     async def record_until_silence(self, silence_timeout: Optional[float] = None) -> bytes:
         """Records continuously until `silence_timeout` seconds of near-silence is detected."""
+        from core import diagnostics
+
         timeout = silence_timeout or self.settings.get("silence_timeout_seconds", 1.2)
+        diagnostics.record_voice_stage("RECORDING_STARTED")
         stream = self._open_input_stream()
         frames = []
         silence_chunks = 0
@@ -141,13 +163,39 @@ class WhisperTranscriber:
             stream.stop_stream()
             stream.close()
 
-        return b"".join(frames)
+        captured = b"".join(frames)
+        diagnostics.record_voice_stage("RECORDING_STOPPED", bytes=len(captured))
+        return captured
 
     async def transcribe(self, raw_audio: bytes) -> str:
-        """Converts raw int16 PCM bytes to the float32 array whisper expects, then transcribes."""
+        """Converts raw int16 PCM bytes to the float32 array whisper expects, then transcribes.
+
+        Records how far it got, because "I spoke and nothing happened" has several
+        meanings and they are told apart here: no audio at all, audio that
+        produced no words, and speech recognition failing outright. Only lengths
+        and durations are recorded - never the audio, and never the words.
+        """
+        from core import diagnostics
+
+        diagnostics.record_voice_stage("AUDIO_BUFFER_RECEIVED", bytes=len(raw_audio))
         audio_np = np.frombuffer(raw_audio, dtype=np.int16).astype(np.float32) / 32768.0
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._transcribe_array, audio_np)
+        diagnostics.record_voice_stage("TRANSCRIPTION_STARTED")
+        started = time.perf_counter()
+        try:
+            text = await loop.run_in_executor(None, self._transcribe_array, audio_np)
+        except Exception as e:
+            diagnostics.record_voice_stage("TRANSCRIPTION_FAILED",
+                                           reason=type(e).__name__)
+            raise
+        took = round(time.perf_counter() - started, 3)
+        if (text or "").strip():
+            # The LENGTH of what was heard, not what it was.
+            diagnostics.record_voice_stage("TRANSCRIPTION_SUCCESS",
+                                           chars=len(text.strip()), seconds=took)
+        else:
+            diagnostics.record_voice_stage("TRANSCRIPTION_EMPTY", seconds=took)
+        return text
 
     def close(self):
         self._pa.terminate()
