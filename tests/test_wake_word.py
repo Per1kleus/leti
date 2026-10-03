@@ -260,15 +260,24 @@ def test_the_command_line_needs_an_explicit_verb():
     assert wake_word.main(["--nonsense"]) == 2
 
 
-def test_installing_is_not_fatal_when_the_wake_word_is_untrained(monkeypatch, capsys):
+def test_installing_is_not_fatal_when_the_wake_word_is_untrained(monkeypatch,
+                                                                 capsys, tmp_path):
     """A launch must not stop because the wake word has no model. Leti opens,
-    types, and listens when the microphone button is pressed."""
+    types, and listens when the microphone button is pressed.
+
+    It must also SAY SO, in a word a person scrolling a first-launch console will
+    notice. The earlier wording - "voice will start without a wake word" - was
+    true and read like progress.
+    """
     monkeypatch.setattr(wake_word, "assets_present", lambda: True)
-    _configure(monkeypatch, "hey_leti")
+    monkeypatch.setattr(wake_word, "custom_model_dir", lambda: tmp_path)
+    _configure(monkeypatch, "hey_bartholomew")
 
     assert wake_word.main(["--install"]) == 0
     printed = capsys.readouterr().out
-    assert "without a wake word" in printed
+    assert "MISSING" in printed
+    assert "hey_bartholomew" in printed
+    assert "microphone button" in printed, "it does not say what still works"
 
 
 # --- What the diagnostics panel says ----------------------------------------------

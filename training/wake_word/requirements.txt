@@ -1,0 +1,51 @@
+# The ISOLATED environment that trains the wake-word model. NOT Leti's.
+#
+# Nothing here is installed into the Leti runtime and nothing here is imported
+# at runtime: Leti needs onnxruntime to RUN a wake-word model, and torch only to
+# MAKE one. Keeping the two apart is why requirements.txt still has no torch in
+# it - see the note there about a second torch installation.
+#
+# Reproduce with:
+#   python3 -m venv trainenv
+#   trainenv/bin/python -m pip install -r training/wake_word/requirements.txt
+#
+# Pinned, because the point of a training recipe is that it produces the same
+# model twice. These are the versions the shipped hey_leti.onnx was built with,
+# on Python 3.11.
+
+# openWakeWord's own training code: the data augmentation, the feature
+# computation, the model definition and the training loop all come from here.
+# This recipe drives that code, it does not reimplement it.
+openwakeword==0.6.0
+
+# What openWakeWord's [full] extra asks for, pinned. torch is the CPU-capable
+# PyPI wheel; download.pytorch.org's CPU-only index is not reachable from every
+# network, and the PyPI wheel works either way.
+torch==2.2.2
+torchaudio==2.2.2
+torchinfo==1.8.0
+torchmetrics==0.11.4
+speechbrain==0.5.16
+audiomentations==0.34.1
+torch-audiomentations==0.11.1
+acoustics==0.2.6
+mutagen==1.47.0
+pronouncing==0.2.0
+scikit-learn==1.5.2
+scipy==1.12.0
+soundfile==0.12.1
+tqdm==4.66.5
+pyyaml==6.0.2
+requests==2.32.3
+onnx==1.16.2
+onnxruntime==1.19.2
+
+# numpy 1.x on purpose: piper-sample-generator v2 and acoustics both want it.
+# Leti's own runtime is on numpy 2.x and is not affected, because this is a
+# separate interpreter.
+numpy==1.26.4
+
+# What piper-sample-generator v2.0.0 needs to turn text into speech. The espeak
+# phonemiser is a wheel with its own data, so no system espeak is required.
+piper-phonemize==1.1.0
+webrtcvad==2.0.10

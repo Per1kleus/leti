@@ -35,6 +35,29 @@ BAT = ROOT / "Launch Leti (Windows).bat"
 SPEC = ROOT / "launcher" / "Leti.spec"
 
 
+@pytest.fixture(autouse=True)
+def import_path_restored():
+    """Put sys.path back after every test in this file.
+
+    leti_launcher.main() inserts the project root at the FRONT of sys.path, which
+    is right for the real launcher and poison in a test process: the tests here
+    point project_root at a tmp_path containing a one-line main.py, so after one of
+    them has run, any later `import main` anywhere in the suite imports that
+    one-line file instead of Leti's.
+
+    Found by running this file and tests/test_user_guide.py together, where the
+    guide's tool-count test failed with "module 'main' has no attribute
+    'build_tool_registry'" and the captured output was the stub's `print('leti')`.
+    Order-dependent, so a full run happened not to show it.
+    """
+    before = list(sys.path)
+    had_main = "main" in sys.modules
+    yield
+    sys.path[:] = before
+    if not had_main:
+        sys.modules.pop("main", None)
+
+
 class FakeRun:
     """Stands in for subprocess.run. Records commands, replies from a script."""
 

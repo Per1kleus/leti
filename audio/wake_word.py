@@ -189,15 +189,20 @@ def resolve(wake_word: Optional[str] = None) -> Resolution:
             repair="Leti downloads it on first launch; run the launcher again, or "
                    "run: python -m audio.wake_word --install")
 
-    where = custom_model_dir() / f"{wake_word}.tflite"
+    # .onnx rather than .tflite in the message, because onnx is the format that
+    # runs everywhere: openWakeWord declares tflite-runtime only for Linux, so a
+    # .tflite is unloadable on Windows. Both are still accepted - MODEL_SUFFIXES -
+    # and this is the one to recommend.
+    where = custom_model_dir() / f"{wake_word}.onnx"
     return Resolution(
         wake_word, UNTRAINED,
         detail=(f"There is no wake-word model for '{wake_word}'. openWakeWord's "
                 f"built-in models are {', '.join(pretrained_names()) or 'unavailable'}, "
                 "and no custom model of that name was found."),
-        repair=(f"Train a '{wake_word}' model with openWakeWord's training notebooks "
-                f"and put it at {where} - or set app.wake_word to one of the "
-                "built-in names."))
+        repair=(f"Train a '{wake_word}' model and put it at {where} - "
+                "training/wake_word/README.md is the recipe, and it is how the "
+                "model Leti ships with was made. Or set app.wake_word to one of "
+                "the built-in names, which work immediately."))
 
 
 def _load(found: "Resolution"):
@@ -444,14 +449,20 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Having the models is not the same as the CONFIGURED wake word working, and
     # saying so here is the difference between a launch that looks fine and one
-    # that tells the truth before the user tries to talk to it.
+    # that tells the truth before the user tries to talk to it. The word MISSING
+    # is there on purpose: this is printed to the console a first launch scrolls
+    # past, and "voice will start without a wake word" was too easy to read as
+    # progress.
     found = resolve()
     if found.ok:
-        print(f"  '{found.wake_word}' is ready.")
+        where = f" ({found.path})" if found.kind == CUSTOM and found.path else ""
+        print(f"  Wake-word model for '{found.wake_word}': ready{where}.")
         return 0
-    print(f"  Voice will start without a wake word: {found.detail}")
+    print(f"  Wake-word model for '{found.wake_word}': MISSING.")
+    print(f"  {found.detail}")
     if found.repair:
         print(f"  {found.repair}")
+    print("  Leti will still hear you when you press the microphone button.")
     return 0        # not fatal: Leti runs, and says so in diagnostics
 
 

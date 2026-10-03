@@ -8,8 +8,18 @@ data/social_sessions/
 data/gui_remote_token.txt
 
 # --- Runtime state and personal data -----------------------------------------
-data/
+# data/* rather than data/: git does not look inside an ignored directory, so a
+# blanket "data/" makes it impossible to un-ignore anything underneath it.
+data/*
 logs/
+
+# ...except the wake-word model, which is not runtime state and not personal.
+# It is a built artefact every installation needs and that no installation can
+# produce for itself: training it takes PyTorch, a 200 MB text-to-speech model
+# and hours of CPU (see training/wake_word/README.md). audio/wake_word.py looks
+# for a custom model HERE and nowhere else, so shipping one means un-ignoring
+# this one directory rather than inventing a second place to keep it.
+!data/wake_words/
 
 # --- Python ------------------------------------------------------------------
 __pycache__/

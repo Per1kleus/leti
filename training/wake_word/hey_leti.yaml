@@ -1,0 +1,123 @@
+# The configuration the shipped data/wake_words/hey_leti.onnx was trained with.
+#
+# Changing a number here and re-running train_model.py produces a different
+# model, which is the point: this file is the record of what was actually done,
+# not a set of suggestions. The seeds are part of it - the same seeds and the
+# same pins in requirements.txt reproduce the same corpus.
+
+model_name: hey_leti            # what the file is called, and therefore what
+                                # app.wake_word in config/settings.yaml resolves
+
+# WHAT IS BEING TRAINED
+#
+# The spellings are weights: the generator draws uniformly from the lines of
+# positive_texts, so a phrase written sixty times is six times as likely as one
+# written ten times. The alternatives are there because "Leti" is not an English
+# word and people will not all guess the same vowel. espeak reads
+#   "leti"   as  h ˈe ɪ   l ˈɛ ɾ i    (LEH-tee, the t flapped)
+#   "leetee" as  h ˈe ɪ   l ˈiː ɾ iː  (LEE-tee)
+#   "leddy"  as  h ˈe ɪ   l ˈɛ d i    (a fully voiced d, which is what the flap
+#                                      becomes in careless speech)
+# and all three are the name as somebody might actually say it. A model trained
+# on only the first answers to one pronunciation and ignores the user who picked
+# another.
+target_phrase: "hey leti"
+positive_texts: data/positive_texts.txt
+positive_phrases:                 # phrase: how many of every hundred draws
+  "hey leti": 58
+  "hey, leti": 10
+  "hey leti.": 6
+  "hey leti!": 3
+  "hey leti?": 2
+  "hey leetee": 11
+  "hey, leetee": 2
+  "hey leddy": 8
+
+# The spelling CMUdict is asked about when searching for phonetic neighbours.
+# "leti" is not in it; "letty" is, and is pronounced the same. No clip is ever
+# generated from this - see prepare_negatives.phonetic_neighbours.
+neighbour_seed_phrase: "hey letty"
+
+# THE NEGATIVE HALF
+#
+# Three channels, because false positives come from three different places. See
+# prepare_negatives.py for how each corpus is built and why none of it is
+# downloaded.
+adversarial_texts: data/adversarial_texts.txt      # phonetic neighbours
+negative_texts: data/negative_short.txt            # prose and word sequences
+fp_stream_texts: data/negative_long.txt            # the continuous stream the
+                                                   # false-positive rate is
+                                                   # measured against
+
+# HOW MUCH
+#
+# openWakeWord's own guidance is at least 20,000 positive samples, which is what
+# this is. The validation counts are smaller because they only have to measure.
+n_positive: 20000
+n_positive_val: 2500
+n_adversarial: 20000
+n_adversarial_val: 2500
+n_negative_speech: 24000
+n_negative_speech_val: 2500
+n_fp_stream_clips: 2000         # about two and a half hours of continuous speech
+
+# Every clip above is spoken by a speaker drawn from one half of a split of
+# LibriTTS-R's 904 voices, and every validation clip by a speaker from the other
+# half. See generate_clips.speaker_split: one voice in five is held out, and the
+# last 104 are used by neither because piper-sample-generator's own README warns
+# they produce artefacts.
+usable_speakers: 800
+holdout_every: 5
+
+# The accents espeak can pronounce with this checkpoint's phoneme set. Each one
+# changes the phonemes rather than the speaker, which is most of what an accent
+# is. Checked at generation time - see generate_clips.usable_voices.
+accents:
+  - en-us
+  - en-gb-x-rp
+  - en-gb-scotland
+  - en-029
+  - en-gb-x-gbclan
+  - en-gb-x-gbcwmd
+  - en-us-nyc
+  - en
+
+# AUGMENTATION
+#
+# openWakeWord's own augment_clips does this, with its own default
+# probabilities. The two corpora it needs are built locally.
+n_backgrounds: 160
+background_seconds: 10.0
+n_impulse_responses: 48
+augmentation_rounds: 1
+augmentation_batch_size: 128
+
+# TRAINING
+#
+# openWakeWord's own model definition and training loop. `steps` and
+# `max_negative_weight` are its own defaults for a custom model; the three
+# sequences, the learning-rate schedule and the checkpoint merge are its
+# auto_train, reproduced in train_model.py only so that the length of the
+# false-positive validation set is the real one rather than the 11.3 hours
+# auto_train hard-codes.
+model_type: dnn
+layer_size: 32
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2
+batch_n_per_class:
+  positive: 50
+  adversarial_negative: 50
+  negative_speech: 500
+
+# Seeds. Changing one changes the corpus; leaving them alone reproduces it.
+seed_positive: 100
+seed_positive_val: 200
+seed_adversarial: 300
+seed_adversarial_val: 400
+seed_negative_speech: 500
+seed_negative_speech_val: 600
+seed_fp_stream: 700
+seed_backgrounds: 800
+seed_impulses: 900
+seed_torch: 1234
