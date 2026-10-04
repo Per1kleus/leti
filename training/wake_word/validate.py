@@ -76,6 +76,20 @@ class Condition:
     should_wake: bool
     clips: List[np.ndarray] = field(default_factory=list)
     detail: str = ""
+    # Warm the detector on the clip's own opening rather than on silence.
+    #
+    # For a sound that is simply THERE - mains hum, a fan, a room full of voices -
+    # scoring it after a silence warm-up measures the silence-to-sound transition,
+    # not the sound. Measured on this model: a hum clip played after silence spikes
+    # to 0.9989 at frames 5 to 12, exactly while the 16-frame feature window is half
+    # silence and half hum, and reads as "fires on 100% of mains hum". The same clip
+    # with the buffer already full of hum - which is what a room is - scores 0.0005
+    # and never crosses anything.
+    #
+    # Both are real and they are different questions, so they are different rows:
+    # these conditions ask "does a steady sound wake it", and "a sound starting
+    # suddenly" asks the other one.
+    warm_on_self: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -193,9 +207,21 @@ class Detector:
         for _ in range(WARMUP_FRAMES):
             self.model.predict(quiet)
 
-    def scores(self, samples: np.ndarray) -> List[float]:
-        """The score after every frame of one clip, from a warmed, quiet state."""
-        self._start()
+    def scores(self, samples: np.ndarray, warm_on_self: bool = False) -> List[float]:
+        """The score after every frame of one clip, from a warmed state.
+
+        `warm_on_self` warms up on the clip's own opening instead of on silence, and
+        does not score those frames - for a sound that is just present rather than
+        one that starts. See Condition.warm_on_self.
+        """
+        if warm_on_self:
+            self.model.reset()
+            used = min(WARMUP_FRAMES * FRAME, max(0, samples.size - FRAME))
+            for start in range(0, used, FRAME):
+                self.model.predict(samples[start:start + FRAME])
+            samples = samples[used:]
+        else:
+            self._start()
         out = []
         for start in range(0, samples.size - FRAME + 1, FRAME):
             began = time.perf_counter()
@@ -204,8 +230,8 @@ class Detector:
             out.append(max(predictions.values()))
         return out
 
-    def peak(self, samples: np.ndarray) -> float:
-        scores = self.scores(samples)
+    def peak(self, samples: np.ndarray, warm_on_self: bool = False) -> float:
+        scores = self.scores(samples, warm_on_self=warm_on_self)
         return max(scores) if scores else 0.0
 
     def first_crossing(self, samples: np.ndarray, threshold: float) -> Optional[int]:
@@ -379,18 +405,33 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
     conditions.append(Condition(
         "background noise alone", False,
         [n[:int(8 * SAMPLE_RATE)] for n in noise[:40]],
-        f"{min(40, len(noise))} background clips"))
+        f"{min(40, len(noise))} background clips, already playing",
+        warm_on_self=True))
     if babble:
         conditions.append(Condition(
             "babble alone", False,
             [b[:int(8 * SAMPLE_RATE)] for b in babble[:40]],
-            f"{min(40, len(babble))} clips of several people talking at once"))
+            f"{min(40, len(babble))} clips of several people talking at once, "
+            "already playing", warm_on_self=True))
+
+    # And the other question: a steady sound that STARTS. A fan, a fridge compressor,
+    # an air conditioner cutting in - the window is briefly half silence and half
+    # sound, which is the shape of a word beginning. One spurious wake per onset is a
+    # different fault from waking continuously, and only one of them is survivable, so
+    # they are measured apart.
+    if noise:
+        conditions.append(Condition(
+            "a steady sound starting suddenly", False,
+            [np.concatenate([np.zeros(int(1.5 * SAMPLE_RATE), dtype=np.int16),
+                             n[:int(6 * SAMPLE_RATE)]]) for n in noise[:40]],
+            "1.5 s of silence and then the noise, which is where an onset transient "
+            "lives"))
 
     # And the wake word over background noise, which is the case that matters
     # most and is not in either list above on its own.
     if noise:
         noisy = [_mix(_pad(c), noise[i % len(noise)], snr_db=10.0)
-                 for i, c in enumerate(normal)]
+                 for i, c in enumerate(normal)]  # noqa: E501 - the wake word over noise
         conditions.append(Condition("over background noise", True, noisy,
                                     "the normal clips at 10 dB SNR"))
     if babble:
@@ -473,7 +514,8 @@ def measure(detector: Detector, conditions: Sequence[Condition],
     """Peak score per clip, then the rate at every threshold."""
     rows = []
     for condition in conditions:
-        peaks = [detector.peak(clip) for clip in condition.clips]
+        peaks = [detector.peak(clip, warm_on_self=condition.warm_on_self)
+                 for clip in condition.clips]
         row = {
             "condition": condition.name,
             "should_wake": condition.should_wake,
