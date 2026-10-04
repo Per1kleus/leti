@@ -134,10 +134,10 @@ def run_corpus(name: str, texts: Path, out_dir: Path, total: int, split: str,
             "--out", str(out_dir), "--count", str(size),
             "--batch-size", str(batch_size), "--seed", str(seed + index),
             "--split", split, "--voices", accents, "--prefix", prefix,
-            "--manifest", str(work / "manifests" / f"{name}.{prefix}jsonl"),
+            "--manifest", str(work / "manifests" / f"{name}.{prefix.rstrip(chr(95))}.jsonl"),
         ]
         (work / "manifests").mkdir(parents=True, exist_ok=True)
-        log = (work / "logs" / f"{name}.{prefix}log")
+        log = (work / "logs" / f"{name}.{prefix.rstrip(chr(95))}.log")
         log.parent.mkdir(parents=True, exist_ok=True)
         handle = log.open("w", encoding="utf-8")
         return (subprocess.Popen(command, env=environment, stdout=handle,
