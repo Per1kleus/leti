@@ -167,7 +167,18 @@ target_false_positives_per_hour: 0.2
 batch_n_per_class:
   positive: 150
   adversarial_negative: 100
-  negative_speech: 350
+  negative_speech: 200
+  # Windows cut from continuous speech rather than from padded clips. This is the
+  # channel openWakeWord fills from hundreds of hours of real-world audio and the one
+  # that could not be downloaded here, so it is built locally by concatenating the
+  # negative speech clips - see train_model.stream_windows. Without it the model had
+  # never seen a window that starts and ends mid-word, which is what every window of
+  # the false-positive stream is: 7.6 false positives an hour against a 0.2 target.
+  negative_stream: 300
+
+# How many of the negative-speech clips to concatenate into that continuous stream.
+# 6,000 clips is about 3.7 hours, which is 168,000 windows at one frame apart.
+n_negative_stream_clips: 6000
 
 # Seeds. Changing one changes the corpus; leaving them alone reproduces it.
 seed_positive: 100

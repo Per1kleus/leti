@@ -232,6 +232,82 @@ def features_for(clip_dir: Path, out_file: Path, total_length: int,
     return int(written.shape[0])
 
 
+def stream_windows(clip_dir: Path, out_file: Path, window: int,
+                   max_clips: int = 6000, chunk_seconds: float = 300.0,
+                   overwrite: bool = False) -> int:
+    """Negative examples cut from CONTINUOUS speech, not from padded clips.
+
+    WHY THIS CHANNEL EXISTS
+
+    Every other negative corpus here is clips: one short utterance placed inside a
+    two-second window with silence before and after it, which is what
+    create_fixed_size_clip does and what the positives look like too. The
+    false-positive rate, though, is measured over continuous speech - a window every
+    80 ms across someone talking without pause - and almost none of those windows
+    resemble a padded clip. They start mid-word and end mid-word.
+
+    So the model was being judged on a kind of input it had never been trained on.
+    That is not a subtlety of openWakeWord's design, it is the point of it: the
+    feature_data_files channel in its own recipe is features computed over hundreds
+    of hours of CONTINUOUS real-world audio, and only the adversarial channel is
+    clips. Building all three channels from clips left the continuous case to chance.
+
+    Measured on the model trained without this channel: 0.826 recall at 7.6 false
+    positives an hour of continuous speech, against a 0.2 target.
+
+    The audio costs nothing to make - the negative speech clips already exist, and
+    concatenating them end to end IS continuous speech - so this is features only.
+    """
+    from openwakeword.utils import AudioFeatures
+
+    if out_file.is_file() and not overwrite:
+        existing = np.load(out_file, mmap_mode="r")
+        logger.info(f"  {out_file.name}: already there, {existing.shape[0]} windows")
+        return int(existing.shape[0])
+
+    clips = sorted(clip_dir.glob("*.wav"))[:max_clips]
+    if not clips:
+        raise FileNotFoundError(f"No clips in {clip_dir}.")
+    features = AudioFeatures(device="cpu")
+    chunk_samples = int(chunk_seconds * SAMPLE_RATE)
+
+    parts: List[np.ndarray] = []
+    buffer: List[np.ndarray] = []
+    held = 0
+    seconds = 0.0
+
+    def flush() -> None:
+        nonlocal buffer, held
+        if not buffer:
+            return
+        parts.append(features._get_embeddings(np.concatenate(buffer)))
+        buffer, held = [], 0
+
+    for path in clips:
+        samples = _read_wav(path)
+        if samples.size == 0:
+            continue
+        buffer.append(samples)
+        held += samples.size
+        seconds += samples.size / SAMPLE_RATE
+        if held >= chunk_samples:
+            flush()
+    flush()
+
+    frames = np.vstack(parts).astype(np.float32)
+    # Every window, one frame apart, which is the stride the runtime scores at.
+    strided = np.lib.stride_tricks.sliding_window_view(
+        frames, window_shape=window, axis=0).transpose(0, 2, 1)[:-1]
+    out = np.lib.format.open_memmap(out_file, mode="w+", dtype=np.float32,
+                                    shape=strided.shape)
+    for i in range(0, strided.shape[0], 8192):
+        out[i:i + 8192] = strided[i:i + 8192]
+    out.flush()
+    logger.info(f"  {out_file.name}: {strided.shape[0]} windows over "
+                f"{seconds/3600:.2f} hours of continuous speech")
+    return int(strided.shape[0])
+
+
 def continuous_features(clip_dir: Path, out_file: Path,
                         chunk_seconds: float = 300.0,
                         overwrite: bool = False) -> Dict[str, float]:
@@ -374,6 +450,10 @@ def train(config: Dict, work: Path, out_dir: Path,
             "No backgrounds or impulse responses. Run prepare_negatives.py first.")
     logger.info(f"{len(backgrounds)} background clips, {len(impulses)} impulse responses")
 
+    # The model's window, in embedding frames. Needed before the negative stream is
+    # cut, and identical to input_shape[0] below - computed from the same place.
+    input_window = AudioFeatures(device="cpu").get_embedding_shape(
+        total_length_for(clips / "positive_val") / SAMPLE_RATE)[0]
     snr = (float(config["background_snr_db"][0]), float(config["background_snr_db"][1]))
     logger.info(f"Background noise at {snr[0]:.0f} to {snr[1]:.0f} dB SNR")
     total_length = total_length_for(clips / "positive_val")
@@ -401,6 +481,11 @@ def train(config: Dict, work: Path, out_dir: Path,
             batch_size=int(config["augmentation_batch_size"]),
             ncpu=ncpu, overwrite=overwrite, snr_db=snr)
 
+    counts["negative_stream"] = stream_windows(
+        clips / "negative_speech", feats / "negative_stream.npy", input_window,
+        max_clips=int(config.get("n_negative_stream_clips", 6000)),
+        overwrite=overwrite)
+
     fp = continuous_features(clips / "fp_stream", feats / "fp_stream.npy",
                              overwrite=overwrite)
 
@@ -426,6 +511,7 @@ def train(config: Dict, work: Path, out_dir: Path,
         "positive": str(feats / "positive_train.npy"),
         "adversarial_negative": str(feats / "adversarial_train.npy"),
         "negative_speech": str(feats / "negative_speech_train.npy"),
+        "negative_stream": str(feats / "negative_stream.npy"),
     }
     label_transforms = {key: (lambda x: [1 for _ in x]) if key == "positive"
                         else (lambda x: [0 for _ in x])
