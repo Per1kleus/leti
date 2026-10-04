@@ -103,6 +103,18 @@ accents:
 #
 # openWakeWord's own augment_clips does this, with its own default
 # probabilities. The two corpora it needs are built locally.
+# The signal-to-noise ratio the background clips are mixed in at, in decibels.
+#
+# openWakeWord's augment_clips hardcodes (-10, 15), and a negative value means the
+# background is LOUDER than the speech. That is reachable here rather than fixed
+# because it is the kind of constant that is tuned to a corpus - theirs is
+# real-world ambience, and some of these backgrounds are babble built from
+# overlapping speech - and because a wake word buried under other speech is still
+# labelled positive, which is a mislabelled example rather than a hard one.
+#
+# These are openWakeWord's own numbers until a measurement says otherwise.
+background_snr_db: [-10.0, 15.0]
+
 n_backgrounds: 160
 background_seconds: 10.0
 n_impulse_responses: 48

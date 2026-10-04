@@ -80,18 +80,136 @@ def total_length_for(clip_dir: Path, sample: int = 200,
     return total
 
 
+# openWakeWord's own augmentation, with the background-noise level made a
+# parameter. See `augment` for why that one constant could not be left alone.
+BACKGROUND_SNR_DB = (0.0, 15.0)
+
+# openWakeWord's own probabilities, unchanged.
+DEFAULT_AUGMENTATION = {
+    "SevenBandParametricEQ": 0.25,
+    "TanhDistortion": 0.25,
+    "PitchShift": 0.25,
+    "BandStopFilter": 0.25,
+    "AddColoredNoise": 0.25,
+    "AddBackgroundNoise": 0.75,
+    "Gain": 1.0,
+    "RIR": 0.5,
+}
+
+
+
+def augment(clip_paths: Sequence[str], total_length: int,
+            backgrounds: Sequence[str], impulses: Sequence[str],
+            batch_size: int = 128,
+            snr_db: tuple = BACKGROUND_SNR_DB,
+            probabilities: Optional[Dict[str, float]] = None):
+    """openWakeWord's augment_clips, with one number changed.
+
+    WHY THIS IS NOT JUST A CALL TO augment_clips
+
+    augment_clips hardcodes
+
+        AddBackgroundNoise(p=0.75, min_snr_in_db=-10, max_snr_in_db=15,
+                           mode="per_batch")
+
+    A signal-to-noise ratio of -10 dB means the background is ten decibels LOUDER
+    than the speech. The wake word in such a clip is not hard to hear, it is
+    absent - and it is still labelled positive. Because the mode is "per_batch",
+    a whole batch of 128 clips gets the same draw, so roughly the four tenths of
+    batches that draw a negative SNR are spoiled together.
+
+    Measured, with everything else identical:
+
+        no augmentation at all          recall 0.990, false positives 0.037
+        openWakeWord's defaults         recall 0.678, false positives 0.100
+
+    both from a logistic regression on the features, which is a floor on what a
+    model can do rather than a model worth shipping. A third of the positives had
+    become unlearnable, and a trained model inherited exactly that: 0.458 recall.
+
+    That floor is survivable for openWakeWord's own corpus, whose backgrounds are
+    real-world ambience. Here the backgrounds include babble built from
+    overlapping speech, and a wake word buried under other speech at -10 dB does
+    not teach robustness - it teaches that other people talking is the wake word.
+
+    Everything else is openWakeWord's: the same two passes, the same transforms
+    from the same libraries, the same probabilities, the same reverberation from
+    speechbrain, the same fixed-size placement with its 0-200 ms of end jitter.
+    """
+    import audiomentations
+    import torch
+    import torch_audiomentations
+    import torchaudio
+    from openwakeword.data import create_fixed_size_clip
+    from speechbrain.processing.signal_processing import reverberate
+
+    chance = dict(DEFAULT_AUGMENTATION)
+    chance.update(probabilities or {})
+
+    first_pass = audiomentations.Compose([
+        audiomentations.SevenBandParametricEQ(
+            min_gain_db=-6, max_gain_db=6,
+            p=chance["SevenBandParametricEQ"]),
+        audiomentations.TanhDistortion(
+            min_distortion=0.0001, max_distortion=0.10,
+            p=chance["TanhDistortion"]),
+    ])
+    batched = [
+        torch_audiomentations.PitchShift(
+            min_transpose_semitones=-3, max_transpose_semitones=3,
+            p=chance["PitchShift"], sample_rate=SAMPLE_RATE, mode="per_batch"),
+        torch_audiomentations.BandStopFilter(
+            p=chance["BandStopFilter"], mode="per_batch"),
+        torch_audiomentations.AddColoredNoise(
+            min_snr_in_db=10, max_snr_in_db=30, min_f_decay=-1, max_f_decay=2,
+            p=chance["AddColoredNoise"], mode="per_batch"),
+    ]
+    if backgrounds:
+        batched.append(torch_audiomentations.AddBackgroundNoise(
+            p=chance["AddBackgroundNoise"], background_paths=list(backgrounds),
+            min_snr_in_db=snr_db[0], max_snr_in_db=snr_db[1], mode="per_batch"))
+    batched.append(torch_audiomentations.Gain(
+        max_gain_in_db=0, p=chance["Gain"]))
+    second_pass = torch_audiomentations.Compose(batched)
+
+    for start in range(0, len(clip_paths), batch_size):
+        prepared = []
+        for path in clip_paths[start:start + batch_size]:
+            audio, rate = torchaudio.load(path)
+            audio = audio[0]
+            if audio.shape[0] > total_length:
+                audio = audio[:total_length]
+            if rate != SAMPLE_RATE:
+                raise ValueError(f"{path} is {rate} Hz, not {SAMPLE_RATE}.")
+            sized = create_fixed_size_clip(audio, total_length, SAMPLE_RATE)
+            prepared.append(torch.from_numpy(
+                first_pass(samples=sized, sample_rate=SAMPLE_RATE)))
+
+        batch = second_pass(samples=torch.vstack(prepared).unsqueeze(dim=1),
+                            sample_rate=SAMPLE_RATE).squeeze(axis=1)
+        if impulses and chance["RIR"] >= np.random.random():
+            # The impulse responses are 16 kHz mono by the time they get here -
+            # prepare_negatives makes them so, because openWakeWord's own version
+            # of this line rebinds its sample rate from the file and then rejects
+            # the next clip.
+            response, _rate = torchaudio.load(str(np.random.choice(list(impulses))))
+            batch = reverberate(batch.cpu(), response, rescale_amp="avg")
+        yield (batch.cpu().numpy() * 32767).astype(np.int16)
+
+
+
 def features_for(clip_dir: Path, out_file: Path, total_length: int,
                  backgrounds: Sequence[str], impulses: Sequence[str],
                  rounds: int = 1, batch_size: int = 128,
-                 ncpu: int = 1, overwrite: bool = False) -> int:
+                 ncpu: int = 1, overwrite: bool = False,
+                 snr_db: tuple = BACKGROUND_SNR_DB) -> int:
     """Augment a directory of clips and write openWakeWord features for them.
 
-    Both halves are openWakeWord's: `augment_clips` adds room, noise, EQ,
-    distortion, pitch and gain, and `compute_features_from_generator` runs the
-    melspectrogram and embedding models the runtime uses. The result is a memory
-    -mapped .npy, so a corpus bigger than RAM is not a problem.
+    The augmentation is openWakeWord's own transforms with one constant changed -
+    see `augment` - and `compute_features_from_generator` is openWakeWord's,
+    running the melspectrogram and embedding models the runtime also uses. The
+    result is a memory-mapped .npy, so a corpus bigger than RAM is not a problem.
     """
-    from openwakeword.data import augment_clips
     from openwakeword.utils import compute_features_from_generator
 
     if out_file.is_file() and not overwrite:
@@ -103,10 +221,9 @@ def features_for(clip_dir: Path, out_file: Path, total_length: int,
     if not clips:
         raise FileNotFoundError(f"No clips in {clip_dir}.")
     logger.info(f"  {out_file.name}: {len(clips)} clips -> features")
-    generator = augment_clips(clips, total_length=total_length,
-                              batch_size=batch_size,
-                              background_clip_paths=list(backgrounds),
-                              RIR_paths=list(impulses))
+    generator = augment(clips, total_length=total_length,
+                        backgrounds=list(backgrounds), impulses=list(impulses),
+                        batch_size=batch_size, snr_db=snr_db)
     compute_features_from_generator(generator, n_total=len(clips),
                                     clip_duration=total_length,
                                     output_file=str(out_file),
@@ -257,6 +374,8 @@ def train(config: Dict, work: Path, out_dir: Path,
             "No backgrounds or impulse responses. Run prepare_negatives.py first.")
     logger.info(f"{len(backgrounds)} background clips, {len(impulses)} impulse responses")
 
+    snr = (float(config["background_snr_db"][0]), float(config["background_snr_db"][1]))
+    logger.info(f"Background noise at {snr[0]:.0f} to {snr[1]:.0f} dB SNR")
     total_length = total_length_for(clips / "positive_val")
     logger.info(f"Training window: {total_length} samples "
                 f"({total_length/SAMPLE_RATE:.2f} s)")
@@ -275,7 +394,7 @@ def train(config: Dict, work: Path, out_dir: Path,
             folder, feats / f"{name}.npy", total_length, backgrounds, impulses,
             rounds=int(config["augmentation_rounds"]),
             batch_size=int(config["augmentation_batch_size"]),
-            ncpu=ncpu, overwrite=overwrite)
+            ncpu=ncpu, overwrite=overwrite, snr_db=snr)
 
     fp = continuous_features(clips / "fp_stream", feats / "fp_stream.npy",
                              overwrite=overwrite)
