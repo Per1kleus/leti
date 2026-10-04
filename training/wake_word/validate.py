@@ -193,7 +193,9 @@ class Detector:
 # --------------------------------------------------------------------------- #
 
 def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
-                     accents: Sequence[str]) -> List[Condition]:
+                     accents: Sequence[str],
+                     adversarial_texts: Optional[Path] = None,
+                     prose_texts: Optional[Path] = None) -> List[Condition]:
     """Every condition in the validation plan, as audio.
 
     `generator` is a generate_clips.ClipGenerator already bound to the held-out
@@ -280,9 +282,12 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
         "'hey, leti' and 'hey. leti'"))
 
     # 10. Phrases that sound like it.
-    adversarial = Path("data/adversarial_texts.txt")
+    adversarial = adversarial_texts or Path("data/adversarial_texts.txt")
     similar = [line.strip() for line in adversarial.read_text().splitlines()
                if line.strip()] if adversarial.is_file() else []
+    if not similar:
+        logger.warning(f"No adversarial texts at {adversarial}, so the condition "
+                       "that matters most is NOT being measured.")
     if similar:
         conditions.append(Condition(
             "similar-sounding phrases", False,
@@ -302,9 +307,12 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
         "'I asked leti to open the file' and the like"))
 
     # 15. Ordinary conversation.
-    prose = Path("data/negative_long.txt")
+    prose = prose_texts or Path("data/negative_long.txt")
     sentences = [line.strip() for line in prose.read_text().splitlines()
                  if line.strip()] if prose.is_file() else []
+    if not sentences:
+        logger.warning(f"No prose at {prose}, so unrelated conversation is NOT "
+                       "being measured.")
     if sentences:
         conditions.append(Condition(
             "unrelated conversation", False,
@@ -571,7 +579,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     logger.info("Building the conditions.")
     conditions = build_conditions(generator, backgrounds, args.per_condition,
-                                  list(config["accents"]))
+                                  list(config["accents"]),
+                                  adversarial_texts=work / config["adversarial_texts"],
+                                  prose_texts=work / config["fp_stream_texts"])
 
     if args.fixtures:
         fixtures = write_fixtures(conditions, Path(args.fixtures))
