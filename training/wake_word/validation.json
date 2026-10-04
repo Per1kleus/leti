@@ -1,12 +1,13 @@
 {
   "model": "/home/user/leti/data/wake_words/hey_leti.onnx",
   "model_bytes": 2113155,
-  "load_ms": 94.4,
-  "frames_scored": 95311,
-  "frame_ms_mean": 2.2393,
-  "frame_ms_p99": 3.4914,
-  "realtime_factor": 35.7,
-  "held_out_voices": 80,
+  "load_ms": 90.48,
+  "frames_scored": 95626,
+  "frame_ms_mean": 2.2685,
+  "frame_ms_p99": 3.546,
+  "realtime_factor": 35.3,
+  "held_out_voices": 160,
+  "held_out_noise_clips": 80,
   "per_condition": 120,
   "false_positives": {
     "hours": 3.1604,
@@ -52,71 +53,71 @@
     "table": [
       {
         "threshold": 0.1,
-        "recall": 0.8957,
-        "false_positive_rate_on_clips": 0.2,
+        "recall": 0.8971,
+        "false_positive_rate_on_clips": 0.2134,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.2,
-        "recall": 0.8936,
-        "false_positive_rate_on_clips": 0.1897,
+        "recall": 0.8971,
+        "false_positive_rate_on_clips": 0.2031,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.3,
-        "recall": 0.8921,
-        "false_positive_rate_on_clips": 0.1866,
+        "recall": 0.8964,
+        "false_positive_rate_on_clips": 0.1959,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.4,
-        "recall": 0.8921,
-        "false_positive_rate_on_clips": 0.1814,
+        "recall": 0.8957,
+        "false_positive_rate_on_clips": 0.1866,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.5,
-        "recall": 0.8921,
-        "false_positive_rate_on_clips": 0.1784,
+        "recall": 0.895,
+        "false_positive_rate_on_clips": 0.1835,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.6,
-        "recall": 0.8914,
-        "false_positive_rate_on_clips": 0.1722,
+        "recall": 0.895,
+        "false_positive_rate_on_clips": 0.1753,
         "false_positives_per_hour": 2.531
       },
       {
         "threshold": 0.7,
-        "recall": 0.8914,
-        "false_positive_rate_on_clips": 0.168,
+        "recall": 0.895,
+        "false_positive_rate_on_clips": 0.1711,
         "false_positives_per_hour": 2.215
       },
       {
         "threshold": 0.8,
-        "recall": 0.8907,
-        "false_positive_rate_on_clips": 0.1567,
+        "recall": 0.8943,
+        "false_positive_rate_on_clips": 0.1649,
         "false_positives_per_hour": 1.582
       },
       {
         "threshold": 0.9,
-        "recall": 0.89,
-        "false_positive_rate_on_clips": 0.1515,
+        "recall": 0.8914,
+        "false_positive_rate_on_clips": 0.1536,
         "false_positives_per_hour": 1.582
       },
       {
         "threshold": 0.95,
-        "recall": 0.8879,
-        "false_positive_rate_on_clips": 0.1392,
+        "recall": 0.89,
+        "false_positive_rate_on_clips": 0.134,
         "false_positives_per_hour": 1.582
       }
     ],
     "chosen": 0.95,
-    "why": "No threshold reached 0.2 false positives an hour. 3 of 10 tie at the lowest measured rate (1.582 an hour, which is 5 firing(s) in 3.16 hours); took the strictest of those whose recall is within a point of the best (0.95, recall 0.8879, false positives on negative clips 0.1392).",
+    "why": "No threshold reached 0.2 false positives an hour. 3 of 10 tie at the lowest measured rate (1.582 an hour, which is 5 firing(s) in 3.16 hours); took the strictest of those whose recall is within a point of the best (0.95, recall 0.8900, false positives on negative clips 0.1340).",
     "at_chosen": {
       "threshold": 0.95,
-      "recall": 0.8879,
-      "false_positive_rate_on_clips": 0.1392,
+      "recall": 0.89,
+      "false_positive_rate_on_clips": 0.134,
       "false_positives_per_hour": 1.582
     },
     "measurement_resolution_per_hour": 0.316,
@@ -126,19 +127,19 @@
     "detected": 120,
     "of": 120,
     "ms_median": -155.0,
-    "ms_mean": -166.0,
+    "ms_mean": -164.3,
     "ms_p90": -75.0
   },
   "fixtures": [
     {
       "file": "wake_normal_0.wav",
       "condition": "normal speech",
-      "bytes": 74444
+      "bytes": 75404
     },
     {
       "file": "wake_normal_1.wav",
       "condition": "normal speech",
-      "bytes": 77324
+      "bytes": 75404
     },
     {
       "file": "wake_quick_0.wav",
@@ -148,32 +149,32 @@
     {
       "file": "wake_slow_0.wav",
       "condition": "spoken slowly",
-      "bytes": 79244
+      "bytes": 80204
     },
     {
       "file": "wake_quiet_0.wav",
       "condition": "spoken quietly",
-      "bytes": 74444
+      "bytes": 75404
     },
     {
       "file": "wake_paused_0.wav",
       "condition": "a pause between the words",
-      "bytes": 85964
+      "bytes": 96524
     },
     {
       "file": "wake_noisy_0.wav",
       "condition": "over background noise",
-      "bytes": 74444
+      "bytes": 75404
     },
     {
       "file": "quiet_similar_0.wav",
       "condition": "similar-sounding phrases",
-      "bytes": 66764
+      "bytes": 71564
     },
     {
       "file": "quiet_similar_1.wav",
       "condition": "similar-sounding phrases",
-      "bytes": 76364
+      "bytes": 83084
     },
     {
       "file": "quiet_hey_0.wav",
@@ -183,17 +184,17 @@
     {
       "file": "quiet_name_0.wav",
       "condition": "the name on its own",
-      "bytes": 65804
+      "bytes": 70604
     },
     {
       "file": "quiet_name_in_speech_0.wav",
       "condition": "the name inside a sentence",
-      "bytes": 103244
+      "bytes": 99404
     },
     {
       "file": "quiet_conversation_0.wav",
       "condition": "unrelated conversation",
-      "bytes": 166604
+      "bytes": 161804
     },
     {
       "file": "noise_background_0.wav",
@@ -262,7 +263,7 @@
       "should_wake": true,
       "detail": "length_scale 0.60-0.78",
       "clips": 120,
-      "peak_mean": 0.9907,
+      "peak_mean": 0.9911,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -312,48 +313,48 @@
       "should_wake": true,
       "detail": "length_scale 1.30-1.55",
       "clips": 120,
-      "peak_mean": 0.9921,
+      "peak_mean": 0.9997,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.2": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.3": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.4": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.5": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.6": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.7": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.8": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.9": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         },
         "0.95": {
-          "fired": 119,
-          "rate": 0.9917
+          "fired": 120,
+          "rate": 1.0
         }
       }
     },
@@ -362,7 +363,7 @@
       "should_wake": true,
       "detail": "the normal clips at 8% amplitude",
       "clips": 120,
-      "peak_mean": 0.9997,
+      "peak_mean": 0.9996,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -460,7 +461,7 @@
     {
       "condition": "deeper voices",
       "should_wake": true,
-      "detail": "the lowest third by measured f0 (107-165 Hz)",
+      "detail": "the lowest third by measured f0 (102-172 Hz)",
       "clips": 40,
       "peak_mean": 0.9997,
       "peak_median": 0.9997,
@@ -510,9 +511,9 @@
     {
       "condition": "higher voices",
       "should_wake": true,
-      "detail": "the highest third by measured f0 (207-348 Hz)",
+      "detail": "the highest third by measured f0 (205-400 Hz)",
       "clips": 40,
-      "peak_mean": 0.9997,
+      "peak_mean": 0.9996,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -562,48 +563,48 @@
       "should_wake": true,
       "detail": "espeak voice en-us",
       "clips": 30,
-      "peak_mean": 0.9996,
+      "peak_mean": 0.9694,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.2": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.3": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.4": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.5": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.6": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.7": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.8": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.9": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         },
         "0.95": {
-          "fired": 30,
-          "rate": 1.0
+          "fired": 29,
+          "rate": 0.9667
         }
       }
     },
@@ -663,7 +664,7 @@
       "detail": "espeak voice en-gb-scotland",
       "clips": 30,
       "peak_mean": 0.9996,
-      "peak_median": 0.9996,
+      "peak_median": 0.9997,
       "at": {
         "0.1": {
           "fired": 30,
@@ -712,7 +713,7 @@
       "should_wake": true,
       "detail": "espeak voice en-029",
       "clips": 30,
-      "peak_mean": 0.9997,
+      "peak_mean": 0.9996,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -862,7 +863,7 @@
       "should_wake": true,
       "detail": "espeak voice en-us-nyc",
       "clips": 30,
-      "peak_mean": 0.9996,
+      "peak_mean": 0.9997,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -962,48 +963,48 @@
       "should_wake": true,
       "detail": "the phrase surrounded by other words",
       "clips": 120,
-      "peak_mean": 0.075,
+      "peak_mean": 0.1038,
       "peak_median": 0.0214,
       "at": {
         "0.1": {
+          "fired": 12,
+          "rate": 0.1
+        },
+        "0.2": {
+          "fired": 12,
+          "rate": 0.1
+        },
+        "0.3": {
+          "fired": 12,
+          "rate": 0.1
+        },
+        "0.4": {
           "fired": 11,
           "rate": 0.0917
         },
-        "0.2": {
-          "fired": 8,
-          "rate": 0.0667
-        },
-        "0.3": {
-          "fired": 6,
-          "rate": 0.05
-        },
-        "0.4": {
-          "fired": 6,
-          "rate": 0.05
-        },
         "0.5": {
-          "fired": 6,
-          "rate": 0.05
+          "fired": 10,
+          "rate": 0.0833
         },
         "0.6": {
-          "fired": 5,
-          "rate": 0.0417
+          "fired": 10,
+          "rate": 0.0833
         },
         "0.7": {
-          "fired": 5,
-          "rate": 0.0417
+          "fired": 10,
+          "rate": 0.0833
         },
         "0.8": {
-          "fired": 5,
-          "rate": 0.0417
+          "fired": 9,
+          "rate": 0.075
         },
         "0.9": {
-          "fired": 5,
-          "rate": 0.0417
+          "fired": 7,
+          "rate": 0.0583
         },
         "0.95": {
-          "fired": 4,
-          "rate": 0.0333
+          "fired": 6,
+          "rate": 0.05
         }
       }
     },
@@ -1012,7 +1013,7 @@
       "should_wake": true,
       "detail": "'hey, leti' and 'hey. leti'",
       "clips": 120,
-      "peak_mean": 0.9914,
+      "peak_mean": 0.9909,
       "peak_median": 0.9997,
       "at": {
         "0.1": {
@@ -1062,40 +1063,40 @@
       "should_wake": false,
       "detail": "drawn from 19791 phonetic neighbours",
       "clips": 240,
-      "peak_mean": 0.1359,
+      "peak_mean": 0.1455,
       "peak_median": 0.0214,
       "at": {
         "0.1": {
+          "fired": 35,
+          "rate": 0.1458
+        },
+        "0.2": {
+          "fired": 34,
+          "rate": 0.1417
+        },
+        "0.3": {
+          "fired": 33,
+          "rate": 0.1375
+        },
+        "0.4": {
+          "fired": 33,
+          "rate": 0.1375
+        },
+        "0.5": {
           "fired": 32,
           "rate": 0.1333
         },
-        "0.2": {
+        "0.6": {
           "fired": 30,
           "rate": 0.125
         },
-        "0.3": {
-          "fired": 30,
-          "rate": 0.125
-        },
-        "0.4": {
-          "fired": 30,
-          "rate": 0.125
-        },
-        "0.5": {
+        "0.7": {
           "fired": 29,
           "rate": 0.1208
         },
-        "0.6": {
-          "fired": 28,
-          "rate": 0.1167
-        },
-        "0.7": {
-          "fired": 27,
-          "rate": 0.1125
-        },
         "0.8": {
-          "fired": 26,
-          "rate": 0.1083
+          "fired": 29,
+          "rate": 0.1208
         },
         "0.9": {
           "fired": 24,
@@ -1112,12 +1113,12 @@
       "should_wake": false,
       "detail": "",
       "clips": 120,
-      "peak_mean": 0.1292,
+      "peak_mean": 0.1274,
       "peak_median": 0.0214,
       "at": {
         "0.1": {
-          "fired": 16,
-          "rate": 0.1333
+          "fired": 18,
+          "rate": 0.15
         },
         "0.2": {
           "fired": 15,
@@ -1132,8 +1133,8 @@
           "rate": 0.1083
         },
         "0.5": {
-          "fired": 13,
-          "rate": 0.1083
+          "fired": 12,
+          "rate": 0.1
         },
         "0.6": {
           "fired": 12,
@@ -1148,12 +1149,12 @@
           "rate": 0.0917
         },
         "0.9": {
-          "fired": 11,
-          "rate": 0.0917
+          "fired": 10,
+          "rate": 0.0833
         },
         "0.95": {
-          "fired": 11,
-          "rate": 0.0917
+          "fired": 9,
+          "rate": 0.075
         }
       }
     },
@@ -1162,48 +1163,48 @@
       "should_wake": false,
       "detail": "",
       "clips": 120,
-      "peak_mean": 0.5956,
-      "peak_median": 0.9521,
+      "peak_mean": 0.583,
+      "peak_median": 0.9151,
       "at": {
         "0.1": {
-          "fired": 77,
-          "rate": 0.6417
+          "fired": 80,
+          "rate": 0.6667
         },
         "0.2": {
-          "fired": 75,
-          "rate": 0.625
+          "fired": 77,
+          "rate": 0.6417
         },
         "0.3": {
           "fired": 74,
           "rate": 0.6167
         },
         "0.4": {
-          "fired": 74,
-          "rate": 0.6167
-        },
-        "0.5": {
-          "fired": 72,
-          "rate": 0.6
-        },
-        "0.6": {
           "fired": 70,
           "rate": 0.5833
         },
-        "0.7": {
+        "0.5": {
           "fired": 69,
           "rate": 0.575
         },
+        "0.6": {
+          "fired": 67,
+          "rate": 0.5583
+        },
+        "0.7": {
+          "fired": 65,
+          "rate": 0.5417
+        },
         "0.8": {
-          "fired": 64,
-          "rate": 0.5333
+          "fired": 63,
+          "rate": 0.525
         },
         "0.9": {
-          "fired": 64,
-          "rate": 0.5333
+          "fired": 63,
+          "rate": 0.525
         },
         "0.95": {
-          "fired": 61,
-          "rate": 0.5083
+          "fired": 54,
+          "rate": 0.45
         }
       }
     },
@@ -1212,48 +1213,48 @@
       "should_wake": false,
       "detail": "'I asked leti to open the file' and the like",
       "clips": 120,
-      "peak_mean": 0.2452,
+      "peak_mean": 0.2629,
       "peak_median": 0.0214,
       "at": {
         "0.1": {
+          "fired": 34,
+          "rate": 0.2833
+        },
+        "0.2": {
           "fired": 31,
           "rate": 0.2583
         },
-        "0.2": {
-          "fired": 29,
-          "rate": 0.2417
-        },
         "0.3": {
-          "fired": 29,
-          "rate": 0.2417
+          "fired": 31,
+          "rate": 0.2583
         },
         "0.4": {
-          "fired": 28,
-          "rate": 0.2333
+          "fired": 30,
+          "rate": 0.25
         },
         "0.5": {
-          "fired": 28,
-          "rate": 0.2333
+          "fired": 30,
+          "rate": 0.25
         },
         "0.6": {
-          "fired": 28,
-          "rate": 0.2333
+          "fired": 29,
+          "rate": 0.2417
         },
         "0.7": {
-          "fired": 27,
-          "rate": 0.225
+          "fired": 29,
+          "rate": 0.2417
         },
         "0.8": {
-          "fired": 25,
-          "rate": 0.2083
+          "fired": 29,
+          "rate": 0.2417
         },
         "0.9": {
-          "fired": 24,
-          "rate": 0.2
+          "fired": 26,
+          "rate": 0.2167
         },
         "0.95": {
-          "fired": 21,
-          "rate": 0.175
+          "fired": 24,
+          "rate": 0.2
         }
       }
     },
@@ -1262,48 +1263,48 @@
       "should_wake": false,
       "detail": "drawn from 2959 sentences",
       "clips": 240,
-      "peak_mean": 0.0382,
+      "peak_mean": 0.0503,
       "peak_median": 0.0013,
       "at": {
         "0.1": {
+          "fired": 14,
+          "rate": 0.0583
+        },
+        "0.2": {
+          "fired": 14,
+          "rate": 0.0583
+        },
+        "0.3": {
+          "fired": 13,
+          "rate": 0.0542
+        },
+        "0.4": {
           "fired": 12,
           "rate": 0.05
         },
-        "0.2": {
-          "fired": 9,
-          "rate": 0.0375
-        },
-        "0.3": {
-          "fired": 9,
-          "rate": 0.0375
-        },
-        "0.4": {
-          "fired": 8,
-          "rate": 0.0333
-        },
         "0.5": {
-          "fired": 8,
-          "rate": 0.0333
+          "fired": 12,
+          "rate": 0.05
         },
         "0.6": {
-          "fired": 8,
-          "rate": 0.0333
+          "fired": 11,
+          "rate": 0.0458
         },
         "0.7": {
-          "fired": 8,
-          "rate": 0.0333
+          "fired": 11,
+          "rate": 0.0458
         },
         "0.8": {
-          "fired": 7,
-          "rate": 0.0292
+          "fired": 9,
+          "rate": 0.0375
         },
         "0.9": {
-          "fired": 7,
-          "rate": 0.0292
+          "fired": 9,
+          "rate": 0.0375
         },
         "0.95": {
-          "fired": 7,
-          "rate": 0.0292
+          "fired": 8,
+          "rate": 0.0333
         }
       }
     },
@@ -1562,16 +1563,16 @@
       "should_wake": true,
       "detail": "the normal clips at 10 dB SNR under several voices - a known weakness, not trained for",
       "clips": 120,
-      "peak_mean": 0.7173,
+      "peak_mean": 0.7204,
       "peak_median": 0.9996,
       "at": {
         "0.1": {
-          "fired": 86,
-          "rate": 0.7167
+          "fired": 87,
+          "rate": 0.725
         },
         "0.2": {
-          "fired": 86,
-          "rate": 0.7167
+          "fired": 87,
+          "rate": 0.725
         },
         "0.3": {
           "fired": 86,
@@ -1594,16 +1595,16 @@
           "rate": 0.7167
         },
         "0.8": {
-          "fired": 85,
-          "rate": 0.7083
+          "fired": 86,
+          "rate": 0.7167
         },
         "0.9": {
           "fired": 84,
           "rate": 0.7
         },
         "0.95": {
-          "fired": 83,
-          "rate": 0.6917
+          "fired": 84,
+          "rate": 0.7
         }
       }
     }

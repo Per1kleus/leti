@@ -255,6 +255,63 @@ no installation can regenerate them.
 
 ---
 
+---
+
+## What it measures
+
+Everything below is from `validation.json`, at the chosen threshold of **0.95**,
+on speech from 160 synthetic voices that no training clip used.
+
+### It wakes
+
+| condition | wakes | clips |
+| --- | --- | --- |
+| normal speech | 100% | 120 |
+| spoken quickly | 98% | 120 |
+| spoken slowly | 100% | 120 |
+| spoken quietly | 100% | 120 |
+| spoken loudly | 100% | 120 |
+| deeper voices | 100% | 40 |
+| higher voices | 100% | 40 |
+| a pause between the words | 99% | 120 |
+| over background noise | 100% | 120 |
+| over babble | 70% | 120 |
+| inside a sentence | 5% | 120 |
+| each of 8 English accents | 97%–100% | 240 |
+
+### It stays quiet
+
+| condition | wakes | clips |
+| --- | --- | --- |
+| silence | 0% | 10 |
+| background noise alone | 0% | 40 |
+| babble alone | 0% | 40 |
+| unrelated conversation | 3% | 240 |
+| similar-sounding phrases | 9% | 240 |
+| 'hey' on its own | 8% | 120 |
+| the name inside a sentence | 20% | 120 |
+| the name on its own | 45% | 120 |
+| a steady sound starting suddenly | 35% | 40 |
+
+### And the rest
+
+- **Recall 0.8900** overall across the waking conditions.
+- **1.582 false positives an hour** of continuous speech (5 firings in 3.16 hours, so the measurement resolves no finer than 0.316 an hour; the 95% interval reaches 3.327).
+- **90.48 ms** to load, once, at startup.
+- **2.2685 ms** to score an 80 ms frame (35.3x realtime, about 2.8% of one core), p99 3.546 ms.
+- Wakes **155 ms before the phrase ends** (median; 120/120 detected).
+- **2,113,155 bytes** of ONNX. No `.tflite` - see above.
+- No network, one thread, and resident memory flat over 10,000 frames (13 minutes of listening): 355.7 MB to 355.8 MB.
+
+### The four limitations, in one place
+
+| what | rate | why |
+| --- | --- | --- |
+| saying just "Leti" wakes it | 45% | it is most of the phrase. Inside a sentence it is 20% |
+| a sustained sound starting abruptly | 35% | an onset transient: one wake per onset. The same sound while playing is 0% |
+| the wake word under babble | 70% | babble cannot be mixed under positives without mislabelling them |
+| the phrase mid-sentence | 5% | training always places it at the window's end with silence before it |
+
 ## What this does and does not prove
 
 It proves that the model answers to "hey leti" spoken by 160 synthetic voices it

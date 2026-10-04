@@ -16,7 +16,10 @@ searches and pages you explicitly ask it to visit.
 - **Reasoning & tool use** via Ollama's native function calling (Qwen 2.5,
   Llama 3.3, or Mistral Nemo).
 - **Screen vision** via `llama3.2-vision` — ask Leti what's on your screen.
-- **Voice pipeline** — wake word (openWakeWord), speech-to-text
+- **Voice pipeline** — its own trained wake word, "Hey Leti" (openWakeWord; the
+  model ships at `data/wake_words/hey_leti.onnx`, the recipe that made it is in
+  `training/wake_word/`, and what it measures is in
+  `training/wake_word/validation.json`), speech-to-text
   (OpenAI Whisper), text-to-speech (pyttsx3, using your OS's native voice
   engine), with interruptible playback. Leti asks for the microphone and speakers
   **once, on the first launch**, checks they actually work, and remembers the

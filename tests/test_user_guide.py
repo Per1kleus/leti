@@ -66,7 +66,10 @@ def test_the_guide_exists_and_covers_every_section_it_promises(guide):
     ("nomic-embed-text", ("ollama", "embedding_model")),
     ("0.3", ("ollama", "temperature")),
     ("hey_leti", ("app", "wake_word")),
-    ("0.5", ("app", "wake_word_threshold")),
+    # 0.95 since the wake word became a real trained model: chosen from
+    # training/wake_word/validation.json rather than by feel. See the threshold
+    # comment in config/settings.yaml.
+    ("0.95", ("app", "wake_word_threshold")),
     ("base.en", ("stt", "model_size")),
     ("1.2", ("stt", "silence_timeout_seconds")),
     ("180", ("tts", "rate")),

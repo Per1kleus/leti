@@ -244,9 +244,13 @@ WHAT YOU CAN CHANGE
 
   Wake word           what to say to get Leti's attention when it is listening
                       continuously. "hey_leti" by default.
-  Wake word           how sure it has to be before it wakes, from 0 to 1. 0.5
-  sensitivity         by default. Lower it if it does not hear you; raise it if
-                      it wakes up at the television.
+  Wake word           how sure it has to be before it wakes, from 0 to 1. 0.95
+  sensitivity         by default, which was chosen by measurement and not by
+                      feel - see training\wake_word\validation.json. Raise it
+                      towards 0.99 if it wakes when you did not mean it; that
+                      costs about one more miss in a hundred. Lower it if it
+                      misses you, knowing that saying just "Leti" already wakes
+                      it about half the time and lowering this raises that.
 
   Whisper model       which speech-recognition model listens. "base.en" by
                       default - English only, fast, accurate enough. The
@@ -627,29 +631,58 @@ PARTICULAR THINGS
       model, speaking - and the last step reached is where it stopped. No audio
       and no transcript is ever recorded, only lengths and timings.
 
-  Leti does not answer to "Hey Leti"
-      There is no "Hey Leti" model yet, and this is the honest position rather
-      than a bug: openWakeWord ships six wake words - alexa, hey_jarvis,
-      hey_mycroft, hey_rhasspy, timer and weather - and anything else needs a
-      model trained for it. The one for "hey_leti" has not been trained.
+  Saying "Hey Leti"
+      Start Leti and say: Hey Leti
 
-      Until it is, Leti hears you when you press the microphone button, and
-      typing works normally. Diagnostics says "Wake word: FAIL" with the reason,
-      so it is never pretending to listen.
+      The model for it ships with Leti, at data\wake_words\hey_leti.onnx. How it
+      was made is in training\wake_word\, and what it measures is in
+      training\wake_word\validation.json - measured on 2,500 utterances from 160
+      synthetic voices that none of its training used.
 
-      Two ways forward, whichever suits you:
+      What it does reliably. It answers whether you speak normally, quickly,
+      slowly, quietly or loudly; in a deeper or a higher voice; in any of eight
+      English accents, including Scottish, Received Pronunciation, Caribbean,
+      Lancashire, West Midlands and New York; with a pause in the middle, as in
+      "hey... Leti"; and with the radio or a fan going. It stays quiet through
+      silence, through steady background noise, through a room of people talking,
+      through ordinary conversation, and through phrases that sound like it.
 
-        use a built-in name    set app.wake_word (section 14) to hey_jarvis, or
-                               any of the six. Works immediately.
-        train "hey_leti"       openWakeWord's own training notebooks make one
-                               from synthetic speech - no recording needed - and
-                               the result goes in data\wake_words\hey_leti.tflite.
-                               Leti picks it up on the next launch.
+      Four things worth knowing, because they are measured rather than hoped:
 
-      Earlier versions crashed here instead, with
-      "ValueError: Could not find pretrained model" in the console, and voice
-      then silently did nothing for the rest of the session while the interface
-      still said it was ready.
+        it answers to its own name      Saying just "Leti", on its own, wakes it
+                                        about half the time. Inside a sentence -
+                                        "I asked Leti to open the file" - that
+                                        falls to about one time in six. If this
+                                        bothers you, raise the sensitivity
+                                        (section 14) towards 0.99.
+
+        a fan starting can wake it      A sustained sound that STARTS abruptly -
+                                        a fridge compressor, an air conditioner
+                                        cutting in - can wake it once. The same
+                                        sound while it is simply playing does
+                                        not; Leti is quiet in a humming room.
+
+        it will not hear you mid-       Said inside a longer sentence - "so I
+        sentence                        said hey Leti and nothing happened" - it
+                                        almost never wakes. Say it on its own.
+
+        a crowded room is harder        With several people talking over you it
+                                        hears you about seven times in ten,
+                                        against ten in ten with ordinary
+                                        background noise.
+
+      It wakes about one and a half times an hour on continuous speech that is
+      not addressed to it, which was measured over three hours of talking.
+
+      If it does not answer at all, the diagnostics panel says why rather than
+      failing silently. Earlier versions of Leti crashed here with
+      "ValueError: Could not find pretrained model" in a console the launchers
+      hide, and voice then silently did nothing for the rest of the session while
+      the interface still said it was ready.
+
+      You can still use a different wake word: set app.wake_word (section 14) to
+      alexa, hey_jarvis, hey_mycroft, hey_rhasspy, timer or weather, which
+      openWakeWord supplies and Leti downloads on first launch.
 
   Leti talks over me, or cuts me off
       "Stop listening after" in Voice settings, section 5.
