@@ -153,6 +153,27 @@ def fundamental_hz(samples: np.ndarray) -> float:
 # Running the model
 # --------------------------------------------------------------------------- #
 
+# How many frames of silence to push through after a reset before believing a
+# score. openWakeWord's reset() does this:
+#
+#     self.feature_buffer = self._get_embeddings(
+#         np.random.randint(-1000, 1000, 16000*4).astype(np.int16))
+#
+# It fills the 16-frame feature window with the embeddings of four seconds of
+# RANDOM NOISE - not silence, and not seeded, so every reset leaves a different
+# window. Until 16 frames of real audio have pushed that out, every score is a
+# score about noise nobody played.
+#
+# Measured, before this existed: ten byte-identical clips of digital silence
+# produced ten different peak scores and three of them crossed 0.5, reported as
+# "fires on silence 30% of the time". The same model scored at most 0.012 on
+# silence once warmed up. It also explains why the continuous false-positive
+# stream was unaffected - that resets once and then runs for three hours.
+#
+# 20 rather than 16, for margin.
+WARMUP_FRAMES = 20
+
+
 class Detector:
     """openWakeWord's Model, loaded the way the runtime loads it."""
 
@@ -165,9 +186,16 @@ class Detector:
         self.load_seconds = time.perf_counter() - started
         self.frame_times: List[float] = []
 
-    def scores(self, samples: np.ndarray) -> List[float]:
-        """The score after every frame of one clip, from a clean state."""
+    def _start(self) -> None:
+        """Reset, then flush the random feature buffer out with real silence."""
         self.model.reset()
+        quiet = np.zeros(FRAME, dtype=np.int16)
+        for _ in range(WARMUP_FRAMES):
+            self.model.predict(quiet)
+
+    def scores(self, samples: np.ndarray) -> List[float]:
+        """The score after every frame of one clip, from a warmed, quiet state."""
+        self._start()
         out = []
         for start in range(0, samples.size - FRAME + 1, FRAME):
             began = time.perf_counter()
@@ -472,7 +500,7 @@ def false_positives_per_hour(detector: Detector, stream_dir: Path,
     # every clip boundary would both discard the state the runtime carries and hide
     # the windows that straddle a boundary - which are exactly the mid-word windows
     # a wake word fires on. detector.scores() resets, so it is not used here.
-    detector.model.reset()
+    detector._start()
     for path in clips:
         if seconds >= max_seconds:
             break
