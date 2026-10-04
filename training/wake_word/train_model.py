@@ -234,7 +234,7 @@ def features_for(clip_dir: Path, out_file: Path, total_length: int,
 
 def stream_windows(clip_dir: Path, out_file: Path, window: int,
                    max_clips: int = 6000, chunk_seconds: float = 300.0,
-                   overwrite: bool = False) -> int:
+                   overwrite: bool = False, recursive: bool = False) -> int:
     """Negative examples cut from CONTINUOUS speech, not from padded clips.
 
     WHY THIS CHANNEL EXISTS
@@ -265,7 +265,8 @@ def stream_windows(clip_dir: Path, out_file: Path, window: int,
         logger.info(f"  {out_file.name}: already there, {existing.shape[0]} windows")
         return int(existing.shape[0])
 
-    clips = sorted(clip_dir.glob("*.wav"))[:max_clips]
+    clips = sorted(clip_dir.rglob("*.wav") if recursive
+                   else clip_dir.glob("*.wav"))[:max_clips]
     if not clips:
         raise FileNotFoundError(f"No clips in {clip_dir}.")
     features = AudioFeatures(device="cpu")
@@ -481,6 +482,32 @@ def train(config: Dict, work: Path, out_dir: Path,
             batch_size=int(config["augmentation_batch_size"]),
             ncpu=ncpu, overwrite=overwrite, snr_db=snr)
 
+    # Noise with nothing said in it, as a negative in its own right.
+    #
+    # Every other negative here is speech, and the background clips only ever appear
+    # UNDERNEATH a positive at 5 to 20 dB. So the model saw "mains hum plus the wake
+    # word" labelled positive and never saw "mains hum" labelled anything. Measured
+    # on held-out noise, at the chosen threshold of 0.95:
+    #
+    #     mains hum      100% fired (median score 0.994)
+    #     held tones      67% fired (median 0.979)
+    #     pink noise      11%
+    #     white, brown, clatter   0%
+    #
+    # Both offenders are narrowband and harmonic, which is what a melspectrogram
+    # embedding sees a sustained vowel as: stable pitch, harmonic stack. Broadband
+    # noise never fooled it. The gap is not the noise, it is that noise alone was
+    # never an example of anything.
+    noise_dir = work / "backgrounds_negative"
+    if noise_dir.is_dir() and any(noise_dir.rglob("*.wav")):
+        counts["noise_stream"] = stream_windows(
+            noise_dir, feats / "noise_stream.npy", input_window,
+            max_clips=int(config.get("n_noise_negative_clips", 400)),
+            overwrite=overwrite, recursive=True)
+    else:
+        logger.warning(f"No {noise_dir}: the model will have no example of noise "
+                       "with nothing said in it, and will fire on mains hum.")
+
     counts["negative_stream"] = stream_windows(
         clips / "negative_speech", feats / "negative_stream.npy", input_window,
         max_clips=int(config.get("n_negative_stream_clips", 6000)),
@@ -513,12 +540,15 @@ def train(config: Dict, work: Path, out_dir: Path,
         "negative_speech": str(feats / "negative_speech_train.npy"),
         "negative_stream": str(feats / "negative_stream.npy"),
     }
+    if (feats / "noise_stream.npy").is_file():
+        data_files["noise_stream"] = str(feats / "noise_stream.npy")
     label_transforms = {key: (lambda x: [1 for _ in x]) if key == "positive"
                         else (lambda x: [0 for _ in x])
                         for key in data_files}
     batches = mmap_batch_generator(
         data_files,
-        n_per_class={k: int(v) for k, v in config["batch_n_per_class"].items()},
+        n_per_class={k: int(v) for k, v in config["batch_n_per_class"].items()
+                     if k in data_files},
         data_transform_funcs={k: reshape for k in data_files},
         label_transform_funcs=label_transforms)
 

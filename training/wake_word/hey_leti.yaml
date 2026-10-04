@@ -175,10 +175,21 @@ batch_n_per_class:
   # never seen a window that starts and ends mid-word, which is what every window of
   # the false-positive stream is: 7.6 false positives an hour against a 0.2 target.
   negative_stream: 300
+  # Noise with nothing said in it. Without this the model fires on mains hum every
+  # time and on held tones two thirds of the time, because the only way it had ever
+  # met either was underneath its own wake word: see train_model.train.
+  noise_stream: 100
 
 # How many of the negative-speech clips to concatenate into that continuous stream.
 # 6,000 clips is about 3.7 hours, which is 168,000 windows at one frame apart.
 n_negative_stream_clips: 6000
+
+# The noise-alone negative corpus. A third seed, so it is disjoint from both the
+# augmentation backgrounds (800) and the held-out noise the validation measures
+# against (1800) - a negative the model trains on must not be a negative the report
+# claims to have tested on.
+n_noise_negative_clips: 400
+seed_noise_negatives: 2800
 
 # Seeds. Changing one changes the corpus; leaving them alone reproduces it.
 seed_positive: 100
