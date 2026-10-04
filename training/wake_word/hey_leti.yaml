@@ -61,6 +61,15 @@ n_negative_speech: 24000
 n_negative_speech_val: 2500
 n_fp_stream_clips: 2000         # about two and a half hours of continuous speech
 
+# How many clips one generation process makes before it exits and the next one
+# starts. Not a tuning knob - a bound. A generation process's resident memory
+# climbs about 3 MB per clip through heap fragmentation (not a leak: the live
+# object and tensor counts are flat), and four unbounded ones at once were
+# OOM-killed 9,728 clips into this corpus. 400 keeps a process under about 2 GB.
+# It is part of the corpus definition, because each chunk is separately seeded:
+# changing it changes what gets generated.
+clips_per_process: 400
+
 # Every clip above is spoken by a speaker drawn from one half of a split of
 # LibriTTS-R's 904 voices, and every validation clip by a speaker from the other
 # half. See generate_clips.speaker_split: one voice in five is held out, and the

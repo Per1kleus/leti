@@ -65,6 +65,31 @@ def speaker_split(usable: int = USABLE_SPEAKERS,
     return train, validation
 
 
+def _release_free_heap() -> None:
+    """Hand glibc's free lists back to the kernel.
+
+    Not a leak, measured: across six rounds of forty clips the live Python object
+    count stays at 137,423 and the live tensor count at 749, while resident memory
+    climbs from 588 MB to 1,977 MB. Every batch allocates tensors whose size
+    depends on the text it is speaking and the audio that comes out, so the heap
+    fragments and glibc keeps the arenas. malloc_trim(0) returned 654 MB of that
+    immediately.
+
+    It matters because four of these run at once. Unchecked, the kernel OOM-killed
+    three of four shards 9,700 clips into a 24,000-clip corpus, with no error in
+    any log - which is what an OOM kill looks like from inside.
+
+    Best effort: a platform without glibc simply does not have this function, and
+    the generation does not depend on it.
+    """
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _add_psg(psg_path: str) -> None:
     """Put piper-sample-generator v2 on the import path.
 
@@ -135,6 +160,10 @@ class ClipGenerator:
             rolloff=0.9475937167399596, resampling_method="kaiser_window",
             beta=14.769656459379492)
 
+    def _pick(self, upper: int, count: int) -> List[int]:
+        """`count` random indices below `upper`, from the seeded generator."""
+        return [int(i) for i in self.rng.integers(0, upper, size=count)]
+
     def _phoneme_ids(self, text: str, voice: str) -> List[int]:
         return self._psg.get_phonemes(voice, self.config, text, False)
 
@@ -161,10 +190,16 @@ class ClipGenerator:
             n = min(batch_size, count - made)
             # Every clip in the batch is an independent draw. Only the phoneme
             # padding is shared, which is what makes a batch worth doing at all.
-            chosen_texts = [str(self.rng.choice(texts)) for _ in range(n)]
-            voices = [str(self.rng.choice(self.voices)) for _ in range(n)]
-            s1 = [int(self.rng.choice(self.speakers)) for _ in range(n)]
-            s2 = [int(self.rng.choice(self.speakers)) for _ in range(n)]
+            # Indices, not Generator.choice(a_list_of_strings). That call converts
+            # the whole list to a numpy array of fixed-width unicode EVERY TIME,
+            # and the negative corpus is 15,000 sentences - 4 MB per draw, eight
+            # draws a batch, thousands of batches. Measured: it took a generation
+            # process to 7.9 GB resident and the kernel OOM-killed three of four
+            # shards. With indices the same work is flat.
+            chosen_texts = [texts[i] for i in self._pick(len(texts), n)]
+            voices = [self.voices[i] for i in self._pick(len(self.voices), n)]
+            s1 = [self.speakers[i] for i in self._pick(len(self.speakers), n)]
+            s2 = [self.speakers[i] for i in self._pick(len(self.speakers), n)]
             slerp_w = float(self.rng.uniform(*self.slerp_range))
             length = float(self.rng.uniform(*self.length_scale_range))
             noise = float(self.rng.uniform(*self.noise_scale_range))
@@ -195,6 +230,7 @@ class ClipGenerator:
                 made += 1
                 if made >= count:
                     break
+            _release_free_heap()
             if on_batch:
                 on_batch(made, count)
         return written
