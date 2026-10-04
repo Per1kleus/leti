@@ -223,7 +223,8 @@ class Detector:
 def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
                      accents: Sequence[str],
                      adversarial_texts: Optional[Path] = None,
-                     prose_texts: Optional[Path] = None) -> List[Condition]:
+                     prose_texts: Optional[Path] = None,
+                     test_noise: Optional[Sequence[Path]] = None) -> List[Condition]:
     """Every condition in the validation plan, as audio.
 
     `generator` is a generate_clips.ClipGenerator already bound to the held-out
@@ -253,7 +254,23 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
     # Babble is kept apart from the rest, because the model is deliberately not
     # trained with it (see prepare_negatives.make_backgrounds) and hiding that in
     # an average would be the one thing this report must not do.
-    noise = [_read_wav(p) for p in backgrounds if "babble" not in p.name]
+    # NOISE THE MODEL HAS NEVER HEARD, when there is any.
+    #
+    # The clips in backgrounds/ are the ones the positives were augmented with, so
+    # the model has met every one of them mixed underneath its own wake word at 5 to
+    # 20 dB. Asking whether it fires on those is not a test - it is a test on
+    # training data, and it reported 15% at the chosen threshold. backgrounds_test/
+    # holds the same kinds of noise generated from a different seed, which is the
+    # same question asked honestly.
+    if test_noise:
+        noise = [_read_wav(p) for p in test_noise if "babble" not in p.name]
+        logger.info(f"Noise conditions use {len(noise)} held-out clips.")
+    else:
+        noise = [_read_wav(p) for p in backgrounds if "babble" not in p.name]
+        logger.warning("No held-out noise: the noise conditions are measured on the "
+                       "same clips the positives were augmented with, which "
+                       "understates them. Generate backgrounds_test/ with a "
+                       "different seed.")
     babble = [_read_wav(p) for p in backgrounds if "babble" in p.name]
 
     # 1. The ordinary case.
@@ -669,10 +686,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     backgrounds = sorted((work / "backgrounds").rglob("*.wav"))
 
     logger.info("Building the conditions.")
+    held_out = sorted((work / "backgrounds_test").rglob("*.wav"))
     conditions = build_conditions(generator, backgrounds, args.per_condition,
                                   list(config["accents"]),
                                   adversarial_texts=work / config["adversarial_texts"],
-                                  prose_texts=work / config["fp_stream_texts"])
+                                  prose_texts=work / config["fp_stream_texts"],
+                                  test_noise=held_out)
 
     if args.fixtures:
         fixtures = write_fixtures(conditions, Path(args.fixtures))
