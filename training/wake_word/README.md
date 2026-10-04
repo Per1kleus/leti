@@ -161,21 +161,37 @@ PYTHONPATH=. $V -m training.wake_word.prepare_negatives deconflict \
 
 ### 2. The clips
 
-Seven corpora. `generate_clips.py` takes `--prefix` so four single-threaded
-processes can fill one directory at once, which is close to twice as fast as one
-four-threaded process:
+Seven corpora, 73,500 clips, about two and a half hours on four cores:
+
+```sh
+PYTHONPATH=. $V -m training.wake_word.generate_all \
+  --config training/wake_word/hey_leti.yaml --work $WORK \
+  --model psg_models/en_US-libritts_r-medium.pt --psg psg_v2 --concurrency 3
+```
+
+**Run it again if it stops.** It is resumable, and it is resumable because it had
+to be: a generation process's resident memory climbs about 3 MB per clip through
+heap fragmentation - not a leak, the live object and tensor counts are flat - and
+four unbounded ones at once got three of them OOM-killed 9,728 clips into the
+negative corpus, with no error in any log. So each process now makes
+`clips_per_process` clips and exits, which holds it at about 1 GB, and a chunk
+already on disk is skipped. A chunk that stopped part way is redone rather than
+topped up: the seeded draw is a sequence, and restarting it half way would not
+continue it.
+
+`generate_clips.py` is the single corpus underneath, and can be run directly:
 
 ```sh
 PYTHONPATH=. OMP_NUM_THREADS=1 $V -m training.wake_word.generate_clips \
   --model psg_models/en_US-libritts_r-medium.pt --psg psg_v2 \
   --texts $WORK/data/positive_texts.txt --out $WORK/clips/positive_train \
-  --count 5000 --batch-size 8 --seed 100 --split train --prefix s0_ \
+  --count 400 --batch-size 8 --seed 100 --split train --prefix c000_ \
   --voices en-us,en-gb-x-rp,en-gb-scotland,en-029,en-gb-x-gbclan,en-gb-x-gbcwmd,en-us-nyc,en
 ```
 
-...and so on for `positive_val` (`--split validation`), `negative_train`
-(adversarial texts), `negative_val`, `negative_speech`, `negative_speech_val`
-and `fp_stream` (the long prose). The counts and seeds are in `hey_leti.yaml`.
+Every count, seed and chunk size is in `hey_leti.yaml`, including
+`clips_per_process`: it is part of the corpus definition rather than a tuning knob,
+because each chunk is separately seeded and changing it changes what is generated.
 
 ### 3. The backgrounds and the rooms
 
