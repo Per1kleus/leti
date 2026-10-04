@@ -467,12 +467,20 @@ def false_positives_per_hour(detector: Detector, stream_dir: Path,
     settle_frames = int(1.5 * SAMPLE_RATE / FRAME)
     cooldown = {str(t): 0 for t in thresholds}
 
+    # ONE unbroken stream, with no reset between clips. The point of this number is
+    # what happens while somebody talks without stopping, and resetting the model at
+    # every clip boundary would both discard the state the runtime carries and hide
+    # the windows that straddle a boundary - which are exactly the mid-word windows
+    # a wake word fires on. detector.scores() resets, so it is not used here.
+    detector.model.reset()
     for path in clips:
         if seconds >= max_seconds:
             break
         samples = _read_wav(path)
         seconds += samples.size / SAMPLE_RATE
-        for score in detector.scores(samples):
+        for start in range(0, samples.size - FRAME + 1, FRAME):
+            predictions = detector.model.predict(samples[start:start + FRAME])
+            score = max(predictions.values())
             for threshold in thresholds:
                 key = str(threshold)
                 if cooldown[key] > 0:
@@ -486,7 +494,26 @@ def false_positives_per_hour(detector: Detector, stream_dir: Path,
         "hours": round(hours, 4),
         "per_hour": {k: round(v / hours, 3) if hours else 0.0 for k, v in counts.items()},
         "count": counts,
+        # What one event is worth, so a zero is not read as an impossibility.
+        "resolution_per_hour": round(1.0 / hours, 3) if hours else 0.0,
+        "poisson_upper_95_per_hour": {
+            k: round(_poisson_upper(v, hours), 3) for k, v in counts.items()},
     }
+
+
+def _poisson_upper(events: int, hours: float, confidence: float = 0.95) -> float:
+    """The upper end of a 95% interval on a rate seen `events` times in `hours`.
+
+    Three hours of audio cannot measure a rate of 0.2 an hour. One firing in 3.15
+    hours IS 0.317 an hour, and no firings means "fewer than about one in three
+    hours", not zero. Reporting the point estimate alone would make the difference
+    between two events and none look like a difference in kind.
+    """
+    from scipy.stats import chi2
+
+    if hours <= 0:
+        return 0.0
+    return float(chi2.ppf(confidence, 2 * (events + 1)) / 2.0 / hours)
 
 
 def latency(detector: Detector, conditions: Sequence[Condition],
@@ -546,23 +573,36 @@ def choose_threshold(report: Dict, fp: Dict, target_per_hour: float,
             "false_positives_per_hour": fp["per_hour"].get(key, 0.0),
         })
 
+    # Recall falls monotonically with the threshold, so the lowest threshold inside
+    # the target is also the one with the most recall. There is no extra notch "for
+    # margin": with three hours of audio one firing IS 0.317 an hour, so stepping up
+    # a notch trades real recall for a difference the measurement cannot see. The
+    # margin is stated in the report instead, as the resolution and the interval.
     inside = [row for row in table
               if row["false_positives_per_hour"] <= target_per_hour]
-    if not inside:
-        chosen = table[-1]
-        reason = (f"No threshold met {target_per_hour} false positives an hour; "
-                  f"took the strictest tried ({chosen['threshold']}).")
+    resolution = fp.get("resolution_per_hour", 0.0)
+    if inside:
+        chosen = inside[0]
+        reason = (f"The lowest threshold whose measured rate is inside "
+                  f"{target_per_hour} an hour, and therefore the one that keeps the "
+                  f"most recall. One firing in {fp['hours']:.2f} hours would read as "
+                  f"{resolution:.3f} an hour, so a target of {target_per_hour} is "
+                  f"below what this much audio can resolve: "
+                  f"{chosen['false_positives_per_hour']} means "
+                  f"{fp['count'].get(str(chosen['threshold']), 0)} firing(s), not a "
+                  "guarantee.")
     else:
-        first = inside[0]
-        index = thresholds.index(first["threshold"])
-        step = min(index + 1, len(thresholds) - 1)
-        chosen = table[step]
-        reason = (f"{first['threshold']} is the lowest threshold inside "
-                  f"{target_per_hour} false positives an hour; took the next one "
-                  f"up ({chosen['threshold']}) for margin, because every negative "
-                  "here is synthetic and a real room is noisier.")
+        best = min(table, key=lambda row: (row["false_positives_per_hour"],
+                                           -row["recall"]))
+        chosen = best
+        reason = (f"No threshold reached {target_per_hour} false positives an hour. "
+                  f"Took the lowest rate measured "
+                  f"({best['false_positives_per_hour']} an hour at "
+                  f"{best['threshold']}), keeping the most recall among ties.")
     return {"table": table, "chosen": chosen["threshold"], "why": reason,
-            "at_chosen": chosen}
+            "at_chosen": chosen,
+            "measurement_resolution_per_hour": resolution,
+            "hours_of_negative_audio": fp["hours"]}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
