@@ -177,21 +177,49 @@ def continuous_features(clip_dir: Path, out_file: Path,
     return {"frames": int(stacked.shape[0]), "hours": hours}
 
 
+# How many sliding windows of the false-positive stream are scored at once.
+# openWakeWord's own code uses one batch of the whole thing, which is right for
+# its published 11.3-hour set of 500,000 windows only because it never has to hold
+# a copy: two and a half hours of audio is 109,000 windows, and materialising them
+# as one array is 670 MB plus another 670 MB while it is being built. The count it
+# produces is a sum over batches either way - openWakeWord's train_model
+# accumulates val_fp across the loader - so the batch size changes nothing except
+# the peak.
+FP_BATCH_WINDOWS = 16384
+
+
 def _reshape_for_model(path: Path, window: int):
     """The sliding windows openWakeWord scores a continuous stream with.
 
-    One window every frame - 80 ms - which is the same step the runtime takes.
+    One window every frame - 80 ms - which is the same step the runtime takes, and
+    the same windows openWakeWord's own train.py builds with
+
+        [X[i:i+16] for i in range(0, X.shape[0]-16, 1)]
+
+    A stride view instead, because that comprehension materialises every window:
+    109,000 of them for two and a half hours of audio is 670 MB, plus another
+    670 MB while numpy builds the array from the list. The view costs nothing, and
+    only the rows in a batch are ever copied - by the collation, which was going to
+    copy them anyway.
+
+    torch prints one warning here - "the given NumPy array is not writable" -
+    because sliding_window_view hands back a read-only view. That is correct and
+    wanted: these windows are only ever read. Copying the array to silence it would
+    cost the 670 MB this exists to avoid.
     """
     import torch
 
     frames = np.load(path)
-    windows = np.array([frames[i:i + window]
-                        for i in range(0, frames.shape[0] - window, 1)])
+    # sliding_window_view appends the window axis, giving (n, features, window);
+    # the model wants (n, window, features). Both the view and the transpose are
+    # views, so neither allocates.
+    windows = np.lib.stride_tricks.sliding_window_view(
+        frames, window_shape=window, axis=0).transpose(0, 2, 1)[:-1]
     labels = np.zeros(windows.shape[0], dtype=np.float32)
     return torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(torch.from_numpy(windows),
                                        torch.from_numpy(labels)),
-        batch_size=len(labels))
+        batch_size=FP_BATCH_WINDOWS)
 
 
 def _validation_loader(positive_path: Path, negative_paths: Sequence[Path]):
