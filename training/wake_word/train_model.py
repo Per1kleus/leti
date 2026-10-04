@@ -568,6 +568,7 @@ def train(config: Dict, work: Path, out_dir: Path,
     fp_loader = _reshape_for_model(feats / "fp_stream.npy", input_shape[0])
 
     best = _auto_train(model, train_loader, val_loader, fp_loader,
+                       noise=noise_windows_for(work / "backgrounds_select", input_window),
                        steps=int(config["steps"]),
                        max_negative_weight=int(config["max_negative_weight"]),
                        target_fp_per_hour=float(config["target_false_positives_per_hour"]),
@@ -593,7 +594,40 @@ def train(config: Dict, work: Path, out_dir: Path,
     }
 
 
-def _select(model, target_fp_per_hour: float, average_top: int = 5):
+def noise_windows_for(clip_dir: Path, window: int):
+    """Held-out noise as model-ready windows, for the selection veto.
+
+    A THIRD noise corpus, disjoint from the one the model trains on and from the one
+    the report measures. Selecting a checkpoint on the audio the report then quotes
+    would make the report a description of the selection.
+    """
+    import torch
+    from openwakeword.utils import AudioFeatures
+
+    clips = sorted(clip_dir.rglob("*.wav"))
+    if not clips:
+        return None
+    features = AudioFeatures(device="cpu")
+    stream = np.concatenate([_read_wav(p) for p in clips])
+    frames = features._get_embeddings(stream)
+    strided = np.lib.stride_tricks.sliding_window_view(
+        frames, window_shape=window, axis=0).transpose(0, 2, 1)[:-1]
+    logger.info(f"Selection veto: {strided.shape[0]} windows of held-out noise "
+                f"from {len(clips)} clips.")
+    return torch.from_numpy(np.ascontiguousarray(strided))
+
+
+def _fires_on(net, windows, threshold: float = 0.95) -> float:
+    import torch
+
+    if windows is None:
+        return 0.0
+    with torch.no_grad():
+        return float((net(windows).squeeze(-1).numpy() > threshold).mean())
+
+
+def _select(model, target_fp_per_hour: float, average_top: int = 3,
+            noise=None, val_loader=None):
     """Choose what to export, which openWakeWord's own merge does not reliably do.
 
     auto_train keeps every checkpoint whose false positives are at or below the
@@ -628,20 +662,36 @@ def _select(model, target_fp_per_hour: float, average_top: int = 5):
         logger.warning("No checkpoints were kept; exporting the final training state.")
         return model.model
 
-    inside = [(s, m) for s, m in zip(scores, model.best_models)
-              if s["val_fp_per_hr"] <= target_fp_per_hour]
-    if inside:
-        why = f"within {target_fp_per_hour} false positives an hour"
+    # Noise first, recall second, and the false-positive rate as a tie-break rather
+    # than a gate.
+    #
+    # The gate used to be the false-positive rate: every checkpoint inside target, or
+    # failing that the best decile. On this corpus nothing reaches 0.2 an hour, so it
+    # always took the decile - and the lowest-false-positive checkpoints are the EARLY,
+    # under-trained ones. It shipped recall 0.827 with mains hum firing two thirds of
+    # the time, while checkpoints from the end of the same run had recall 0.905 and
+    # never fired on hum at all. Measured, all 22 retained checkpoints of a run:
+    #
+    #     index 0   recall 0.7860   fp 0.95/hr   hum 0.000
+    #     index 2   recall 0.8748   fp 1.27/hr   hum 0.000
+    #     index 11  recall 0.9068   fp 2.53/hr   hum 0.000
+    #
+    # Ranking by false positives first threw away eleven points of recall to buy 1.6
+    # false positives an hour, on a measurement whose resolution is 0.3 an hour.
+    candidates = list(zip(scores, model.best_models))
+    quiet = [(s, m) for s, m in candidates if _fires_on(m, noise) == 0.0]
+    if quiet:
+        why = f"{len(quiet)} of {len(candidates)} never fire on held-out noise"
     else:
-        cut = np.percentile([s["val_fp_per_hr"] for s in scores], 10)
-        inside = [(s, m) for s, m in zip(scores, model.best_models)
-                  if s["val_fp_per_hr"] <= cut]
-        why = (f"no checkpoint reached {target_fp_per_hour} false positives an hour, "
-               f"so the best decile ({cut:.2f}/hour or better)")
+        best_noise = min(_fires_on(m, noise) for _s, m in candidates)
+        quiet = [(s, m) for s, m in candidates
+                 if _fires_on(m, noise) <= best_noise + 1e-9]
+        why = (f"every checkpoint fires on some held-out noise; took the "
+               f"{len(quiet)} least bad ({best_noise:.3f})")
 
-    inside.sort(key=lambda pair: -pair[0]["val_recall"])
-    picked = inside[:average_top]
-    logger.info(f"Selecting from {len(scores)} checkpoints: {why}; "
+    quiet.sort(key=lambda pair: (-pair[0]["val_recall"], pair[0]["val_fp_per_hr"]))
+    picked = quiet[:average_top]
+    logger.info(f"Selecting from {len(candidates)} checkpoints: {why}; "
                 f"averaging the {len(picked)} with the best recall "
                 f"({picked[0][0]['val_recall']:.4f} at "
                 f"{picked[0][0]['val_fp_per_hr']:.2f}/hour down to "
@@ -649,12 +699,46 @@ def _select(model, target_fp_per_hour: float, average_top: int = 5):
                 f"{picked[-1][0]['val_fp_per_hr']:.2f}/hour).")
     if len(picked) == 1:
         return picked[0][1]
-    return model.average_models(models=[m for _s, m in picked])
+
+    # AND CHECK WHAT WAS SELECTED. Averaging weights is only behaviour-preserving when
+    # the checkpoints sit in the same basin, and these come from three training
+    # sequences with different learning rates and different negative weights. An
+    # average that is worse than its own best part is not a merge, it is a regression,
+    # and the only way to know is to look.
+    averaged = model.average_models(models=[m for _s, m in picked])
+    best_single = picked[0][1]
+    avg_noise, single_noise = _fires_on(averaged, noise), _fires_on(best_single, noise)
+    if avg_noise > single_noise:
+        logger.warning(
+            f"The average fires on {avg_noise:.3f} of held-out noise where its best "
+            f"part fires on {single_noise:.3f}; keeping the single checkpoint.")
+        return best_single
+    if val_loader is not None:
+        avg_recall = _recall_of(model, averaged, val_loader)
+        single_recall = _recall_of(model, best_single, val_loader)
+        if avg_recall < single_recall - 0.01:
+            logger.warning(
+                f"The average recalls {avg_recall:.4f} against {single_recall:.4f} for "
+                "its best part; keeping the single checkpoint.")
+            return best_single
+        logger.info(f"The average recalls {avg_recall:.4f} and fires on "
+                    f"{avg_noise:.3f} of held-out noise; keeping it.")
+    return averaged
+
+
+def _recall_of(model, net, val_loader) -> float:
+    import torch
+
+    with torch.no_grad():
+        for batch in val_loader:
+            predictions = net(batch[0].to(model.device))
+            labels = batch[1].to(model.device)
+        return float(model.recall(predictions, labels[..., None]).detach().cpu().numpy())
 
 
 def _auto_train(model, train_loader, val_loader, fp_loader, steps: int,
                 max_negative_weight: int, target_fp_per_hour: float,
-                val_set_hrs: float):
+                val_set_hrs: float, noise=None):
     """openWakeWord's auto_train, with the real length of the validation set.
 
     See this module's docstring for why it is written out rather than called.
@@ -688,7 +772,7 @@ def _auto_train(model, train_loader, val_loader, fp_loader, steps: int,
             hold_steps=sequence_steps // 3, lr=learning_rate,
             val_set_hrs=val_set_hrs)
 
-    merged = _select(model, target_fp_per_hour)
+    merged = _select(model, target_fp_per_hour, noise=noise, val_loader=val_loader)
 
     with torch.no_grad():
         for batch in val_loader:

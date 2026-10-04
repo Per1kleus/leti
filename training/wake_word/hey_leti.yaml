@@ -191,6 +191,13 @@ n_negative_stream_clips: 6000
 n_noise_negative_clips: 400
 seed_noise_negatives: 2800
 
+# A fourth noise corpus, for CHOOSING the checkpoint. Separate from the one the model
+# trains on (2800) and from the one the report measures (1800), because selecting a
+# checkpoint on the audio the report then quotes would make the report a description
+# of the selection rather than a test of the model.
+n_noise_selection_clips: 60
+seed_noise_selection: 3800
+
 # Seeds. Changing one changes the corpus; leaving them alone reproduces it.
 seed_positive: 100
 seed_positive_val: 200
