@@ -389,10 +389,15 @@ def train(config: Dict, work: Path, out_dir: Path,
         "negative_speech_val": clips / "negative_speech_val",
     }
     counts = {}
+    # Rounds per corpus, because they are not worth the same. Another pass over the
+    # positives is another 20,000 differently-augmented examples of the one thing
+    # the model has to recognise; another pass over the negatives is more of what
+    # there is already plenty of.
+    rounds_for = config.get("augmentation_rounds_overrides", {})
     for name, folder in corpora.items():
         counts[name] = features_for(
             folder, feats / f"{name}.npy", total_length, backgrounds, impulses,
-            rounds=int(config["augmentation_rounds"]),
+            rounds=int(rounds_for.get(name, config["augmentation_rounds"])),
             batch_size=int(config["augmentation_batch_size"]),
             ncpu=ncpu, overwrite=overwrite, snr_db=snr)
 

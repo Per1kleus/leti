@@ -124,6 +124,13 @@ n_backgrounds: 160
 background_seconds: 10.0
 n_impulse_responses: 48
 augmentation_rounds: 1
+# Extra passes over particular corpora. Each pass re-augments the same clips with
+# fresh draws, so three rounds of 20,000 positives is 60,000 differently-noised,
+# differently-reverberated, differently-placed examples of the wake word from the
+# same 640 voices. Recall is what this model is short of, and this is the cheapest
+# honest way to buy some: no new speech to synthesise, only features to compute.
+augmentation_rounds_overrides:
+  positive_train: 3
 augmentation_batch_size: 128
 
 # TRAINING
@@ -146,10 +153,16 @@ model_type: dnn
 #
 # Those were measured before the background-noise fault below was found, so they
 # rank the settings rather than predict the result.
-layer_size: 128
-n_blocks: 1
+# 256 units in two blocks: the best merged recall of the four widths tried on
+# corrected features (0.882 against 0.861 for 128x1 at the same weight).
+layer_size: 256
+n_blocks: 2
 steps: 50000
-max_negative_weight: 200
+# Measured over thresholds, which is the only way this number means anything: the
+# shipped threshold is chosen from measurements, so a weight tuned to make the model
+# timid at 0.5 just moves the same curve. 1000 gave the best recall at every
+# false-positive rate worth operating at; 8000 cost 0.08 recall for nothing.
+max_negative_weight: 1000
 target_false_positives_per_hour: 0.2
 batch_n_per_class:
   positive: 150
