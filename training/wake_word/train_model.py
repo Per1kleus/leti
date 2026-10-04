@@ -477,6 +477,65 @@ def train(config: Dict, work: Path, out_dir: Path,
     }
 
 
+def _select(model, target_fp_per_hour: float, average_top: int = 5):
+    """Choose what to export, which openWakeWord's own merge does not reliably do.
+
+    auto_train keeps every checkpoint whose false positives are at or below the
+    median and whose recall is at or above the 5th percentile - a generous filter,
+    so there are dozens. It then merges only those that are simultaneously
+
+        accuracy >= 90th percentile
+        recall   >= 90th percentile
+        fp/hour  <= 10th percentile
+
+    and falls back to `self.model` - the LAST training state - when that
+    intersection is empty. For any model with a real recall/false-positive
+    trade-off those three conditions are close to mutually exclusive, because the
+    checkpoints with the best recall are the ones with the worst false-positive
+    rate. Observed on three consecutive runs of this recipe: "Merged 0
+    checkpoints", every time, each one exporting whatever the optimiser happened to
+    be holding when the last step finished rather than the best thing it found.
+
+    So the criterion is stated instead of emergent: among the checkpoints inside
+    the false-positive target, take the ones with the highest recall and average
+    them. If none is inside the target - which is the normal case early in a
+    recipe's life - fall back to the best decile by false positives and say so,
+    rather than silently exporting the last state.
+
+    Averaging rather than picking one is openWakeWord's idea and a good one: these
+    are the same architecture trained from the same initialisation, a few hundred
+    steps apart, so their weights are commensurable and the average is steadier
+    than any single checkpoint.
+    """
+    scores = model.best_model_scores
+    if not scores:
+        logger.warning("No checkpoints were kept; exporting the final training state.")
+        return model.model
+
+    inside = [(s, m) for s, m in zip(scores, model.best_models)
+              if s["val_fp_per_hr"] <= target_fp_per_hour]
+    if inside:
+        why = f"within {target_fp_per_hour} false positives an hour"
+    else:
+        cut = np.percentile([s["val_fp_per_hr"] for s in scores], 10)
+        inside = [(s, m) for s, m in zip(scores, model.best_models)
+                  if s["val_fp_per_hr"] <= cut]
+        why = (f"no checkpoint reached {target_fp_per_hour} false positives an hour, "
+               f"so the best decile ({cut:.2f}/hour or better)")
+
+    inside.sort(key=lambda pair: -pair[0]["val_recall"])
+    picked = inside[:average_top]
+    logger.info(f"Selecting from {len(scores)} checkpoints: {why}; "
+                f"averaging the {len(picked)} with the best recall "
+                f"({picked[0][0]['val_recall']:.4f} at "
+                f"{picked[0][0]['val_fp_per_hr']:.2f}/hour down to "
+                f"{picked[-1][0]['val_recall']:.4f} at "
+                f"{picked[-1][0]['val_fp_per_hr']:.2f}/hour).")
+    if len(picked) == 1:
+        return picked[0][1]
+    return model.average_models(models=[m for _s, m in picked])
+
+
 def _auto_train(model, train_loader, val_loader, fp_loader, steps: int,
                 max_negative_weight: int, target_fp_per_hour: float,
                 val_set_hrs: float):
@@ -513,16 +572,7 @@ def _auto_train(model, train_loader, val_loader, fp_loader, steps: int,
             hold_steps=sequence_steps // 3, lr=learning_rate,
             val_set_hrs=val_set_hrs)
 
-    logger.info("Merging the checkpoints above the 90th percentile.")
-    accuracy_cut = np.percentile(model.history["val_accuracy"], 90)
-    recall_cut = np.percentile(model.history["val_recall"], 90)
-    fp_cut = np.percentile(model.history["val_fp_per_hr"], 10)
-    chosen = [m for m, score in zip(model.best_models, model.best_model_scores)
-              if score["val_accuracy"] >= accuracy_cut
-              and score["val_recall"] >= recall_cut
-              and score["val_fp_per_hr"] <= fp_cut]
-    merged = model.average_models(models=chosen) if chosen else model.model
-    logger.info(f"Merged {len(chosen)} checkpoints.")
+    merged = _select(model, target_fp_per_hour)
 
     with torch.no_grad():
         for batch in val_loader:
