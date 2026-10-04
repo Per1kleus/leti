@@ -14,20 +14,22 @@ app:
   #                    data/wake_words/<name>.tflite (or .onnx). This is how a
   #                    wake word that is not on that list is made to work.
   #
-  # "hey_leti" is the second kind and THE MODEL FOR IT DOES NOT EXIST YET. It has
-  # to be trained - openWakeWord's own training notebooks do it from synthetic
-  # speech, no recording required - and the result dropped into data/wake_words/.
-  # Until then Leti cannot listen for its own name, and says so in the
-  # diagnostics panel rather than failing silently. Everything else works: press
-  # the microphone button to talk, or type.
-  #
-  # This is left as "hey_leti" deliberately. Quietly changing it to hey_jarvis
-  # would make a launch look successful while Leti answered to a name nobody
-  # chose, and the person would find out by talking to a machine that ignores
-  # them. Set it to one of the built-in names above if you would rather have a
-  # working wake word today than the right one later.
+  # "hey_leti" is the second kind, and the model for it now exists: it ships at
+  # data/wake_words/hey_leti.onnx. training/wake_word/ is how it was made, and
+  # training/wake_word/validation.json is what it measures.
   wake_word: "hey_leti"
-  wake_word_threshold: 0.5
+  # Chosen by measurement, not by taste. See training/wake_word/validation.json:
+  # across 2,500 utterances from 160 voices no training clip used, 0.95 keeps
+  # recall at 0.8879 while firing on 0.1392 of negative clips and 1.58 times an
+  # hour of continuous speech. Eight of ten thresholds tie on that per-hour rate -
+  # five firings in 3.16 hours is a coarse measurement - so the strictest of the
+  # tied ones was taken.
+  #
+  # Raise it towards 0.99 if Leti wakes when you did not mean it; the cost is
+  # about a point of recall. Lower it if it misses you, and read the "the name on
+  # its own" row of validation.json first: saying just "Leti" already wakes it
+  # about half the time at 0.95, and lowering the threshold raises that.
+  wake_word_threshold: 0.95
   log_level: "INFO"              # DEBUG | INFO | WARNING | ERROR
 
 ollama:

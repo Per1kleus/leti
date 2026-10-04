@@ -744,12 +744,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     backgrounds = sorted((work / "backgrounds").rglob("*.wav"))
 
     logger.info("Building the conditions.")
-    held_out = sorted((work / "backgrounds_test").rglob("*.wav"))
+    # Named apart from held_out, the voices. They were both called held_out, and the
+    # second assignment won: the report recorded 80 held-out VOICES, which is the
+    # number of held-out noise CLIPS. The voices are 160.
+    held_out_noise = sorted((work / "backgrounds_test").rglob("*.wav"))
     conditions = build_conditions(generator, backgrounds, args.per_condition,
                                   list(config["accents"]),
                                   adversarial_texts=work / config["adversarial_texts"],
                                   prose_texts=work / config["fp_stream_texts"],
-                                  test_noise=held_out)
+                                  test_noise=held_out_noise)
 
     if args.fixtures:
         fixtures = write_fixtures(conditions, Path(args.fixtures))
@@ -785,6 +788,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "realtime_factor": round(
             (FRAME / SAMPLE_RATE) / float(np.mean(frame_times)), 1),
         "held_out_voices": len(held_out),
+        "held_out_noise_clips": len(held_out_noise),
         "per_condition": args.per_condition,
         "false_positives": fp,
         "threshold": verdict,

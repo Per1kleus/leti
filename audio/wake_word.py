@@ -359,9 +359,70 @@ class WakeWordListener:
                         "no wake word can be detected."),
                 repair="Run the launcher again, or run: python -m audio.wake_word --install"))
         self.model, self.framework = _load(self.resolution)
+        self._settle()
         self._pa = pyaudio.PyAudio()
         self._stream = None
         self._running = False
+
+    # Frames of silence pushed through the model before the microphone is believed.
+    # One more than the 16-frame window it scores, so nothing of the initial buffer
+    # survives.
+    SETTLE_FRAMES = 20
+
+    # How long after waking the listener stops believing itself, in frames of 80 ms.
+    #
+    # One thing said should wake Leti once. The score stays above the threshold for
+    # several consecutive frames while a phrase is being said, and the tail of it is
+    # still a good enough match on its own, so without this the listener wakes on the
+    # start of "hey leti" and again on the end of it. Caught end to end: one fixture
+    # of one utterance, and the orchestrator received the transcript twice.
+    #
+    # 1.5 seconds, which is also the interval the false-positive rate in
+    # training/wake_word/validation.json is counted with. A rate measured one way and
+    # a runtime that behaves another way would make the number fiction.
+    COOLDOWN_FRAMES = 19
+
+    def _restart(self) -> None:
+        """Reset after waking, and settle again.
+
+        model.reset() re-seeds the same random feature window _settle() exists to
+        flush, so resetting after a detection puts the listener straight back into the
+        1.28 seconds of noise-scored frames it just escaped - and the frames right
+        after a wake are the ones that would wake it a second time. Caught by an
+        end-to-end test that fed one utterance and watched the orchestrator receive it
+        twice.
+
+        The cost is nothing where it is paid: Leti has just woken and is about to
+        record, which takes seconds.
+        """
+        self.model.reset()
+        self._settle()
+
+    def _settle(self) -> None:
+        """Flush openWakeWord's random starting buffer before listening.
+
+        A freshly built Model does not start empty. AudioFeatures.__init__ does
+
+            self.feature_buffer = self._get_embeddings(
+                np.random.randint(-1000, 1000, 16000*4).astype(np.int16))
+
+        - the embeddings of four seconds of RANDOM NOISE, unseeded - and reset() does
+        the same. So for the first 16 frames, 1.28 seconds, the window the model scores
+        is part noise nobody played, and the score is a different random draw every
+        launch.
+
+        Measured on five freshly constructed models scored on identical digital
+        silence, the highest score in their first 20 frames: 0.0073, 0.4148, 0.2798,
+        0.5787, 0.0644. None crossed 0.95 in those five, but 0.58 did, the draw is
+        unbounded, and the cost of removing it is 20 frames of silence - about 45 ms,
+        once, at startup, off the event loop with the rest of the model load.
+
+        Without this, Leti could wake at nothing in its first second of listening, and
+        which launches did it would be luck.
+        """
+        quiet = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+        for _ in range(self.SETTLE_FRAMES):
+            self.model.predict(quiet)
 
     async def start(self) -> None:
         from audio.setup import chosen_input_device
@@ -382,6 +443,7 @@ class WakeWordListener:
 
         loop = asyncio.get_event_loop()
         threshold = self.settings.get("wake_word_threshold", 0.5)
+        cooldown = 0
 
         while self._running:
             audio_chunk = await loop.run_in_executor(
@@ -390,11 +452,19 @@ class WakeWordListener:
             audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
             predictions = await loop.run_in_executor(None, self.model.predict, audio_array)
 
+            # The model is still fed every frame - it needs the continuity - but for a
+            # moment after waking its answer is not acted on. See COOLDOWN_FRAMES.
+            if cooldown > 0:
+                cooldown -= 1
+                continue
+
             for wake_word_name, score in predictions.items():
                 if score > threshold:
                     logger.info(f"Wake word detected: '{wake_word_name}' ({score:.2f})")
                     await self.on_wake()
-                    self.model.reset()
+                    self._restart()
+                    cooldown = self.COOLDOWN_FRAMES
+                    break
 
     def stop(self) -> None:
         self._running = False
