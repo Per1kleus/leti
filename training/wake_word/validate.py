@@ -679,13 +679,29 @@ def choose_threshold(report: Dict, fp: Dict, target_per_hour: float,
                   f"{fp['count'].get(str(chosen['threshold']), 0)} firing(s), not a "
                   "guarantee.")
     else:
-        best = min(table, key=lambda row: (row["false_positives_per_hour"],
-                                           -row["recall"]))
-        chosen = best
+        # Among the thresholds that tie on the coarse per-hour rate, take the
+        # STRICTEST whose recall is still within a point of the best in that set.
+        #
+        # The per-hour rate is quantised - one firing in an hour of audio is one an
+        # hour - so several thresholds share the minimum while differing a lot in how
+        # often they fire on a negative CLIP, which is measured over thousands of them
+        # rather than over a handful of events. Ranking on recall alone picked 0.8,
+        # where 0.95 has the same 0.998 firings an hour, a clip-level rate of 0.134
+        # against 0.162, and 0.0007 less recall.
+        floor = min(row["false_positives_per_hour"] for row in table)
+        tied = [row for row in table
+                if row["false_positives_per_hour"] <= floor + 1e-9]
+        best_recall = max(row["recall"] for row in tied)
+        affordable = [row for row in tied if row["recall"] >= best_recall - 0.01]
+        chosen = max(affordable, key=lambda row: row["threshold"])
         reason = (f"No threshold reached {target_per_hour} false positives an hour. "
-                  f"Took the lowest rate measured "
-                  f"({best['false_positives_per_hour']} an hour at "
-                  f"{best['threshold']}), keeping the most recall among ties.")
+                  f"{len(tied)} of {len(table)} tie at the lowest measured rate "
+                  f"({floor} an hour, which is "
+                  f"{fp['count'].get(str(chosen['threshold']), 0)} firing(s) in "
+                  f"{fp['hours']:.2f} hours); took the strictest of those whose recall "
+                  f"is within a point of the best ({chosen['threshold']}, recall "
+                  f"{chosen['recall']:.4f}, false positives on negative clips "
+                  f"{chosen['false_positive_rate_on_clips']:.4f}).")
     return {"table": table, "chosen": chosen["threshold"], "why": reason,
             "at_chosen": chosen,
             "measurement_resolution_per_hour": resolution,
