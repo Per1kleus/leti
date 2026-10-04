@@ -70,6 +70,14 @@ n_fp_stream_clips: 2000         # about two and a half hours of continuous speec
 # changing it changes what gets generated.
 clips_per_process: 400
 
+# ...except where the clips are longer. Memory grows with the audio produced, not
+# with the number of files: fp_stream speaks whole sentences from negative_long.txt
+# and averages 4.4 seconds a clip against 1.5 for the rest, so it grows about three
+# times as fast and 400 of them was still an OOM kill (exit -9, 272 of 400 clips).
+# A third of the chunk size for three times the clip length.
+clips_per_process_overrides:
+  fp_stream: 100
+
 # Every clip above is spoken by a speaker drawn from one half of a split of
 # LibriTTS-R's 904 voices, and every validation clip by a speaker from the other
 # half. See generate_clips.speaker_split: one voice in five is held out, and the

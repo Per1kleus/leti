@@ -205,6 +205,13 @@ PYTHONPATH=. $V -m training.wake_word.prepare_negatives impulses \
   --out $WORK/impulses --count 48 --bundled psg_v2/impulses --seed 900
 ```
 
+`--bundled` resamples piper's eight impulse responses to 16 kHz mono rather than
+copying them. They are 44.1 kHz stereo, and openWakeWord's `augment_clips` neither
+resamples nor mixes down an impulse response - it also rebinds its own `sr`
+parameter from the file it just loaded, so one 44.1 kHz response makes the next
+batch raise `ValueError: Error! Clip does not have the correct sample rate!`. See
+`prepare_negatives._to_16k_mono` for the whole of it.
+
 ### 4. Training
 
 ```sh

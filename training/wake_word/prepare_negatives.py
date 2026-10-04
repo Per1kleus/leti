@@ -42,7 +42,6 @@ import argparse
 import logging
 import random
 import re
-import shutil
 import wave
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -368,6 +367,51 @@ def make_backgrounds(out_dir: Path, count: int, seconds: float = 10.0,
     return made
 
 
+def _to_16k_mono(path: Path, out_path: Path) -> None:
+    """Rewrite one audio file as 16 kHz mono, so the pipeline can use it.
+
+    RESAMPLED AND MIXED DOWN RATHER THAN COPIED, and this is not tidiness.
+
+    piper-sample-generator's eight bundled impulse responses are all 44.1 kHz and
+    all two-channel (seven of them 24-bit). Checked with soundfile.info, because
+    reading the frame count as if it were mono is how you get this wrong - it makes
+    every one of them look twice as long as it is.
+
+    openWakeWord's augment_clips applies reverberation with
+
+        rir_waveform, sr = torchaudio.load(random.choice(RIR_paths))
+        augmented_batch = reverberate(augmented_batch.cpu(), rir_waveform, ...)
+
+    Three things go wrong with a 44.1 kHz stereo file there.
+
+    It never resamples, so the response is convolved into 16 kHz audio as though it
+    were 16 kHz: Accoustic2_Impulse.wav is 3.00 s of reverb and arrives as 8.27 s
+    of it, with its whole spectrum shifted down by the same 2.76 times.
+
+    It never mixes down either, so `reverberate` is handed a two-channel impulse
+    response for single-channel audio.
+
+    And that line rebinds `sr` - the function's own sample-rate parameter. One
+    reverberated batch later, the next clip round the loop hits
+
+        if clip_sr != sr: raise ValueError("Error! Clip does not have the
+                                           correct sample rate!")
+
+    so a 44.1 kHz impulse response does not merely degrade the augmentation. It
+    stops it, one batch after the first time reverberation is rolled.
+    """
+    import numpy as np_local
+    import soundfile
+    from scipy import signal
+
+    data, rate = soundfile.read(str(path), always_2d=True)
+    mono = data.mean(axis=1)
+    if rate != SAMPLE_RATE:
+        mono = signal.resample_poly(mono, SAMPLE_RATE, rate)
+    peak = float(np_local.abs(mono).max() or 1.0)
+    _write_wav(out_path, mono / peak)
+
+
 def make_impulse_responses(out_dir: Path, count: int, seed: int = 0,
                            bundled: Optional[Path] = None) -> int:
     """Reverberation. The bundled MIT-licensed ones, plus synthesised rooms."""
@@ -375,7 +419,14 @@ def make_impulse_responses(out_dir: Path, count: int, seed: int = 0,
     copied = 0
     if bundled and bundled.is_dir():
         for path in sorted(bundled.glob("*.wav")):
-            shutil.copy(path, out_dir / f"piper_{path.name.replace(' ', '_')}")
+            target = out_dir / f"piper_{path.stem.replace(' ', '_')}.wav"
+            try:
+                _to_16k_mono(path, target)
+            except Exception as e:
+                logger.warning(f"Could not convert {path.name} to 16 kHz mono ({e}); "
+                               "leaving it out rather than feeding the wrong rate "
+                               "to the augmentation.")
+                continue
             copied += 1
     rng = np.random.default_rng(seed)
     for i in range(count):

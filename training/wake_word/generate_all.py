@@ -30,6 +30,9 @@ Each chunk's seed is `seed_<corpus> + chunk index`, and each chunk's files are
 prefixed `c<index>_`, so the corpus is the concatenation of a fixed list of
 fixed-seed chunks. `clips_per_process` is in the config for that reason: change it
 and you get a different corpus, which is why it is recorded rather than passed.
+Some corpora override it, because the bound is really on the audio produced rather
+than on the number of files: a corpus of whole sentences grows three times as fast
+per clip as a corpus of short phrases.
 """
 from __future__ import annotations
 
@@ -83,7 +86,8 @@ def run_corpus(name: str, texts: Path, out_dir: Path, total: int, split: str,
                python: str, concurrency: int, batch_size: int,
                dry_run: bool = False) -> Dict:
     """One corpus, as a sequence of bounded processes."""
-    per_process = int(config["clips_per_process"])
+    per_process = int(config.get("clips_per_process_overrides", {})
+                      .get(name, config["clips_per_process"]))
     accents = ",".join(config["accents"])
     out_dir.mkdir(parents=True, exist_ok=True)
     sizes = chunks_for(total, per_process)
