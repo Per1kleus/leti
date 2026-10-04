@@ -105,15 +105,20 @@ accents:
 # probabilities. The two corpora it needs are built locally.
 # The signal-to-noise ratio the background clips are mixed in at, in decibels.
 #
-# openWakeWord's augment_clips hardcodes (-10, 15), and a negative value means the
-# background is LOUDER than the speech. That is reachable here rather than fixed
-# because it is the kind of constant that is tuned to a corpus - theirs is
-# real-world ambience, and some of these backgrounds are babble built from
-# overlapping speech - and because a wake word buried under other speech is still
-# labelled positive, which is a mislabelled example rather than a hard one.
+# openWakeWord's augment_clips hardcodes (-10, 15), where a negative value means
+# the background is LOUDER than the speech. Changed, on the measurement below -
+# recall of a logistic regression on the features, trained on training-speaker
+# clips and tested on held-out-speaker clips, two seeds each, babble excluded:
 #
-# These are openWakeWord's own numbers until a measurement says otherwise.
-background_snr_db: [-10.0, 15.0]
+#     0 to 15 dB      0.909 / 0.927       5.2% / 4.8% of positives unrecognisable
+#     5 to 20 dB      0.944 / 0.965       3.4% / 1.6%
+#    10 to 25 dB      0.951 / 0.976       2.0% / 1.1%
+#
+# against 0.990 with no augmentation at all. 5 to 20 is the choice: it recovers
+# almost all of the recall while still putting noise only five decibels below the
+# speech, which is a genuinely noisy room. 10 to 25 buys one more point of recall
+# by training on gentler noise than this would then be claiming robustness to.
+background_snr_db: [5.0, 20.0]
 
 n_backgrounds: 160
 background_seconds: 10.0
@@ -130,14 +135,26 @@ augmentation_batch_size: 128
 # false-positive validation set is the real one rather than the 11.3 hours
 # auto_train hard-codes.
 model_type: dnn
-layer_size: 32
+# 32 hidden units was openWakeWord's example value and it does not learn this wake
+# word at all. Probed against identical features, 8,000 steps, best recall reached
+# inside the 0.2 false-positives-per-hour target:
+#
+#     layer  blocks  weight   pos:adv:neg    recall
+#        32       1    1500     50:50:500     0.001
+#       128       1    1500     50:50:500     0.194
+#       128       1     200     50:50:500     0.294
+#
+# Those were measured before the background-noise fault below was found, so they
+# rank the settings rather than predict the result.
+layer_size: 128
+n_blocks: 1
 steps: 50000
-max_negative_weight: 1500
+max_negative_weight: 200
 target_false_positives_per_hour: 0.2
 batch_n_per_class:
-  positive: 50
-  adversarial_negative: 50
-  negative_speech: 500
+  positive: 150
+  adversarial_negative: 100
+  negative_speech: 350
 
 # Seeds. Changing one changes the corpus; leaving them alone reproduces it.
 seed_positive: 100

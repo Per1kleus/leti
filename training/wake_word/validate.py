@@ -222,7 +222,11 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
                 generator.voices = previous_voices
 
     conditions: List[Condition] = []
-    noise = [_read_wav(p) for p in backgrounds]
+    # Babble is kept apart from the rest, because the model is deliberately not
+    # trained with it (see prepare_negatives.make_backgrounds) and hiding that in
+    # an average would be the one thing this report must not do.
+    noise = [_read_wav(p) for p in backgrounds if "babble" not in p.name]
+    babble = [_read_wav(p) for p in backgrounds if "babble" in p.name]
 
     # 1. The ordinary case.
     normal = clips_for(POSITIVE_PHRASES, per_condition, length=(0.95, 1.05))
@@ -331,6 +335,11 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
         "background noise alone", False,
         [n[:int(8 * SAMPLE_RATE)] for n in noise[:40]],
         f"{min(40, len(noise))} background clips"))
+    if babble:
+        conditions.append(Condition(
+            "babble alone", False,
+            [b[:int(8 * SAMPLE_RATE)] for b in babble[:40]],
+            f"{min(40, len(babble))} clips of several people talking at once"))
 
     # And the wake word over background noise, which is the case that matters
     # most and is not in either list above on its own.
@@ -339,6 +348,18 @@ def build_conditions(generator, backgrounds: Sequence[Path], per_condition: int,
                  for i, c in enumerate(normal)]
         conditions.append(Condition("over background noise", True, noisy,
                                     "the normal clips at 10 dB SNR"))
+    if babble:
+        # Reported separately and expected to be the weakest row in the table. The
+        # model is not trained with babble over its positives, because a wake word
+        # under competing speech is a mislabelled example rather than a hard one -
+        # measured at 74.8% of positives made unrecognisable. So this measures a
+        # known limitation instead of pretending it is not there.
+        conditions.append(Condition(
+            "over babble", True,
+            [_mix(_pad(c), babble[i % len(babble)], snr_db=10.0)
+             for i, c in enumerate(normal)],
+            "the normal clips at 10 dB SNR under several voices - a known "
+            "weakness, not trained for"))
     return conditions
 
 
@@ -575,7 +596,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     generator = ClipGenerator(args.generator, args.psg, seed=args.seed,
                               speakers=held_out, voices=list(config["accents"]))
     work = Path(args.work)
-    backgrounds = sorted((work / "backgrounds").glob("*.wav"))
+    # Recursive, so the babble subdirectory is included. train_model deliberately
+    # globs only the top level.
+    backgrounds = sorted((work / "backgrounds").rglob("*.wav"))
 
     logger.info("Building the conditions.")
     conditions = build_conditions(generator, backgrounds, args.per_condition,

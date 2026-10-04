@@ -362,7 +362,28 @@ def make_backgrounds(out_dir: Path, count: int, seconds: float = 10.0,
             samples = _tones(rng, n)
         else:
             samples = _babble(rng, n, speech)
-        _write_wav(out_dir / f"{kind}_{i:04d}.wav", samples * rng.uniform(0.2, 1.0))
+        # Babble goes in a subdirectory, and this is the single most consequential
+        # line in this file.
+        #
+        # Babble cannot be mixed under a positive clip. Measured, cross-speaker,
+        # one transform at a time: AddBackgroundNoise with babble backgrounds
+        # leaves 74.8% of positives scoring ~0 and recall at 0.226, where
+        # non-babble backgrounds over the same range leave 4.8% and 0.915. It is
+        # not a level problem - at a fixed +20 dB, with the babble twenty decibels
+        # BELOW the speech, it still costs 19.9%.
+        #
+        # The reason is what the features are. openWakeWord scores Google's
+        # speech_embedding, which represents phonetic content; competing speech
+        # corrupts that representation at levels where ordinary noise does not. A
+        # positive clip with babble over it is not a hard example, it is a
+        # mislabelled one - "a wake word you cannot hear" tagged as a wake word.
+        #
+        # It stays in the corpus because "Leti does not wake up when four people
+        # are talking" is exactly the condition worth testing. train_model globs
+        # backgrounds/*.wav and so augments with none of it; validate.py globs
+        # recursively and measures it as a condition of its own.
+        folder = out_dir / "babble" if kind == "babble" else out_dir
+        _write_wav(folder / f"{kind}_{i:04d}.wav", samples * rng.uniform(0.2, 1.0))
         made += 1
     return made
 
