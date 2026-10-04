@@ -406,6 +406,7 @@ def train(config: Dict, work: Path, out_dir: Path,
     model = Model(n_classes=1, input_shape=input_shape,
                   model_type=str(config["model_type"]),
                   layer_dim=int(config["layer_size"]),
+                  n_blocks=int(config.get("n_blocks", 1)),
                   seconds_per_example=1280 * input_shape[0] / SAMPLE_RATE)
 
     # openWakeWord's own reshaping function for negative corpora whose window
